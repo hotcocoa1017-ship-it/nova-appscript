@@ -83,7 +83,7 @@
     // Phase 1 Realtime owns cleaning progress and DB version metadata only.
     // 객실상태/배정/객실운영상태(고장·객실확인)는 기존 Sheets가 원본이므로
     // PostgreSQL의 지연·빈 값으로 덮어쓰지 않습니다.
-    'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'version', 'updatedAt'
+    'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo', 'version', 'updatedAt'
   ]);
 
   function novaRealtimeIsEnabled_() {
@@ -267,6 +267,12 @@
       const secondary = staff.find(user => String(user.employeeNo || '').trim() === secondaryNo);
       merged.roommaidName = primaryNo ? String(primary?.name || primaryNo) : '';
       merged.secondaryRoommaidName = secondaryNo ? String(secondary?.name || secondaryNo) : '';
+    }
+    if (Object.prototype.hasOwnProperty.call(realtimeRoom, 'qmEmployeeNo')) {
+      const staff = state.indicator.data?.staff?.qms || [];
+      const qmNo = String(merged.qmEmployeeNo || '').trim();
+      const qm = staff.find(user => String(user.employeeNo || '').trim() === qmNo);
+      merged.qmName = qmNo ? String(qm?.name || qmNo) : '';
     }
     return merged;
   }
@@ -645,7 +651,7 @@
     const mappedAction = rawAction === 'START' ? 'CLEANING_START'
       : rawAction === 'COMPLETE' ? 'CLEANING_COMPLETE'
       : rawAction;
-    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID'].includes(mappedAction);
+    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID', 'QM_ASSIGN'].includes(mappedAction);
 
     if (!realtimeAction) {
       const retryableLegacyAction = mappedAction === 'UPDATE_ROOM_OPERATION_STATUS'
@@ -692,7 +698,7 @@
       result = await send();
     } catch (error) {
       const code = String(error?.code || '').trim().toUpperCase();
-      if (!['ROOM_NOT_FOUND', 'FORBIDDEN', 'INVALID_STATE', 'ROOMMAID_NOT_AVAILABLE'].includes(code)) throw error;
+      if (!['ROOM_NOT_FOUND', 'FORBIDDEN', 'INVALID_STATE', 'ROOMMAID_NOT_AVAILABLE', 'QM_NOT_AVAILABLE'].includes(code)) throw error;
       // 업무일 생성/최근 배정·QM 변경이 DB에 아직 없을 때 해당 객실만 Sheets->DB 보정 후 동일 requestId로 1회 재시도.
       await callServer('syncNovaRealtimeRoomForAction', state.token, {
         businessDate: safe.businessDate,
@@ -703,7 +709,7 @@
       result = await send();
     }
     result.version = Number(result.version || result.room?.version || 0);
-    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : mappedAction === 'ASSIGN_ROOMMAID' ? '룸메이드 배정을 저장했습니다.' : '청소완료 처리했습니다.');
+    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : mappedAction === 'ASSIGN_ROOMMAID' ? '룸메이드 배정을 저장했습니다.' : mappedAction === 'QM_ASSIGN' ? 'QM 배정을 저장했습니다.' : '청소완료 처리했습니다.');
     return result;
   }
 

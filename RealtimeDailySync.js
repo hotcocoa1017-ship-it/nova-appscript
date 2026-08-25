@@ -129,6 +129,7 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
   const historyPayloads = [];
   const qmNotifications = [];
   const assignmentNotifications = [];
+  const qmAssignmentNotifications = [];
   let finalCursorTime = cursorTime;
   let finalCursorRequestId = cursorRequestId;
 
@@ -251,6 +252,67 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
         continue;
       }
 
+      if (action === 'QM_ASSIGN') {
+        const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const assignedQmNo = String(eventDetail.qmEmployeeNo || '').trim();
+        if (!assignedQmNo) throw new Error(`DB QM 배정 이벤트에 QM 사번이 없습니다. (${eventSite} ${eventRoomNo}호)`);
+
+        roomUpdates.push({
+          rowNumber: rowInfo.rowNumber,
+          cleaningStatus: 'QM_WAITING',
+          qmEmployeeNo: assignedQmNo,
+          version,
+          updatedAt: nowText_()
+        });
+        rowInfo.data['청소상태'] = 'QM_WAITING';
+        rowInfo.data['QM사번'] = assignedQmNo;
+
+        historyPayloads.push({
+          recordType: NOVA.RECORD_TYPES.QM,
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          targetEmployeeNo: assignedQmNo,
+          status: 'QM_ASSIGN',
+          detail: {
+            requestId,
+            realtime: true,
+            action: 'QM_ASSIGN',
+            role: String(eventDetail.role || 'ORDER').trim().toUpperCase(),
+            previousRoomStatus: String(rowInfo.data['객실상태'] || '').trim().toUpperCase(),
+            roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+            cleaningStatus: 'QM_WAITING',
+            cleaningType,
+            assignmentType,
+            primaryEmployeeNo: roommaidNo,
+            secondaryEmployeeNo: secondaryRoommaidNo,
+            qmEmployeeNo: assignedQmNo,
+            dbRoomVersion: Number(event.roomVersion || 0),
+            dbEventTime: String(event.eventTime || '')
+          },
+          registeredBy: employeeNo,
+          version
+        });
+
+        if (usersByEmployeeNo[assignedQmNo]) {
+          qmAssignmentNotifications.push({
+            businessDate: eventBusinessDate,
+            site: eventSite,
+            roomNo: eventRoomNo,
+            targetUser: usersByEmployeeNo[assignedQmNo],
+            preassigned: normalizeYesNo_(rowInfo.data['선배정여부']) === 'Y',
+            vip: normalizeYesNo_(rowInfo.data['VIP여부']) === 'Y',
+            importantRoom: normalizeYesNo_(rowInfo.data['중요객실여부']) === 'Y',
+            registeredBy: employeeNo,
+            version
+          });
+        }
+
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
       roomUpdates.push({
         rowNumber: rowInfo.rowNumber,
         cleaningStatus: afterStatus,
@@ -311,6 +373,7 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
     if (historyPayloads.length) novaRealtimeFinalAppendHistoryBatch_(historyPayloads);
     qmNotifications.forEach(payload => queueQmReadyTelegram_(payload));
     assignmentNotifications.forEach(payload => queueCleaningAssignmentTelegram_(payload));
+    qmAssignmentNotifications.forEach(payload => queueQmAssignmentTelegram_(payload));
 
     if (version) {
       const affectedDates = Array.from(new Set(historyPayloads.map(item => item.businessDate).filter(Boolean)));
@@ -372,6 +435,7 @@ function novaRealtimeFinalBatchUpdateCurrentRows_(sheet, updates) { // (Realtime
     assignmentType: Number(headerMap['배정유형'] || 0),
     roommaidEmployeeNo: Number(headerMap['룸메이드사번'] || 0),
     secondaryRoommaidEmployeeNo: Number(headerMap['보조룸메이드사번'] || 0),
+    qmEmployeeNo: Number(headerMap['QM사번'] || 0),
     version: Number(headerMap['마지막변경버전'] || 0),
     updatedAt: Number(headerMap['수정일시'] || 0)
   };

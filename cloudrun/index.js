@@ -1590,8 +1590,10 @@ app.get(
           business_date,
           site,
           room_no,
+          action,
           after_status,
           room_version,
+          detail,
           event_time
         from public.nova_room_events
         where
@@ -1625,46 +1627,41 @@ app.get(
         );
 
       const changes =
-        rows.map(row => ({
-          requestId:
-            String(
-              row.request_id || ''
-            ),
-          eventTime:
-            row.event_time instanceof Date
-              ? row.event_time.toISOString()
-              : String(
-                  row.event_time || ''
-                ),
-          room: {
+        rows.map(row => {
+          const action = String(row.action || '').trim().toUpperCase();
+          const detail = row.detail && typeof row.detail === 'object' ? row.detail : {};
+          const room = {
             businessDate:
               row.business_date instanceof Date
-                ? row.business_date
-                    .toISOString()
-                    .slice(0, 10)
-                : String(
-                    row.business_date || ''
-                  ).slice(0, 10),
-            site:
-              String(row.site || ''),
-            roomNo:
-              String(row.room_no || ''),
-            cleaningStatus:
-              String(
-                row.after_status || ''
-              ),
-            version:
-              Number(
-                row.room_version || 0
-              ),
+                ? row.business_date.toISOString().slice(0, 10)
+                : String(row.business_date || '').slice(0, 10),
+            site: String(row.site || ''),
+            roomNo: String(row.room_no || ''),
+            cleaningStatus: String(row.after_status || ''),
+            version: Number(row.room_version || 0),
             updatedAt:
               row.event_time instanceof Date
                 ? row.event_time.toISOString()
-                : String(
-                    row.event_time || ''
-                  )
+                : String(row.event_time || '')
+          };
+          if (action === 'ASSIGN_ROOMMAID') {
+            room.cleaningType = String(detail.cleaningType || 'NORMAL');
+            room.assignmentType = String(detail.assignmentType || 'SOLO');
+            room.roommaidEmployeeNo = String(detail.primaryEmployeeNo || '');
+            room.secondaryRoommaidEmployeeNo = String(detail.secondaryEmployeeNo || '');
           }
-        }));
+          if (action === 'QM_ASSIGN') {
+            room.qmEmployeeNo = String(detail.qmEmployeeNo || '');
+          }
+          return {
+            requestId: String(row.request_id || ''),
+            eventTime:
+              row.event_time instanceof Date
+                ? row.event_time.toISOString()
+                : String(row.event_time || ''),
+            room
+          };
+        });
 
       const hasMore =
         changes.length >= limit;
@@ -1770,7 +1767,7 @@ app.post(
       }
 
       if (
-        !['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID'].includes(action)
+        !['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID', 'QM_ASSIGN'].includes(action)
       ) {
         throw httpError(
           400,
@@ -2006,6 +2003,109 @@ app.post(
             action,
             before,
             'ASSIGNED',
+            user.employee_no,
+            nextRoom.version,
+            JSON.stringify(detail)
+          ]
+        );
+
+        const response = {
+          ok: true,
+          action,
+          requestId,
+          room: roomDto(nextRoom),
+          version: Number(nextRoom.version || 0),
+          timing: { totalMs: Date.now() - startedAt }
+        };
+        await client.query(
+          `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+          [requestId, JSON.stringify(response)]
+        );
+        await client.query('commit');
+        return res.json(response);
+      }
+
+
+      if (action === 'QM_ASSIGN') {
+        if (!['ADMIN', 'ORDER'].includes(user.role)) {
+          throw httpError(403, 'FORBIDDEN', 'QM 배정 권한이 없습니다.');
+        }
+
+        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
+          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
+            currentRoom: roomDto(room)
+          });
+        }
+
+        const qmEmployeeNo = cleanText_(body.employeeNo, 80);
+        if (!qmEmployeeNo) {
+          throw httpError(400, 'QM_REQUIRED', '배정할 QM을 선택하세요.');
+        }
+
+        const qmResult = await client.query(
+          `select employee_no,name,role,enabled
+             from public.nova_users
+            where employee_no=$1`,
+          [qmEmployeeNo]
+        );
+        const qmUser = qmResult.rows[0] || null;
+        if (!qmUser || !qmUser.enabled || String(qmUser.role || '').toUpperCase() !== 'QM') {
+          throw httpError(400, 'QM_NOT_AVAILABLE', '배정할 QM 정보를 확인할 수 없습니다.');
+        }
+
+        const sameAssignment = String(room.cleaning_status || '').toUpperCase() === 'QM_WAITING'
+          && String(room.qm_employee_no || '') === qmEmployeeNo;
+        if (sameAssignment) {
+          const response = {
+            ok: true,
+            action,
+            requestId,
+            idempotent: true,
+            room: roomDto(room),
+            version: Number(room.version || 0),
+            timing: { totalMs: Date.now() - startedAt }
+          };
+          await client.query(
+            `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+            [requestId, JSON.stringify(response)]
+          );
+          await client.query('commit');
+          return res.json(response);
+        }
+
+        const before = String(room.cleaning_status || '');
+        const updated = await client.query(
+          `update public.nova_rooms_current
+              set cleaning_status='QM_WAITING',
+                  qm_employee_no=$4,
+                  version=version+1,
+                  updated_by=$5,
+                  updated_at=now()
+            where business_date=$1 and site=$2 and room_no=$3
+            returning *`,
+          [businessDate, site, roomNo, qmEmployeeNo, user.employee_no]
+        );
+        const nextRoom = updated.rows[0];
+        const detail = {
+          source: 'NOVA_REALTIME',
+          role: user.role,
+          qmEmployeeNo,
+          qmName: String(qmUser.name || '')
+        };
+
+        await client.query(
+          `insert into public.nova_room_events(
+            request_id,business_date,site,room_no,action,before_status,after_status,
+            employee_no,room_version,detail
+          ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+          [
+            requestId,
+            businessDate,
+            site,
+            roomNo,
+            action,
+            before,
+            'QM_WAITING',
             user.employee_no,
             nextRoom.version,
             JSON.stringify(detail)
