@@ -670,7 +670,7 @@
     const mappedAction = rawAction === 'START' ? 'CLEANING_START'
       : rawAction === 'COMPLETE' ? 'CLEANING_COMPLETE'
       : rawAction;
-    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS'].includes(mappedAction)
+    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
       || (mappedAction === 'CHANGE_ROOM_STATUS'
         && String(safe.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT');
 
@@ -740,7 +740,7 @@
         });
       }
     }
-    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : mappedAction === 'ASSIGN_ROOMMAID' ? '룸메이드 배정을 저장했습니다.' : mappedAction === 'QM_ASSIGN' ? 'QM 배정을 저장했습니다.' : mappedAction === 'CHANGE_ROOM_STATUS' ? '객실상태를 저장했습니다.' : mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' ? '객실 조치상태를 저장했습니다.' : mappedAction === 'UPDATE_OPERATION_FLAGS' ? '운영표시를 저장했습니다.' : '청소완료 처리했습니다.');
+    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : mappedAction === 'ASSIGN_ROOMMAID' ? '룸메이드 배정을 저장했습니다.' : mappedAction === 'QM_ASSIGN' ? 'QM 배정을 저장했습니다.' : mappedAction === 'CHANGE_ROOM_STATUS' ? '객실상태를 저장했습니다.' : mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' ? '객실 조치상태를 저장했습니다.' : mappedAction === 'UPDATE_OPERATION_FLAGS' ? '운영표시를 저장했습니다.' : mappedAction === 'CLEAR_ASSIGNMENT' ? '배정을 초기화했습니다.' : '청소완료 처리했습니다.');
     return result;
   }
 
@@ -4395,6 +4395,7 @@
             <button class="action-button status-change" type="button" data-room-action="CHANGE_ROOM_STATUS">상태변경</button>
             <button class="action-button checkout" type="button" data-room-action="CHANGE_ROOM_STATUS" data-room-status="CHECKED_OUT">퇴실</button>
             <button class="action-button" type="button" data-room-action="ASSIGN_ROOMMAID">배정</button>
+            <button class="action-button danger" type="button" data-room-action="CLEAR_ASSIGNMENT">배정 초기화</button>
             <button class="action-button" type="button" data-room-action="CLEANING_START">청소시작</button>
             <button class="action-button primary" type="button" data-room-action="CLEANING_COMPLETE"${cleaningCompletionLocked ? ' disabled title="룸메이드 청소완료가 이미 기록된 객실입니다." aria-label="완료 처리됨"' : ''}>${cleaningCompletionLocked ? '완료 처리됨' : '청소완료'}</button>
             <button class="action-button" type="button" data-room-action="QM_ASSIGN">QM배정</button>
@@ -4687,6 +4688,9 @@
       const result = await saveRoomActionRealtimeOrLegacy_('updateRoomOperation', payload);
       if (!result?.ok) throw new Error(result?.message || '객실 작업을 저장하지 못했습니다.');
       const resultRoom = Object.assign({}, result.room || {});
+      if (action === 'CLEAR_ASSIGNMENT') {
+        Object.assign(resultRoom, emptyRoomAssignmentPatch_(), { cleaningStatus: 'WAITING' });
+      }
       if (action === 'UPDATE_ROOM_OPERATION_STATUS') {
         // 서버 저장 성공 응답에서는 요청한 조치상태를 화면 확정값으로 강제 병합한다.
         // stale delta/부분응답이 끼어도 '저장완료인데 표시 없음' 상태가 생기지 않게 한다.
