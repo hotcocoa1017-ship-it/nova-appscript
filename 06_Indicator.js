@@ -144,7 +144,10 @@ function updateRoomOperation(token, payload) { // (객실 청소배정·상태�
       });
     }
 
-    const userIndex = getUserIndex_();
+    // 직원 검증이 필요한 배정 작업에서만 사용자 전체 인덱스를 읽는다.
+    // 객실상태·운영표시·배정초기화 등은 불필요한 사용자 조회를 건너뛰어 저장 응답을 단축한다.
+    const needsUserIndex = action === 'ASSIGN_ROOMMAID' || action === 'QM_ASSIGN';
+    const userIndex = needsUserIndex ? getUserIndex_() : null;
     const writeLockRequestedMs = Date.now();
     const writeLock = acquireWriteLock_();
     const writeLockAcquiredMs = Date.now();
@@ -305,49 +308,33 @@ function updateRoomOperation(token, payload) { // (객실 청소배정·상태�
         requestedRoomStatus: requestedRoomStatusForHistory,
         version
       });
-      try {
-        if (action === 'ASSIGN_ROOMMAID' && assignmentUser) {
-          const telegramBase = {
-            businessDate,
-            site: String(refreshed['사업장'] || site).trim(),
-            roomNo,
-            roomStatus: String(refreshed['객실상태'] || '').trim(),
-            cleaningType: String(refreshed['정비유형'] || NOVA.CLEANING_TYPES.NORMAL).trim(),
-            cleaningStatus: String(refreshed['청소상태'] || '').trim(),
-            assignmentType: String(refreshed['배정유형'] || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO).trim(),
-            preassigned: normalizeYesNo_(refreshed['선배정여부']) === 'Y',
-            vip: normalizeYesNo_(refreshed['VIP여부']) === 'Y',
-            importantRoom: normalizeYesNo_(refreshed['중요객실여부']) === 'Y',
-            registeredBy: user.employeeNo,
-            version
-          };
-          const first = queueCleaningAssignmentTelegram_(Object.assign({}, telegramBase, { targetUser: assignmentUser, assignmentRole: 'PRIMARY' }));
-          const second = secondaryAssignmentUser
-            ? queueCleaningAssignmentTelegram_(Object.assign({}, telegramBase, { targetUser: secondaryAssignmentUser, assignmentRole: 'SECONDARY' }))
-            : null;
-          notificationQueued = Boolean(first && first.queued || second && second.queued);
-        } else if (action === 'QM_ASSIGN' && assignmentUser) {
-          const result = queueQmAssignmentTelegram_({
-            businessDate,
-            site: String(refreshed['사업장'] || site).trim(),
-            roomNo,
-            targetUser: assignmentUser,
-            preassigned: normalizeYesNo_(refreshed['선배정여부']) === 'Y',
-            vip: normalizeYesNo_(refreshed['VIP여부']) === 'Y',
-            importantRoom: normalizeYesNo_(refreshed['중요객실여부']) === 'Y',
-            registeredBy: user.employeeNo,
-            version
-          });
-          notificationQueued = Boolean(result && result.queued);
-        }
-      } catch (notificationError) {
-        console.error(`객실작업 텔레그램 큐 등록 실패: ${notificationError && notificationError.message || notificationError}`);
-      }
+      // 배정/QM 알림은 저장 성공 응답 후 Client가 비동기로 큐 등록한다.
     } finally {
       writeLock.releaseLock();
     }
 
-    const responseRoom = currentRoomObject_(refreshed, rowNumber, {}, userIndex.byEmployeeNo);
+    // Client가 이미 즉시 반영한 이름·표시정보는 유지하고, 서버에서 확정된 핵심 필드만 반환한다.
+    // 이로써 상태변경·운영표시 등에서 응답 직전 사용자 전체 인덱스 재의존을 제거한다.
+    const responseRoom = {
+      rowNumber,
+      businessDate,
+      site: String(refreshed['사업장'] || site).trim(),
+      roomNo,
+      roomStatus: String(refreshed['객실상태'] || '').trim(),
+      displayBaseRoomStatus: resolveIndicatorDisplayBaseRoomStatus_(refreshed),
+      cleaningStatus: String(refreshed['청소상태'] || '').trim(),
+      cleaningType: String(refreshed['정비유형'] || '').trim() || NOVA.CLEANING_TYPES.NORMAL,
+      assignmentType: String(refreshed['배정유형'] || '').trim() || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO,
+      roommaidEmployeeNo: String(refreshed['룸메이드사번'] || '').trim(),
+      secondaryRoommaidEmployeeNo: String(refreshed['보조룸메이드사번'] || '').trim(),
+      qmEmployeeNo: String(refreshed['QM사번'] || '').trim(),
+      preassigned: normalizeYesNo_(refreshed['선배정여부']) === 'Y',
+      vip: normalizeYesNo_(refreshed['VIP여부']) === 'Y',
+      importantRoom: normalizeYesNo_(refreshed['중요객실여부']) === 'Y',
+      operationalStatus: normalizeIndicatorRoomOperationalStatus_(refreshed[indicatorRoomOperationalStatusHeader_()]),
+      updatedAt: String(refreshed['수정일시'] || '').trim(),
+      version: Number(refreshed['마지막변경버전'] || version || 0)
+    };
     const finishedMs = Date.now();
     return {
       ok: true,
@@ -1077,6 +1064,59 @@ function queueDeferredRoomOperationNotification(token, payload) { // (객실작�
     }
 
     const usersByEmployeeNo = getUserIndex_().byEmployeeNo;
+
+    if (action === 'ASSIGN_ROOMMAID') {
+      const primaryEmployeeNo = String(safe.primaryEmployeeNo || '').trim();
+      const secondaryEmployeeNo = String(safe.secondaryEmployeeNo || '').trim();
+      const primaryUser = primaryEmployeeNo ? usersByEmployeeNo[primaryEmployeeNo] || null : null;
+      const secondaryUser = secondaryEmployeeNo ? usersByEmployeeNo[secondaryEmployeeNo] || null : null;
+      if (!primaryUser || !primaryUser.enabled || String(primaryUser.role || '').trim().toUpperCase() !== 'ROOMMAID') {
+        return { ok: true, queued: false, count: 0, reason: 'ROOMMAID_NOT_AVAILABLE' };
+      }
+      const telegramBase = {
+        businessDate, site, roomNo,
+        roomStatus: String(safe.roomStatus || '').trim(),
+        cleaningType: String(safe.cleaningType || NOVA.CLEANING_TYPES.NORMAL).trim().toUpperCase(),
+        cleaningStatus: String(safe.cleaningStatus || 'ASSIGNED').trim().toUpperCase(),
+        assignmentType: String(safe.assignmentType || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO).trim().toUpperCase(),
+        preassigned: Boolean(safe.preassigned),
+        vip: Boolean(safe.vip),
+        importantRoom: Boolean(safe.importantRoom),
+        registeredBy: user.employeeNo,
+        version: Number(safe.version || 0)
+      };
+      let queuedCount = 0;
+      const first = queueCleaningAssignmentTelegram_(Object.assign({}, telegramBase, {
+        targetUser: primaryUser, assignmentRole: 'PRIMARY'
+      }));
+      if (first && first.queued) queuedCount += 1;
+      if (secondaryEmployeeNo && secondaryUser && secondaryUser.enabled
+          && String(secondaryUser.role || '').trim().toUpperCase() === 'ROOMMAID') {
+        const second = queueCleaningAssignmentTelegram_(Object.assign({}, telegramBase, {
+          targetUser: secondaryUser, assignmentRole: 'SECONDARY'
+        }));
+        if (second && second.queued) queuedCount += 1;
+      }
+      return { ok: true, queued: queuedCount > 0, count: queuedCount, reason: queuedCount ? '' : 'TELEGRAM_NOT_QUEUED' };
+    }
+
+    if (action === 'QM_ASSIGN') {
+      const qmEmployeeNo = String(safe.qmEmployeeNo || '').trim();
+      const qmUser = qmEmployeeNo ? usersByEmployeeNo[qmEmployeeNo] || null : null;
+      if (!qmUser || !qmUser.enabled || String(qmUser.role || '').trim().toUpperCase() !== 'QM') {
+        return { ok: true, queued: false, count: 0, reason: 'QM_NOT_AVAILABLE' };
+      }
+      const result = queueQmAssignmentTelegram_({
+        businessDate, site, roomNo, targetUser: qmUser,
+        preassigned: Boolean(safe.preassigned),
+        vip: Boolean(safe.vip),
+        importantRoom: Boolean(safe.importantRoom),
+        registeredBy: user.employeeNo,
+        version: Number(safe.version || 0)
+      });
+      return roomOperationDeferredQueueResult_(result);
+    }
+
     const roommaidUsers = uniqueRoomOperationEmployeeNos_(safe.roommaidEmployeeNos)
       .map(employeeNo => usersByEmployeeNo[employeeNo] || null)
       .filter(target => target && target.enabled && String(target.role || '').trim().toUpperCase() === 'ROOMMAID');
@@ -1160,6 +1200,36 @@ function buildRoomOperationDeferredTelegramPayload_(action, context) { // (객�
     roomNo: safe.roomNo,
     version: Number(safe.version || 0)
   };
+
+  if (event === 'ASSIGN_ROOMMAID') {
+    const primaryEmployeeNo = String(current['룸메이드사번'] || '').trim();
+    const secondaryEmployeeNo = String(current['보조룸메이드사번'] || '').trim();
+    if (!primaryEmployeeNo) return null;
+    return Object.assign({}, common, {
+      action: 'ASSIGN_ROOMMAID',
+      primaryEmployeeNo,
+      secondaryEmployeeNo,
+      roomStatus: String(current['객실상태'] || '').trim(),
+      cleaningStatus: String(current['청소상태'] || 'ASSIGNED').trim().toUpperCase(),
+      cleaningType: String(current['정비유형'] || NOVA.CLEANING_TYPES.NORMAL).trim().toUpperCase(),
+      assignmentType: String(current['배정유형'] || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO).trim().toUpperCase(),
+      preassigned: normalizeYesNo_(current['선배정여부']) === 'Y',
+      vip: normalizeYesNo_(current['VIP여부']) === 'Y',
+      importantRoom: normalizeYesNo_(current['중요객실여부']) === 'Y'
+    });
+  }
+
+  if (event === 'QM_ASSIGN') {
+    const qmEmployeeNo = String(current['QM사번'] || '').trim();
+    if (!qmEmployeeNo) return null;
+    return Object.assign({}, common, {
+      action: 'QM_ASSIGN',
+      qmEmployeeNo,
+      preassigned: normalizeYesNo_(current['선배정여부']) === 'Y',
+      vip: normalizeYesNo_(current['VIP여부']) === 'Y',
+      importantRoom: normalizeYesNo_(current['중요객실여부']) === 'Y'
+    });
+  }
 
   if (event === 'CLEAR_ASSIGNMENT') {
     const roommaidEmployeeNos = uniqueRoomOperationEmployeeNos_([
