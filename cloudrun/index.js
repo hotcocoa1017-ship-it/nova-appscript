@@ -1644,6 +1644,17 @@ app.get(
                 ? row.event_time.toISOString()
                 : String(row.event_time || '')
           };
+          if (action === 'CHANGE_ROOM_STATUS') {
+            delete room.cleaningStatus;
+            room.roomStatus = String(detail.roomStatus || row.after_status || '');
+            const roomPatch = detail.roomPatch && typeof detail.roomPatch === 'object' ? detail.roomPatch : {};
+            [
+              'cleaningStatus', 'cleaningType', 'assignmentType',
+              'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo'
+            ].forEach(key => {
+              if (Object.prototype.hasOwnProperty.call(roomPatch, key)) room[key] = roomPatch[key];
+            });
+          }
           if (action === 'ASSIGN_ROOMMAID') {
             room.cleaningType = String(detail.cleaningType || 'NORMAL');
             room.assignmentType = String(detail.assignmentType || 'SOLO');
@@ -1767,7 +1778,7 @@ app.post(
       }
 
       if (
-        !['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID', 'QM_ASSIGN'].includes(action)
+        !['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'CHANGE_ROOM_STATUS'].includes(action)
       ) {
         throw httpError(
           400,
@@ -2025,6 +2036,155 @@ app.post(
         return res.json(response);
       }
 
+
+      if (action === 'CHANGE_ROOM_STATUS') {
+        if (!['ADMIN', 'ORDER'].includes(user.role)) {
+          throw httpError(403, 'FORBIDDEN', '객실상태 변경 권한이 없습니다.');
+        }
+
+        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
+          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
+            currentRoom: roomDto(room)
+          });
+        }
+
+        const requestedRoomStatus = cleanText_(body.roomStatus, 40).toUpperCase();
+        if (!requestedRoomStatus) {
+          throw httpError(400, 'ROOM_STATUS_REQUIRED', '변경할 객실상태를 선택하세요.');
+        }
+        if (requestedRoomStatus === 'CHECKED_OUT') {
+          throw httpError(400, 'CHECKOUT_LEGACY_ONLY', '퇴실은 기존 전용 저장경로를 사용합니다.');
+        }
+
+        const rawPatch = body.realtimeRoomPatch && typeof body.realtimeRoomPatch === 'object'
+          ? body.realtimeRoomPatch
+          : {};
+        const hasOwn = key => Object.prototype.hasOwnProperty.call(rawPatch, key);
+        const cleaningStatus = hasOwn('cleaningStatus')
+          ? cleanText_(rawPatch.cleaningStatus || 'WAITING', 40).toUpperCase()
+          : String(room.cleaning_status || 'WAITING').toUpperCase();
+        const cleaningType = hasOwn('cleaningType')
+          ? cleanText_(rawPatch.cleaningType || 'NORMAL', 40).toUpperCase()
+          : String(room.cleaning_type || 'NORMAL').toUpperCase();
+        const assignmentType = hasOwn('assignmentType')
+          ? cleanText_(rawPatch.assignmentType || 'SOLO', 40).toUpperCase()
+          : String(room.assignment_type || 'SOLO').toUpperCase();
+        const roommaidEmployeeNo = hasOwn('roommaidEmployeeNo')
+          ? cleanText_(rawPatch.roommaidEmployeeNo, 80)
+          : String(room.roommaid_employee_no || '');
+        const secondaryRoommaidEmployeeNo = hasOwn('secondaryRoommaidEmployeeNo')
+          ? cleanText_(rawPatch.secondaryRoommaidEmployeeNo, 80)
+          : String(room.secondary_roommaid_employee_no || '');
+        const qmEmployeeNo = hasOwn('qmEmployeeNo')
+          ? cleanText_(rawPatch.qmEmployeeNo, 80)
+          : String(room.qm_employee_no || '');
+
+        const roomPatch = {
+          cleaningStatus,
+          cleaningType,
+          assignmentType,
+          roommaidEmployeeNo,
+          secondaryRoommaidEmployeeNo,
+          qmEmployeeNo
+        };
+
+        const sameState = String(room.room_status || '').toUpperCase() === requestedRoomStatus
+          && String(room.cleaning_status || 'WAITING').toUpperCase() === cleaningStatus
+          && String(room.cleaning_type || 'NORMAL').toUpperCase() === cleaningType
+          && String(room.assignment_type || 'SOLO').toUpperCase() === assignmentType
+          && String(room.roommaid_employee_no || '') === roommaidEmployeeNo
+          && String(room.secondary_roommaid_employee_no || '') === secondaryRoommaidEmployeeNo
+          && String(room.qm_employee_no || '') === qmEmployeeNo;
+
+        if (sameState) {
+          const response = {
+            ok: true,
+            action,
+            requestId,
+            idempotent: true,
+            room: roomDto(room),
+            version: Number(room.version || 0),
+            timing: { totalMs: Date.now() - startedAt }
+          };
+          await client.query(
+            `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+            [requestId, JSON.stringify(response)]
+          );
+          await client.query('commit');
+          return res.json(response);
+        }
+
+        const previousRoomStatus = String(room.room_status || '');
+        const updated = await client.query(
+          `update public.nova_rooms_current
+              set room_status=$4,
+                  cleaning_status=$5,
+                  cleaning_type=$6,
+                  assignment_type=$7,
+                  roommaid_employee_no=nullif($8,''),
+                  secondary_roommaid_employee_no=nullif($9,''),
+                  qm_employee_no=nullif($10,''),
+                  version=version+1,
+                  updated_by=$11,
+                  updated_at=now()
+            where business_date=$1 and site=$2 and room_no=$3
+            returning *`,
+          [
+            businessDate,
+            site,
+            roomNo,
+            requestedRoomStatus,
+            cleaningStatus,
+            cleaningType,
+            assignmentType,
+            roommaidEmployeeNo,
+            secondaryRoommaidEmployeeNo,
+            qmEmployeeNo,
+            user.employee_no
+          ]
+        );
+        const nextRoom = updated.rows[0];
+        const detail = {
+          source: 'NOVA_REALTIME',
+          role: user.role,
+          roomStatus: requestedRoomStatus,
+          roomPatch
+        };
+
+        await client.query(
+          `insert into public.nova_room_events(
+            request_id,business_date,site,room_no,action,before_status,after_status,
+            employee_no,room_version,detail
+          ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+          [
+            requestId,
+            businessDate,
+            site,
+            roomNo,
+            action,
+            previousRoomStatus,
+            requestedRoomStatus,
+            user.employee_no,
+            nextRoom.version,
+            JSON.stringify(detail)
+          ]
+        );
+
+        const response = {
+          ok: true,
+          action,
+          requestId,
+          room: roomDto(nextRoom),
+          version: Number(nextRoom.version || 0),
+          timing: { totalMs: Date.now() - startedAt }
+        };
+        await client.query(
+          `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+          [requestId, JSON.stringify(response)]
+        );
+        await client.query('commit');
+        return res.json(response);
+      }
 
       if (action === 'QM_ASSIGN') {
         if (!['ADMIN', 'ORDER'].includes(user.role)) {
