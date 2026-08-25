@@ -83,7 +83,7 @@
     // Phase 1 Realtime owns cleaning progress and DB version metadata only.
     // 객실상태/배정/객실운영상태(고장·객실확인)는 기존 Sheets가 원본이므로
     // PostgreSQL의 지연·빈 값으로 덮어쓰지 않습니다.
-    'cleaningStatus', 'version', 'updatedAt'
+    'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'version', 'updatedAt'
   ]);
 
   function novaRealtimeIsEnabled_() {
@@ -136,15 +136,16 @@
   }
 
   async function novaRealtimeRoomChangesFetch_(payload, attempt = 0) {
-    const form = new URLSearchParams();
+    const query = new URLSearchParams();
     Object.entries(payload || {}).forEach(([key, value]) => {
-      form.set(key, value == null ? '' : String(value));
+      query.set(key, value == null ? '' : String(value));
     });
-    form.set('token', String(state.token || ''));
 
-    const response = await fetch(`${novaRealtime_.apiBase}/v1/room-changes`, {
-      method: 'POST',
-      body: form
+    const response = await fetch(`${novaRealtime_.apiBase}/v1/room-changes?${query.toString()}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${state.token}`
+      }
     }).catch(error => {
       if (attempt < 2) return null;
       throw error;
@@ -256,6 +257,17 @@
       if (Object.prototype.hasOwnProperty.call(realtimeRoom, key)) merged[key] = realtimeRoom[key];
     });
     if (realtimeRoom.building) merged.building = realtimeRoom.building;
+
+    if (Object.prototype.hasOwnProperty.call(realtimeRoom, 'roommaidEmployeeNo')
+        || Object.prototype.hasOwnProperty.call(realtimeRoom, 'secondaryRoommaidEmployeeNo')) {
+      const staff = state.indicator.data?.staff?.roommaids || [];
+      const primaryNo = String(merged.roommaidEmployeeNo || '').trim();
+      const secondaryNo = String(merged.secondaryRoommaidEmployeeNo || '').trim();
+      const primary = staff.find(user => String(user.employeeNo || '').trim() === primaryNo);
+      const secondary = staff.find(user => String(user.employeeNo || '').trim() === secondaryNo);
+      merged.roommaidName = primaryNo ? String(primary?.name || primaryNo) : '';
+      merged.secondaryRoommaidName = secondaryNo ? String(secondary?.name || secondaryNo) : '';
+    }
     return merged;
   }
 
@@ -633,7 +645,7 @@
     const mappedAction = rawAction === 'START' ? 'CLEANING_START'
       : rawAction === 'COMPLETE' ? 'CLEANING_COMPLETE'
       : rawAction;
-    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE'].includes(mappedAction);
+    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID'].includes(mappedAction);
 
     if (!realtimeAction) {
       const retryableLegacyAction = mappedAction === 'UPDATE_ROOM_OPERATION_STATUS'
@@ -680,7 +692,7 @@
       result = await send();
     } catch (error) {
       const code = String(error?.code || '').trim().toUpperCase();
-      if (!['ROOM_NOT_FOUND', 'FORBIDDEN', 'INVALID_STATE'].includes(code)) throw error;
+      if (!['ROOM_NOT_FOUND', 'FORBIDDEN', 'INVALID_STATE', 'ROOMMAID_NOT_AVAILABLE'].includes(code)) throw error;
       // 업무일 생성/최근 배정·QM 변경이 DB에 아직 없을 때 해당 객실만 Sheets->DB 보정 후 동일 requestId로 1회 재시도.
       await callServer('syncNovaRealtimeRoomForAction', state.token, {
         businessDate: safe.businessDate,
@@ -691,7 +703,7 @@
       result = await send();
     }
     result.version = Number(result.version || result.room?.version || 0);
-    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : '청소완료 처리했습니다.');
+    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : mappedAction === 'ASSIGN_ROOMMAID' ? '룸메이드 배정을 저장했습니다.' : '청소완료 처리했습니다.');
     return result;
   }
 

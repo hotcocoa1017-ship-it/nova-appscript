@@ -1770,10 +1770,7 @@ app.post(
       }
 
       if (
-        ![
-          'CLEANING_START',
-          'CLEANING_COMPLETE'
-        ].includes(action)
+        !['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID'].includes(action)
       ) {
         throw httpError(
           400,
@@ -1881,6 +1878,156 @@ app.post(
           '객실을 찾을 수 없습니다.'
         );
       }
+
+      if (action === 'ASSIGN_ROOMMAID') {
+        if (!['ADMIN', 'ORDER'].includes(user.role)) {
+          throw httpError(403, 'FORBIDDEN', '룸메이드 배정 권한이 없습니다.');
+        }
+
+        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
+          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
+            currentRoom: roomDto(room)
+          });
+        }
+
+        const primaryEmployeeNo = cleanText_(body.employeeNo, 80);
+        const rawSecondaryEmployeeNo = cleanText_(body.secondaryEmployeeNo, 80);
+        const assignmentType = cleanText_(body.assignmentType || 'SOLO', 40).toUpperCase();
+        const cleaningType = cleanText_(body.cleaningType || 'NORMAL', 40).toUpperCase();
+        const pairAssignment = ['PAIR', 'PAIR_TRAINING'].includes(assignmentType);
+        const secondaryEmployeeNo = pairAssignment ? rawSecondaryEmployeeNo : '';
+
+        if (!primaryEmployeeNo) {
+          throw httpError(400, 'ROOMMAID_REQUIRED', '주담당 룸메이드를 선택하세요.');
+        }
+        if (!['SOLO', 'PAIR', 'PAIR_TRAINING'].includes(assignmentType)) {
+          throw httpError(400, 'INVALID_ASSIGNMENT_TYPE', '지원하지 않는 룸메이드 배정유형입니다.');
+        }
+        if (pairAssignment && !secondaryEmployeeNo) {
+          throw httpError(400, 'SECONDARY_ROOMMAID_REQUIRED', '보조 룸메이드를 선택하세요.');
+        }
+        if (secondaryEmployeeNo && primaryEmployeeNo === secondaryEmployeeNo) {
+          throw httpError(400, 'DUPLICATE_ROOMMAID', '주담당과 보조 룸메이드는 서로 달라야 합니다.');
+        }
+
+        const employeeNos = pairAssignment
+          ? [primaryEmployeeNo, secondaryEmployeeNo]
+          : [primaryEmployeeNo];
+        const staffResult = await client.query(
+          `select employee_no,name,role,enabled
+             from public.nova_users
+            where employee_no = any($1::text[])`,
+          [employeeNos]
+        );
+        const staffByNo = Object.fromEntries(
+          staffResult.rows.map(item => [String(item.employee_no || ''), item])
+        );
+        const primaryUser = staffByNo[primaryEmployeeNo] || null;
+        const secondaryUser = secondaryEmployeeNo ? (staffByNo[secondaryEmployeeNo] || null) : null;
+
+        if (!primaryUser || !primaryUser.enabled || String(primaryUser.role || '').toUpperCase() !== 'ROOMMAID') {
+          throw httpError(400, 'ROOMMAID_NOT_AVAILABLE', '주담당 룸메이드 정보를 확인할 수 없습니다.');
+        }
+        if (pairAssignment && (!secondaryUser || !secondaryUser.enabled || String(secondaryUser.role || '').toUpperCase() !== 'ROOMMAID')) {
+          throw httpError(400, 'ROOMMAID_NOT_AVAILABLE', '보조 룸메이드 정보를 확인할 수 없습니다.');
+        }
+
+        const sameAssignment = String(room.cleaning_status || '').toUpperCase() === 'ASSIGNED'
+          && String(room.cleaning_type || 'NORMAL').toUpperCase() === cleaningType
+          && String(room.assignment_type || 'SOLO').toUpperCase() === assignmentType
+          && String(room.roommaid_employee_no || '') === primaryEmployeeNo
+          && String(room.secondary_roommaid_employee_no || '') === secondaryEmployeeNo;
+
+        if (sameAssignment) {
+          const response = {
+            ok: true,
+            action,
+            requestId,
+            idempotent: true,
+            room: roomDto(room),
+            version: Number(room.version || 0),
+            timing: { totalMs: Date.now() - startedAt }
+          };
+          await client.query(
+            `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+            [requestId, JSON.stringify(response)]
+          );
+          await client.query('commit');
+          return res.json(response);
+        }
+
+        const before = String(room.cleaning_status || '');
+        const updated = await client.query(
+          `update public.nova_rooms_current
+              set cleaning_status='ASSIGNED',
+                  cleaning_type=$4,
+                  assignment_type=$5,
+                  roommaid_employee_no=$6,
+                  secondary_roommaid_employee_no=nullif($7,''),
+                  version=version+1,
+                  updated_by=$8,
+                  updated_at=now()
+            where business_date=$1 and site=$2 and room_no=$3
+            returning *`,
+          [
+            businessDate,
+            site,
+            roomNo,
+            cleaningType,
+            assignmentType,
+            primaryEmployeeNo,
+            secondaryEmployeeNo,
+            user.employee_no
+          ]
+        );
+        const nextRoom = updated.rows[0];
+
+        const detail = {
+          source: 'NOVA_REALTIME',
+          role: user.role,
+          cleaningType,
+          assignmentType,
+          primaryEmployeeNo,
+          primaryName: String(primaryUser.name || ''),
+          secondaryEmployeeNo,
+          secondaryName: secondaryUser ? String(secondaryUser.name || '') : ''
+        };
+
+        await client.query(
+          `insert into public.nova_room_events(
+            request_id,business_date,site,room_no,action,before_status,after_status,
+            employee_no,room_version,detail
+          ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+          [
+            requestId,
+            businessDate,
+            site,
+            roomNo,
+            action,
+            before,
+            'ASSIGNED',
+            user.employee_no,
+            nextRoom.version,
+            JSON.stringify(detail)
+          ]
+        );
+
+        const response = {
+          ok: true,
+          action,
+          requestId,
+          room: roomDto(nextRoom),
+          version: Number(nextRoom.version || 0),
+          timing: { totalMs: Date.now() - startedAt }
+        };
+        await client.query(
+          `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+          [requestId, JSON.stringify(response)]
+        );
+        await client.query('commit');
+        return res.json(response);
+      }
+
 
       if (
         !canCleanRoom(
