@@ -1644,6 +1644,12 @@ app.get(
                 ? row.event_time.toISOString()
                 : String(row.event_time || '')
           };
+          if (action === 'UPDATE_OPERATION_FLAGS') {
+            delete room.cleaningStatus;
+            room.preassigned = detail.preassigned === true;
+            room.vip = detail.vip === true;
+            room.importantRoom = detail.importantRoom === true;
+          }
           if (action === 'UPDATE_ROOM_OPERATION_STATUS') {
             delete room.cleaningStatus;
             room.operationalStatus = String(
@@ -1786,7 +1792,7 @@ app.post(
       }
 
       if (
-        !['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'CHANGE_ROOM_STATUS', 'UPDATE_ROOM_OPERATION_STATUS'].includes(action)
+        !['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'CHANGE_ROOM_STATUS', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS'].includes(action)
       ) {
         throw httpError(
           400,
@@ -2044,6 +2050,80 @@ app.post(
         return res.json(response);
       }
 
+
+      if (action === 'UPDATE_OPERATION_FLAGS') {
+        if (!['ADMIN', 'ORDER'].includes(user.role)) {
+          throw httpError(403, 'FORBIDDEN', '객실 운영표시 변경 권한이 없습니다.');
+        }
+
+        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
+          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
+            currentRoom: roomDto(room)
+          });
+        }
+
+        const preassigned = body.preassigned === true;
+        const vip = body.vip === true;
+        const importantRoom = body.importantRoom === true;
+
+        const updated = await client.query(
+          `update public.nova_rooms_current
+              set version=version+1,
+                  updated_by=$4,
+                  updated_at=now()
+            where business_date=$1 and site=$2 and room_no=$3
+            returning *`,
+          [businessDate, site, roomNo, user.employee_no]
+        );
+        const nextRoom = updated.rows[0];
+        const detail = {
+          source: 'NOVA_REALTIME',
+          role: user.role,
+          preassigned,
+          vip,
+          importantRoom
+        };
+
+        await client.query(
+          `insert into public.nova_room_events(
+            request_id,business_date,site,room_no,action,before_status,after_status,
+            employee_no,room_version,detail
+          ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+          [
+            requestId,
+            businessDate,
+            site,
+            roomNo,
+            action,
+            '',
+            '',
+            user.employee_no,
+            nextRoom.version,
+            JSON.stringify(detail)
+          ]
+        );
+
+        const responseRoom = {
+          ...roomDto(nextRoom),
+          preassigned,
+          vip,
+          importantRoom
+        };
+        const response = {
+          ok: true,
+          action,
+          requestId,
+          room: responseRoom,
+          version: Number(nextRoom.version || 0),
+          timing: { totalMs: Date.now() - startedAt }
+        };
+        await client.query(
+          `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+          [requestId, JSON.stringify(response)]
+        );
+        await client.query('commit');
+        return res.json(response);
+      }
 
       if (action === 'UPDATE_ROOM_OPERATION_STATUS') {
         if (!['ADMIN', 'ORDER'].includes(user.role)) {
