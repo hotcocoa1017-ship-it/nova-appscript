@@ -257,6 +257,11 @@
     if (!legacyRoom) return realtimeRoom ? Object.assign({}, realtimeRoom) : legacyRoom;
     if (!realtimeRoom) return legacyRoom;
     const merged = Object.assign({}, legacyRoom);
+    // Sheet snapshot version and Realtime DB version are separate domains.
+    // Preserve the Sheet version before Realtime fields overwrite room.version.
+    if (!Object.prototype.hasOwnProperty.call(merged, '__sheetVersion')) {
+      merged.__sheetVersion = Number(legacyRoom.version || 0);
+    }
     NOVA_REALTIME_ROOM_FIELDS_.forEach(key => {
       if (Object.prototype.hasOwnProperty.call(realtimeRoom, key)) merged[key] = realtimeRoom[key];
     });
@@ -4626,7 +4631,11 @@
       vip: action === 'UPDATE_OPERATION_FLAGS' ? Boolean($('roomVipFlag')?.checked) : Boolean(room.vip),
       importantRoom: action === 'UPDATE_OPERATION_FLAGS' ? Boolean($('roomImportantFlag')?.checked) : Boolean(room.importantRoom),
       operationalStatus: action === 'UPDATE_ROOM_OPERATION_STATUS' ? normalizeIndicatorRoomOperationalStatus_(forcedOperationalStatus) : normalizeIndicatorRoomOperationalStatus_(room.operationalStatus),
-      expectedVersion: Number(room.version || 0)
+      // CLEANING_RESET remains Sheet-owned because it cancels the existing completion/history records.
+      // Realtime room.version is a DB version, so use the preserved Sheet version only for reset.
+      expectedVersion: action === 'CLEANING_RESET'
+        ? Number(room.__sheetVersion ?? room.version ?? 0)
+        : Number(room.version || 0)
     };
     const validationError = validateRoomActionPayload_(payload);
     if (validationError) {
