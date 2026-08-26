@@ -813,7 +813,23 @@ function buildRoommaidCloseStockDiagnostic_(businessDate, site, currentRows, his
   const describe = roomNo => {
     const initialStatus = normalizeRoommaidCloseRoomStatus_(initialMap[roomNo] || '', normalizer) || '없음';
     const currentStatus = normalizeRoommaidCloseRoomStatus_(currentByRoom[roomNo] && currentByRoom[roomNo]['객실상태'], normalizer) || '없음';
-    return `${roomNo}(업로드:${initialStatus}→현재:${currentStatus})`;
+    const roomHistory = closeWorkloadHistorySequence_(workloadHistoryRows, completionEvents)
+      .filter(item => normalizeRoomNo_(item && item.data && item.data['객실번호']) === roomNo)
+      .map(item => item.kind === 'STATUS'
+        ? `상태:${normalizeRoommaidCloseRoomStatus_(item.detail && item.detail.previousRoomStatus || '', normalizer) || '?'}>${normalizeRoommaidCloseRoomStatus_(item.detail && item.detail.roomStatus || '', normalizer) || '?'}`
+        : `완료:${normalizeRoommaidCloseRoomStatus_(item.detail && (item.detail.sourceRoomStatus || item.detail.previousRoomStatus || item.detail.roomStatus) || '', normalizer) || '?'}`);
+    const roomCycles = (workloadEvents || [])
+      .filter(event => normalizeRoomNo_(event && event.roomNo) === roomNo)
+      .map(event => [
+        event.initialStock ? '전일재고' : '',
+        event.manualInitialStock ? '수동재고' : '',
+        event.departure ? '퇴실' : '',
+        event.completed ? '완료' : '',
+        event.canceled ? `취소:${event.cancelReason || '?'}` : '',
+        `bucket:${String(event.bucket || 'BUILDING')}`,
+        `source:${String(event.sourceStatus || '')}`
+      ].filter(Boolean).join(','));
+    return `${roomNo}(업로드:${initialStatus}→현재:${currentStatus}) · 이력[${roomHistory.join('→') || '없음'}] · 주기[${roomCycles.join(' / ') || '없음'}]`;
   };
 
   const message = mismatches.length
