@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# NOVA production automation bootstrap: validation/deploy pipeline verified configuration marker.
 from pathlib import Path
 import json
 import re
