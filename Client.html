@@ -3963,7 +3963,14 @@
             ? `${realtime.order.roomNo}호 · ${realtime.order.assignedName}님에게 자동 배정했습니다.`
             : `${realtime.order.roomNo}호 미배정 오더를 등록했습니다.`);
           setSyncStatus(`${realtime.order.roomNo}호 오더 DB 저장 완료 · ${elapsed}ms`);
-          return;
+          const assignedDisplay = String(realtime.order.assignedName || realtime.order.assignedEmployeeNo || '').trim();
+      const registrationTimingMessage = realtime.order.autoAssigned
+        ? `${realtime.order.roomNo}호 · ${assignedDisplay || '하우스맨'}님 자동배정 완료 · Realtime ${elapsed}ms`
+        : realtime.order.assignedEmployeeNo
+          ? `${realtime.order.roomNo}호 · ${assignedDisplay || '하우스맨'}님 배정완료 · Realtime ${elapsed}ms`
+          : `${realtime.order.roomNo}호 · 오더 등록 완료 · Realtime ${elapsed}ms`;
+      showToast(registrationTimingMessage);
+      return;
         } catch (realtimeError) {
           console.warn('[NOVA Realtime] 하우스맨 등록은 기존 저장경로로 자동 전환합니다.', realtimeError);
         }
