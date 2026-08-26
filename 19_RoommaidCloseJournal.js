@@ -72,6 +72,10 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
     const useSaved = Boolean(saved && !isStale && savedHasJournal && !hasAttendanceOverride);
     const selected = useSaved ? saved : liveSnapshot;
     const journal = selected.roommaidCloseJournal || liveSnapshot.roommaidCloseJournal;
+    const stockDiagnostic = buildRoommaidCloseStockDiagnostic_(businessDate, preferredSite, currentRows, historyRows);
+    const baseWarning = journal && journal.initialStatusDetailAvailable
+      ? ''
+      : '해당 업무일자의 객실현황 업로드가 RC6.4 이전에 적용되어 최초 재고·퇴실의 객실별 상세가 없습니다. 현재 상태를 기준으로 보정 표시됩니다.';
 
     return {
       ok: true,
@@ -87,9 +91,8 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
       attendanceEmployeeNos: uniqueEmployeeNos_(journal && journal.attendanceEmployeeNos || attendanceEmployeeNos),
       attendanceOptions: buildRoommaidCloseAttendanceOptions_(users, preferredSite, inferredAttendance, journal && journal.attendanceEmployeeNos || attendanceEmployeeNos, employmentIndex),
       journal,
-      warning: journal && journal.initialStatusDetailAvailable
-        ? ''
-        : '해당 업무일자의 객실현황 업로드가 RC6.4 이전에 적용되어 최초 재고·퇴실의 객실별 상세가 없습니다. 현재 상태를 기준으로 보정 표시됩니다.',
+      warning: [baseWarning, stockDiagnostic.message].filter(Boolean).join(' / '),
+      stockDiagnostic,
       message: saved
         ? (isStale ? '마감 이후 객실 또는 정비실적이 수정되었습니다. 수정 후 재마감이 필요합니다.' : '저장된 마감자료입니다.')
         : '실시간 미마감 자료입니다.'
@@ -743,6 +746,85 @@ function roommaidCloseTimestampMs_(value) { // (NOVA 일시 문자열 밀리초 
   if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6])).getTime();
   const parsed = new Date(text).getTime();
   return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function buildRoommaidCloseStockDiagnostic_(businessDate, site, currentRows, historyRows) { // (인디게이터 재고 vs 마감 전일재고 객실단위 진단)
+  const liveCurrentRows = latestRoommaidCloseCurrentRows_(currentRows || [], site);
+  const master = readRoomMasterIndexForClose_(site);
+  const upload = latestUploadSummaryForClose_(historyRows || []);
+  const initialMap = buildInitialRoomStatusMapForClose_(upload, liveCurrentRows);
+  const completionEvents = cleaningCompletionEventsForClose_(historyRows || []);
+  const workloadHistoryRows = roommaidCloseHistoryAfterLatestUpload_(historyRows || [], upload);
+  const workloadEvents = buildRoommaidCloseWorkloadEvents_(
+    initialMap, workloadHistoryRows, completionEvents, master, liveCurrentRows, site
+  );
+  const normalizer = buildRoommaidCloseRoomStatusNormalizer_();
+
+  const currentByRoom = {};
+  liveCurrentRows.forEach(data => {
+    const roomNo = normalizeRoomNo_(data && data['객실번호']);
+    if (roomNo) currentByRoom[roomNo] = data;
+  });
+
+  const indicatorByBuilding = {};
+  liveCurrentRows.forEach(data => {
+    const roomNo = normalizeRoomNo_(data && data['객실번호']);
+    if (!roomNo) return;
+    const status = normalizeRoommaidCloseRoomStatus_(data && data['객실상태'], normalizer);
+    // 통합 인디게이터의 '재고' 필터 숫자는 원본 roomStatus=STOCK 기준이다.
+    if (status !== 'STOCK') return;
+    const building = normalizeRoomBuilding_(data && data['동'], roomNo) || roomCloseMeta_(master, liveCurrentRows, site, roomNo).building || '미지정';
+    if (!indicatorByBuilding[building]) indicatorByBuilding[building] = new Set();
+    indicatorByBuilding[building].add(roomNo);
+  });
+
+  const closeByBuilding = {};
+  (workloadEvents || []).forEach(event => {
+    if (!event || !event.initialStock || event.canceled) return;
+    const bucket = String(event.bucket || 'BUILDING').trim().toUpperCase();
+    // 룸메이드 마감표의 동별 전일재고 칸에는 일반재고만 들어가고 RC/HU는 별도 칸이다.
+    if (bucket !== 'BUILDING') return;
+    const roomNo = normalizeRoomNo_(event.roomNo);
+    if (!roomNo) return;
+    const meta = roomCloseMeta_(master, liveCurrentRows, site, roomNo);
+    const building = String(event.building || meta.building || '미지정').trim();
+    if (!closeByBuilding[building]) closeByBuilding[building] = new Set();
+    closeByBuilding[building].add(roomNo);
+  });
+
+  const buildings = Array.from(new Set(Object.keys(indicatorByBuilding).concat(Object.keys(closeByBuilding))))
+    .sort(compareDailyCloseBuilding_);
+  const mismatches = [];
+  buildings.forEach(building => {
+    const indicatorRooms = indicatorByBuilding[building] || new Set();
+    const closeRooms = closeByBuilding[building] || new Set();
+    if (indicatorRooms.size === closeRooms.size && [...indicatorRooms].every(roomNo => closeRooms.has(roomNo))) return;
+    const indicatorOnly = [...indicatorRooms].filter(roomNo => !closeRooms.has(roomNo)).sort();
+    const closeOnly = [...closeRooms].filter(roomNo => !indicatorRooms.has(roomNo)).sort();
+    mismatches.push({
+      building,
+      indicatorCount: indicatorRooms.size,
+      closeCount: closeRooms.size,
+      indicatorOnly,
+      closeOnly
+    });
+  });
+
+  const describe = roomNo => {
+    const initialStatus = normalizeRoommaidCloseRoomStatus_(initialMap[roomNo] || '', normalizer) || '없음';
+    const currentStatus = normalizeRoommaidCloseRoomStatus_(currentByRoom[roomNo] && currentByRoom[roomNo]['객실상태'], normalizer) || '없음';
+    return `${roomNo}(업로드:${initialStatus}→현재:${currentStatus})`;
+  };
+
+  const message = mismatches.length
+    ? `재고정합 진단 ${mismatches.map(item => {
+        const extra = item.indicatorOnly.length ? ` · 인디게이터에만 ${item.indicatorOnly.map(describe).join(',')}` : '';
+        const missing = item.closeOnly.length ? ` · 마감에만 ${item.closeOnly.map(describe).join(',')}` : '';
+        return `${item.building} 인디게이터 ${item.indicatorCount} / 마감 전일재고 ${item.closeCount}${extra}${missing}`;
+      }).join(' | ')}`
+    : '';
+
+  return { businessDate, site, mismatches, message };
 }
 
 function buildRoommaidCloseJournal_(businessDate, site, currentRows, historyRows, users, attendanceEmployeeNos) { // (현재객실현황 최신 1행·현재 분류 기준 마감일지 집계)
