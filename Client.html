@@ -1350,10 +1350,17 @@
         B: [...(result.assignments?.B || [])],
         C: [...(result.assignments?.C || [])]
       };
-      const selectedZoneEmployee = state.shifts.zoneDraft.employeeNo;
+      // 담당동 저장값은 브라우저 세션이 아니라 서버 저장자료를 원본으로 복원합니다.
+      // 재로그인처럼 sessionStorage 편집대상이 사라진 경우에도 저장된 담당동이 있는
+      // 출근직원을 자동 선택해 카드가 즉시 실제 저장상태(검정색)로 표시되게 합니다.
+      const attendanceStaff = result.attendanceStaff || [];
+      const requestedZoneEmployee = String(state.shifts.zoneDraft.employeeNo || '').trim();
+      const selectedZoneEmployee = requestedZoneEmployee && attendanceStaff.some(item => item.employeeNo === requestedZoneEmployee)
+        ? requestedZoneEmployee
+        : String(attendanceStaff.find(item => result.zoneAssignments?.[item.employeeNo])?.employeeNo || '').trim();
       const selectedZone = selectedZoneEmployee ? result.zoneAssignments?.[selectedZoneEmployee] : null;
       state.shifts.zoneDraft = {
-        employeeNo: selectedZoneEmployee && (result.attendanceStaff || []).some(item => item.employeeNo === selectedZoneEmployee) ? selectedZoneEmployee : '',
+        employeeNo: selectedZoneEmployee,
         buildings: selectedZone ? [...(selectedZone.buildings || [])] : []
       };
       persistShiftManagementContext_();
