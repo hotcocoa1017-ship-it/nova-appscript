@@ -3959,17 +3959,16 @@
           void mirrorRealtimeHousemanOrderToSheet_(realtime.mirrorPayload);
           resetOrderForm(true);
           const elapsed = Math.round(performance.now() - clickedAt);
-          showToast(realtime.order.assignedName
-            ? `${realtime.order.roomNo}호 · ${realtime.order.assignedName}님에게 자동 배정했습니다.`
-            : `${realtime.order.roomNo}호 미배정 오더를 등록했습니다.`);
-          setSyncStatus(`${realtime.order.roomNo}호 오더 DB 저장 완료 · ${elapsed}ms`);
           const assignedDisplay = String(realtime.order.assignedName || realtime.order.assignedEmployeeNo || '').trim();
-      const registrationTimingMessage = realtime.order.autoAssigned
-        ? `${realtime.order.roomNo}호 · ${assignedDisplay || '하우스맨'}님 자동배정 완료 · Realtime ${elapsed}ms`
-        : realtime.order.assignedEmployeeNo
-          ? `${realtime.order.roomNo}호 · ${assignedDisplay || '하우스맨'}님 배정완료 · Realtime ${elapsed}ms`
-          : `${realtime.order.roomNo}호 · 오더 등록 완료 · Realtime ${elapsed}ms`;
-      showToast(registrationTimingMessage);
+          const realtimeServerMs = Math.max(0, Number(realtime.timing?.totalMs || 0));
+          const housemanCreatePathLabel = `Realtime ${elapsed}ms${realtimeServerMs > 0 ? ` · 서버 ${realtimeServerMs}ms` : ''}`;
+          const registrationTimingMessage = realtime.order.autoAssigned
+            ? `${realtime.order.roomNo}호 · ${assignedDisplay || '하우스맨'}님 자동배정 완료 · ${housemanCreatePathLabel}`
+            : realtime.order.assignedEmployeeNo
+              ? `${realtime.order.roomNo}호 · ${assignedDisplay || '하우스맨'}님 배정완료 · ${housemanCreatePathLabel}`
+              : `${realtime.order.roomNo}호 · 오더 등록 완료 · ${housemanCreatePathLabel}`;
+          showToast(registrationTimingMessage);
+          setSyncStatus(`${realtime.order.roomNo}호 오더 DB 저장 완료 · ${housemanCreatePathLabel}`);
       return;
         } catch (realtimeError) {
           console.warn('[NOVA Realtime] 하우스맨 등록은 기존 저장경로로 자동 전환합니다.', realtimeError);
@@ -3981,9 +3980,13 @@
       if (!result?.ok) throw new Error(result?.message || '오더 등록에 실패했습니다.');
       replacePendingOrderLocal_(pendingOrder.orderId, result.order, result.version);
       resetOrderForm(true);
+      const legacyElapsed = Math.round(performance.now() - clickedAt);
+      const legacyServerMs = Math.max(0, Number(result.timing?.totalMs || result.performance?.elapsedMs || 0));
+      const legacyPathLabel = `Apps Script ${legacyElapsed}ms${legacyServerMs > 0 ? ` · 서버 ${legacyServerMs}ms` : ''}`;
       showToast(result.order.assignedName
-        ? `${result.order.roomNo}호 · ${result.order.assignedName}님에게 자동 배정했습니다.`
-        : `${result.order.roomNo}호 미배정 오더를 등록했습니다.`);
+        ? `${result.order.roomNo}호 · ${result.order.assignedName}님 자동배정 완료 · ${legacyPathLabel}`
+        : `${result.order.roomNo}호 미배정 오더 등록 완료 · ${legacyPathLabel}`);
+      setSyncStatus(`${result.order.roomNo}호 오더 저장 완료 · ${legacyPathLabel}`);
       const telegram = result.telegram || {};
       if (telegram.queued && telegram.queueRecordId) {
         void callServer('dispatchHousemanOrderTelegramFast', state.token, {
