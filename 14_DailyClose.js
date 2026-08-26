@@ -114,13 +114,24 @@ function buildDailyCloseMonthlyOverview_(request) { // (월별 저장 마감자�
 function saveDailyCloseSnapshotForSite_(businessDate, site, user, preloaded) { // (사업장별 마감 스냅샷 저장)
   const closedAt = nowText_();
   const preload = preloaded || {};
+  const currentRows = Array.isArray(preload.currentRows)
+    ? preload.currentRows
+    : readCurrentRowsForClose_(businessDate, site);
+  const historyRows = Array.isArray(preload.historyRows)
+    ? preload.historyRows
+    : readHistoryRowsForClose_(businessDate, site);
+
+  // 저장 전에 현재객실·업로드기준·정비주기 정합을 강제 검증한다.
+  // 숫자가 맞지 않는 상태를 그대로 DAILY_CLOSE로 확정 저장하지 않는다.
+  validateRoommaidCloseIntegrityForSave_(businessDate, site, currentRows, historyRows);
+
   const snapshot = buildDailyCloseSnapshot_(businessDate, site, {
     closedBy: user.employeeNo,
     closedByName: user.name,
     closedAt,
     includeRooms: true,
-    currentRows: preload.currentRows,
-    historyRows: preload.historyRows,
+    currentRows,
+    historyRows,
     attendanceEmployeeNos: preload.attendanceEmployeeNos
   });
   if (!snapshot.totalRooms) throw new Error(`${businessDate} ${site} 현재객실현황이 없습니다.`);

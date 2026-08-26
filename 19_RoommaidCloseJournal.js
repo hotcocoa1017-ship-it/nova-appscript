@@ -3,7 +3,7 @@
  * 현재객실현황·업무이력·객실마스터를 기준으로 마감표와 개인별 타입 실적을 구성합니다.
  */
 const NOVA_ROOMMAID_CLOSE = Object.freeze({
-  SCHEMA_VERSION: 26,
+  SCHEMA_VERSION: 27,
   DEFAULT_MAINTENANCE_TYPES: Object.freeze(['F', 'T', 'R', 'G']),
   REPORT_MAINTENANCE_TYPES: Object.freeze(['F', 'T', 'R', 'G']),
   CONVERSION_GROUPS: Object.freeze({
@@ -1260,9 +1260,19 @@ function buildRoommaidCloseWorkloadEvents_(initialMap, historyRows, completionEv
         // 아직 청소완료되지 않은 재고/퇴실 정비대상에서 일반↔R/C↔H/U 또는 재고→퇴실로 바뀌면
         // 신규 작업을 더하지 않고 같은 정비주기의 최종 분류만 변경한다.
         if (active && !active.completed && !active.canceled && (active.initialStock || active.departure)) {
-          active.initialStock = false;
-          active.manualInitialStock = false;
-          active.departure = true;
+          const openingInitialStock = Boolean(active.initialStock && !active.manualInitialStock);
+          if (openingInitialStock) {
+            // 최종 객실현황 업로드에서 시작한 전일재고는 당일 퇴실상태로 바뀌어도
+            // 같은 미완료 정비주기 동안 전일재고 원천분류를 유지한다.
+            // 그래야 통합 인디게이터/업로드의 전일재고와 마감일지 전일재고가 어긋나지 않는다.
+            active.initialStock = true;
+            active.departure = false;
+          } else {
+            // 당일 수동 재고 또는 기존 퇴실주기는 기존 동작대로 최종 퇴실분류를 따른다.
+            active.initialStock = false;
+            active.manualInitialStock = false;
+            active.departure = true;
+          }
           active.bucket = nextBucket;
           active.sourceStatus = nextStatus;
           active.reclassifiedVersion = item.version;
