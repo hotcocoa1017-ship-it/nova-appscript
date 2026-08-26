@@ -1,0 +1,69 @@
+name: NOVA Automated Source Patch
+
+on:
+  push:
+    branches:
+      - perf/room-actions-v16
+    paths:
+      - 'patches/**/*.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nova-source-autopatch
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: perf/room-actions-v16
+          fetch-depth: 2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply changed patch scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          BEFORE='${{ github.event.before }}'
+          AFTER='${{ github.sha }}'
+          PATCH_LIST="$(mktemp)"
+          if [[ -n "$BEFORE" && "$BEFORE" != '0000000000000000000000000000000000000000' ]]; then
+            git diff --name-only "$BEFORE" "$AFTER" -- 'patches/**/*.py' 'patches/*.py' > "$PATCH_LIST"
+          else
+            git ls-files 'patches/**/*.py' 'patches/*.py' > "$PATCH_LIST"
+          fi
+          if [[ ! -s "$PATCH_LIST" ]]; then
+            echo 'No patch scripts found.'
+            exit 0
+          fi
+          while IFS= read -r patch; do
+            [[ -n "$patch" ]] || continue
+            echo "Applying $patch"
+            python "$patch"
+          done < "$PATCH_LIST"
+
+      - name: Validate NOVA release guards
+        run: python tools/validate_nova_release.py
+
+      - name: Commit patched source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- '*.js' '*.html' 'appsscript.json' '.clasp.json'
+          if git diff --cached --quiet; then
+            echo 'No source changes produced by patch.'
+            exit 0
+          fi
+          git commit -m "Auto patch NOVA source from ${{ github.sha }}"
+          git push origin HEAD:perf/room-actions-v16
