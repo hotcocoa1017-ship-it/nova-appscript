@@ -2072,6 +2072,15 @@ app.post(
           });
         }
 
+        const roomStatus = String(room.room_status || '').trim().toUpperCase();
+        const resetAllowedRoomStatuses = new Set([
+          'CHECKED_OUT', 'CHECKED_OUT_RC', 'CHECKED_OUT_HU',
+          'STOCK', 'STOCK_RC', 'STOCK_HU'
+        ]);
+        if (!resetAllowedRoomStatuses.has(roomStatus)) {
+          throw httpError(400, 'INVALID_STATE', `${roomNo}호는 청소초기화 대상 객실상태가 아닙니다.`);
+        }
+
         const previousCleaningStatus = String(room.cleaning_status || '').trim().toUpperCase();
         const resetAllowedStatuses = new Set(['COMPLETED', 'QM_WAITING', 'QM_CHECKING', 'QM_COMPLETED']);
         if (!resetAllowedStatuses.has(previousCleaningStatus)) {
