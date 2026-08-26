@@ -4169,19 +4169,42 @@
       showToast('오더는 저장되었습니다. 기존 이력 동기화가 완료된 뒤 처리할 수 있습니다.');
       return;
     }
-    const payload = { orderId: order.orderId, action, expectedVersion: Number(order.version || 0) };
+    const payload = {
+      orderId: order.orderId,
+      action,
+      expectedVersion: Number(order.version || 0),
+      rowNumber: Number(order.rowNumber || 0)
+    };
     if (action === 'ASSIGN') payload.employeeNo = $('detailAssignee').value;
     if (action === 'UNABLE') {
       const reason = window.prompt('처리불가 사유를 입력하세요.');
       if (reason === null) return;
       payload.reason = reason.trim();
     }
+    const actionStartedAt = performance.now();
     try {
       const result = await callServer('updateHousemanOrder', state.token, payload);
       if (!result?.ok) throw new Error(result?.message || '오더를 변경하지 못했습니다.');
       upsertOrderLocal_(result.order, result.version);
       closeModal();
-      showToast(`${result.order.roomNo}호 오더: ${result.order.statusLabel}`);
+
+      if (action === 'ASSIGN') {
+        const elapsed = Math.round(performance.now() - actionStartedAt);
+        const serverElapsed = Number(result.performance?.elapsedMs || 0);
+        const telegram = result.telegram || {};
+        showToast(`${result.order.roomNo}호 배정 완료 · ${elapsed}ms${serverElapsed ? ` · 서버 ${serverElapsed}ms` : ''}`);
+        setSyncStatus(`하우스맨 배정 완료 · ${elapsed}ms${serverElapsed ? ` · 서버 ${serverElapsed}ms` : ''}`);
+        if (telegram.queued && telegram.queueRecordId) {
+          void callServer('dispatchHousemanOrderTelegramFast', state.token, {
+            recordId: telegram.queueRecordId,
+            rowNumber: Number(telegram.queueRowNumber || 0)
+          }).catch(error => {
+            console.warn('하우스맨 배정 텔레그램 즉시발송은 큐 재시도로 전환됩니다.', error?.message || error);
+          });
+        }
+      } else {
+        showToast(`${result.order.roomNo}호 오더: ${result.order.statusLabel}`);
+      }
     } catch (error) {
       showToast(error?.message || '오더 처리 오류');
     }

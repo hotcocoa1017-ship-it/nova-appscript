@@ -943,25 +943,62 @@ function updateHousemanOrder(token, payload) { // (하우스맨 오더 상태·�
           statusCodeMap
         );
 
-      appendHousemanAudit_(
-        order,
-        action,
-        user.employeeNo,
-        version,
-        auditDetail
-      );
+      let telegramDispatch = {
+        queued: false,
+        queueRecordId: '',
+        queueRowNumber: 0,
+        reminderScheduled: false,
+        reminderRecordId: ''
+      };
 
       if (action === 'ASSIGN') {
-        queueHousemanOrderTelegram_(
+        // 관리자 배정은 감사 + Telegram 큐를 한 번에 기록하고 즉시 응답합니다.
+        // Telegram 네트워크 발송은 응답 후 dispatchHousemanOrderTelegramFast에서 처리합니다.
+        const auxStartRow = sheet.getLastRow() + 1;
+        const auditRow = buildHousemanAuditRow_(
+          sheet,
           order,
-          action
+          action,
+          user.employeeNo,
+          version,
+          auditDetail
+        );
+        const telegramPrepared = prepareHousemanOrderFastTelegramRows_(
+          sheet,
+          order,
+          action,
+          { firstRowNumber: auxStartRow + 1 }
+        );
+        const auxRows = [auditRow].concat(telegramPrepared.rows || []);
+        ensureSheetRowCapacity_(sheet, auxStartRow + auxRows.length - 1);
+        sheet.getRange(
+          auxStartRow,
+          1,
+          auxRows.length,
+          sheet.getLastColumn()
+        ).setValues(auxRows);
+        telegramDispatch = {
+          queued: Boolean(telegramPrepared.queueRecordId),
+          queueRecordId: telegramPrepared.queueRecordId || '',
+          queueRowNumber: Number(telegramPrepared.queueRowNumber || 0),
+          reminderScheduled: Boolean(telegramPrepared.reminderRecordId),
+          reminderRecordId: telegramPrepared.reminderRecordId || ''
+        };
+      } else {
+        appendHousemanAudit_(
+          order,
+          action,
+          user.employeeNo,
+          version,
+          auditDetail
         );
       }
 
       return {
         ok: true,
         version,
-        order
+        order,
+        telegram: telegramDispatch
       };
 
     } finally {
