@@ -1,0 +1,175 @@
+name: NOVA Apps Script Validate and Deploy
+
+on:
+  push:
+    branches:
+      - perf/room-actions-v16
+    paths:
+      - '*.js'
+      - '*.html'
+      - 'appsscript.json'
+      - '.clasp.json'
+      - 'tools/validate_nova_release.py'
+  pull_request:
+    branches:
+      - perf/room-actions-v16
+    paths:
+      - '*.js'
+      - '*.html'
+      - 'appsscript.json'
+      - '.clasp.json'
+      - 'tools/validate_nova_release.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-appsscript-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate production source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run NOVA release guard
+        run: python3 tools/validate_nova_release.py
+
+      - name: Verify only tracked production source is considered
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .clasp.json
+          test -f appsscript.json
+          test -f Client.html
+          test -f 06_Indicator.js
+          test -f 08_Telegram.js
+          test -f 19_RoommaidCloseJournal.js
+          echo 'Production structure: PASS'
+
+  deploy:
+    name: Deploy existing Apps Script web app
+    needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check deployment credentials
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CLASPRC_JSON}" ]]; then
+            echo 'Missing GitHub secret: CLASPRC_JSON' >&2
+            exit 1
+          fi
+          if [[ -z "${DEPLOYMENT_ID}" ]]; then
+            echo 'Missing GitHub secret: APPS_SCRIPT_DEPLOYMENT_ID' >&2
+            exit 1
+          fi
+
+      - name: Install clasp
+        run: npm install --global @google/clasp@2.4.2
+
+      - name: Configure clasp authentication
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "${CLASPRC_JSON}" > "${HOME}/.clasprc.json"
+          chmod 600 "${HOME}/.clasprc.json"
+          clasp status >/dev/null
+
+      - name: Push validated source to Apps Script HEAD
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp push -f
+
+      - name: Create immutable Apps Script version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT="$(clasp version "GitHub ${GITHUB_SHA::7}")"
+          echo "${OUTPUT}"
+          VERSION_NUMBER="$(printf '%s\n' "${OUTPUT}" | awk '/Created version/{print $3; exit}')"
+          if [[ -z "${VERSION_NUMBER}" || ! "${VERSION_NUMBER}" =~ ^[0-9]+$ ]]; then
+            echo 'Unable to parse Apps Script version number.' >&2
+            exit 1
+          fi
+          echo "number=${VERSION_NUMBER}" >> "${GITHUB_OUTPUT}"
+
+      - name: Update existing production deployment
+        env:
+          DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
+          VERSION_NUMBER: ${{ steps.version.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp deploy \
+            --deploymentId "${DEPLOYMENT_ID}" \
+            --versionNumber "${VERSION_NUMBER}" \
+            --description "GitHub auto deploy ${GITHUB_SHA::7}"
+
+      - name: Verify deployment points to new version
+        env:
+          DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
+          VERSION_NUMBER: ${{ steps.version.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPLOYMENTS="$(clasp deployments)"
+          echo "${DEPLOYMENTS}"
+          printf '%s\n' "${DEPLOYMENTS}" | grep -F "${DEPLOYMENT_ID} @${VERSION_NUMBER}" >/dev/null
+          echo "Deployment version verification: PASS (@${VERSION_NUMBER})"
+
+      - name: Production web app smoke check
+        env:
+          DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://script.google.com/macros/s/${DEPLOYMENT_ID}/exec"
+          STATUS="$(curl -L -sS -o /tmp/nova-webapp.html -w '%{http_code}' --max-time 30 "${URL}")"
+          echo "Production URL HTTP status: ${STATUS}"
+          if [[ ! "${STATUS}" =~ ^[23][0-9][0-9]$ ]]; then
+            echo "Production smoke check failed: HTTP ${STATUS}" >&2
+            exit 1
+          fi
+          echo 'Production smoke check: PASS'
+
+      - name: Deployment summary
+        env:
+          VERSION_NUMBER: ${{ steps.version.outputs.number }}
+        run: |
+          echo "### NOVA Apps Script deployment" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Validation: PASS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Apps Script version: @${VERSION_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Existing deployment ID preserved" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Production smoke check: PASS" >> "$GITHUB_STEP_SUMMARY"
