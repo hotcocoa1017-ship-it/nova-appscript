@@ -15,8 +15,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  patch:
+  patch-and-deploy:
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: Checkout target branch
         uses: actions/checkout@v4
@@ -28,6 +29,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Apply changed patch scripts
         shell: bash
@@ -43,18 +49,19 @@ jobs:
           fi
           if [[ ! -s "$PATCH_LIST" ]]; then
             echo 'No patch scripts found.'
-            exit 0
+          else
+            while IFS= read -r patch; do
+              [[ -n "$patch" ]] || continue
+              echo "Applying $patch"
+              python "$patch"
+            done < "$PATCH_LIST"
           fi
-          while IFS= read -r patch; do
-            [[ -n "$patch" ]] || continue
-            echo "Applying $patch"
-            python "$patch"
-          done < "$PATCH_LIST"
 
       - name: Validate NOVA release guards
         run: python tools/validate_nova_release.py
 
       - name: Commit patched source
+        id: commit
         shell: bash
         run: |
           set -euo pipefail
@@ -63,7 +70,91 @@ jobs:
           git add -- '*.js' '*.html' 'appsscript.json' '.clasp.json'
           if git diff --cached --quiet; then
             echo 'No source changes produced by patch.'
-            exit 0
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "Auto patch NOVA source from ${{ github.sha }}"
+            git push origin HEAD:perf/room-actions-v16
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           fi
-          git commit -m "Auto patch NOVA source from ${{ github.sha }}"
-          git push origin HEAD:perf/room-actions-v16
+
+      - name: Check deployment credentials
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$CLASPRC_JSON" ]] || { echo 'Missing GitHub secret: CLASPRC_JSON' >&2; exit 1; }
+          [[ -n "$DEPLOYMENT_ID" ]] || { echo 'Missing GitHub secret: APPS_SCRIPT_DEPLOYMENT_ID' >&2; exit 1; }
+
+      - name: Install clasp
+        run: npm install --global @google/clasp@3.3.0
+
+      - name: Configure clasp authentication
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          chmod 600 "$HOME/.clasprc.json"
+          clasp status >/dev/null
+
+      - name: Push validated source to Apps Script HEAD
+        run: clasp push -f
+
+      - name: Create immutable Apps Script version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCHED_SHA='${{ steps.commit.outputs.sha }}'
+          OUTPUT="$(clasp version "GitHub autopatch ${PATCHED_SHA::7}")"
+          echo "$OUTPUT"
+          VERSION_NUMBER="$(printf '%s\n' "$OUTPUT" | awk '/Created version/{print $3; exit}')"
+          [[ "$VERSION_NUMBER" =~ ^[0-9]+$ ]] || { echo 'Unable to parse Apps Script version number.' >&2; exit 1; }
+          echo "number=$VERSION_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Update existing production deployment
+        env:
+          DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
+          VERSION_NUMBER: ${{ steps.version.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp deploy --deploymentId "$DEPLOYMENT_ID" --versionNumber "$VERSION_NUMBER" --description "GitHub autopatch deploy ${{ steps.commit.outputs.sha }}"
+
+      - name: Verify deployment points to new version
+        env:
+          DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
+          VERSION_NUMBER: ${{ steps.version.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPLOYMENTS="$(clasp deployments)"
+          echo "$DEPLOYMENTS"
+          printf '%s\n' "$DEPLOYMENTS" | grep -F "$DEPLOYMENT_ID @$VERSION_NUMBER" >/dev/null
+          echo "Deployment version verification: PASS (@$VERSION_NUMBER)"
+
+      - name: Production web app smoke check
+        env:
+          DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://script.google.com/macros/s/$DEPLOYMENT_ID/exec"
+          STATUS="$(curl -L -sS -o /tmp/nova-webapp.html -w '%{http_code}' --max-time 30 "$URL")"
+          echo "Production URL HTTP status: $STATUS"
+          [[ "$STATUS" =~ ^[23][0-9][0-9]$ ]] || { echo "Production smoke check failed: HTTP $STATUS" >&2; exit 1; }
+          echo 'Production smoke check: PASS'
+
+      - name: Deployment summary
+        env:
+          VERSION_NUMBER: ${{ steps.version.outputs.number }}
+        run: |
+          echo "### NOVA automated patch deployment" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Source patch: PASS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Release validation: PASS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Apps Script version: @$VERSION_NUMBER" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Existing deployment ID preserved" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Production smoke check: PASS" >> "$GITHUB_STEP_SUMMARY"
