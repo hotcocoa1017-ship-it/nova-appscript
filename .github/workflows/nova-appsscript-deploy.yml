@@ -12,6 +12,7 @@ on:
       - 'tools/validate_nova_release.py'
       - 'tools/apply_houseman_realtime_fix_v36.py'
       - 'tools/apply_houseman_manager_row_fast_v37.py'
+      - 'tools/apply_houseman_assign_timing_v38.py'
       - '.github/workflows/nova-appsscript-deploy.yml'
   pull_request:
     branches:
@@ -24,6 +25,7 @@ on:
       - 'tools/validate_nova_release.py'
       - 'tools/apply_houseman_realtime_fix_v36.py'
       - 'tools/apply_houseman_manager_row_fast_v37.py'
+      - 'tools/apply_houseman_assign_timing_v38.py'
       - '.github/workflows/nova-appsscript-deploy.yml'
   workflow_dispatch:
 
@@ -58,6 +60,9 @@ jobs:
       - name: Apply houseman manager preferred-row fast path
         run: python3 tools/apply_houseman_manager_row_fast_v37.py
 
+      - name: Apply houseman assignment timing diagnostics
+        run: python3 tools/apply_houseman_assign_timing_v38.py
+
       - name: Run NOVA release guard
         run: python3 tools/validate_nova_release.py
 
@@ -74,8 +79,10 @@ jobs:
           test -f 19_RoommaidCloseJournal.js
           grep -F "const isRoomOperationMethod = legacyMethod === 'updateRoomOperation'" Client.html >/dev/null
           grep -F "action === 'ASSIGN' && telegram.queued && telegram.queueRecordId" Client.html >/dev/null
-          grep -F "rowNumber: Number(order.rowNumber || 0)" Client.html >/dev/null
           grep -F "prepareHousemanOrderFastTelegramRows_(" 07_Houseman.js >/dev/null
+          grep -F "rowNumber: Number(order.rowNumber || 0)" Client.html >/dev/null
+          grep -F "하우스맨 배정 성능 · 총" Client.html >/dev/null
+          grep -F "timing: Object.assign({}, perfTiming" 07_Houseman.js >/dev/null
           echo 'Production structure: PASS'
 
   deploy:
@@ -103,6 +110,9 @@ jobs:
 
       - name: Apply houseman manager preferred-row fast path
         run: python3 tools/apply_houseman_manager_row_fast_v37.py
+
+      - name: Apply houseman assignment timing diagnostics
+        run: python3 tools/apply_houseman_assign_timing_v38.py
 
       - name: Check deployment credentials
         env:
@@ -201,6 +211,7 @@ jobs:
           echo "- Houseman action isolation: PASS" >> "$GITHUB_STEP_SUMMARY"
           echo "- ASSIGN Telegram nonblocking: PASS" >> "$GITHUB_STEP_SUMMARY"
           echo "- Manager houseman preferred-row fast path: PASS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Houseman ASSIGN timing diagnostics: PASS" >> "$GITHUB_STEP_SUMMARY"
           echo "- Apps Script version: @${VERSION_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Existing deployment ID preserved" >> "$GITHUB_STEP_SUMMARY"
           echo "- Production smoke check: PASS" >> "$GITHUB_STEP_SUMMARY"
