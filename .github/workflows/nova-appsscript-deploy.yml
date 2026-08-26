@@ -10,6 +10,7 @@ on:
       - 'appsscript.json'
       - '.clasp.json'
       - 'tools/validate_nova_release.py'
+      - '.github/workflows/nova-appsscript-deploy.yml'
   pull_request:
     branches:
       - perf/room-actions-v16
@@ -19,6 +20,7 @@ on:
       - 'appsscript.json'
       - '.clasp.json'
       - 'tools/validate_nova_release.py'
+      - '.github/workflows/nova-appsscript-deploy.yml'
   workflow_dispatch:
 
 permissions:
@@ -93,7 +95,7 @@ jobs:
           fi
 
       - name: Install clasp
-        run: npm install --global @google/clasp@2.4.2
+        run: npm install --global @google/clasp@3.3.0
 
       - name: Configure clasp authentication
         env:
