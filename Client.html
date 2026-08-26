@@ -1255,7 +1255,23 @@
     }
   }
 
+  function restoreShiftManagementContext_() { // (근무조 화면 새로고침 후 업무일자·사업장 복원)
+    try {
+      if (!state.shifts.businessDate) state.shifts.businessDate = String(sessionStorage.getItem('novaShiftBusinessDate') || '').trim();
+      if (!state.shifts.site) state.shifts.site = String(sessionStorage.getItem('novaShiftSite') || '').trim();
+    } catch (ignore) {}
+  }
+
+  function persistShiftManagementContext_() { // (근무조 조회조건 새로고침 유지)
+    try {
+      if (state.shifts.businessDate) sessionStorage.setItem('novaShiftBusinessDate', state.shifts.businessDate);
+      if (state.shifts.site) sessionStorage.setItem('novaShiftSite', state.shifts.site);
+      else sessionStorage.removeItem('novaShiftSite');
+    } catch (ignore) {}
+  }
+
   function renderShiftManagementShell_() { // (A·B·C 근무조 관리 화면 골격)
+    restoreShiftManagementContext_();
     const businessDate = state.shifts.businessDate || state.bootstrap.app.businessDate;
     $('content').innerHTML = `
       <section class="shift-page">
@@ -1289,10 +1305,12 @@
     $('shiftBusinessDate').addEventListener('change', () => {
       state.shifts.businessDate = $('shiftBusinessDate').value;
       state.shifts.zoneDraft = { employeeNo: '', buildings: [] };
+      persistShiftManagementContext_();
     });
     $('shiftSite').addEventListener('change', () => {
       state.shifts.site = $('shiftSite').value;
       state.shifts.zoneDraft = { employeeNo: '', buildings: [] };
+      persistShiftManagementContext_();
     });
     $('shiftReloadButton').addEventListener('click', () => loadShiftManagement_({ force: true }));
     $('shiftSaveButton').addEventListener('click', saveShiftManagement_);
@@ -1314,6 +1332,7 @@
       state.shifts.data = result;
       state.shifts.businessDate = result.businessDate;
       state.shifts.site = result.site;
+      persistShiftManagementContext_();
       state.shifts.draft = {
         A: [...(result.assignments?.A || [])],
         B: [...(result.assignments?.B || [])],
