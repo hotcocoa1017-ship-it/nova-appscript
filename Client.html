@@ -4735,10 +4735,14 @@
 
       const totalMs = Math.round(performance.now() - clickedAt);
       const serverMs = Number(result.timing?.totalMs || result.performance?.elapsedMs || 0);
+      const resetPhases = action === 'CLEANING_RESET' ? (result.timing?.phases || {}) : {};
+      const resetTimingText = action === 'CLEANING_RESET'
+        ? ` · 조회${Number(resetPhases.historyLookupMs || 0)} · 삭제${Number(resetPhases.markHistoryDeletedMs || 0)} · 현재${Number(resetPhases.updateCurrentRoomMs || 0)} · 이력${Number(resetPhases.appendResetHistoryMs || 0)} · flush${Number(resetPhases.flushMs || 0)} · 발행${Number(resetPhases.publishVersionMs || 0)}`
+        : '';
       const duplicateIgnored = action === 'CLEANING_COMPLETE' && result.alreadyCompleted === true;
       setSyncStatus(duplicateIgnored
         ? `${room.roomNo}호 중복 청소완료 요청 제외 · 화면 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}`
-        : `${room.roomNo}호 저장 완료 · 화면 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}`);
+        : `${room.roomNo}호 저장 완료 · 화면 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}${resetTimingText}`);
       if (!fastAction) closeModal();
       showRoomActionToast_(duplicateIgnored
         ? `${room.roomNo}호는 이미 청소완료 처리되어 중복 요청을 제외했습니다.`
