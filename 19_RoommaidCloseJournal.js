@@ -3,7 +3,7 @@
  * 현재객실현황·업무이력·객실마스터를 기준으로 마감표와 개인별 타입 실적을 구성합니다.
  */
 const NOVA_ROOMMAID_CLOSE = Object.freeze({
-  SCHEMA_VERSION: 27,
+  SCHEMA_VERSION: 28,
   DEFAULT_MAINTENANCE_TYPES: Object.freeze(['F', 'T', 'R', 'G']),
   REPORT_MAINTENANCE_TYPES: Object.freeze(['F', 'T', 'R', 'G']),
   CONVERSION_GROUPS: Object.freeze({
@@ -1360,6 +1360,8 @@ function buildRoommaidCloseWorkloadEvents_(initialMap, historyRows, completionEv
       const isDeparture = NOVA_ROOMMAID_CLOSE.DEPARTURE_STATUSES.includes(nextStatus);
       const isManualInitialStock = NOVA_ROOMMAID_CLOSE.INITIAL_STOCK_STATUSES.includes(nextStatus)
         && previousStatus === 'VACANT_CLEAN';
+      const isOpeningStockReturn = NOVA_ROOMMAID_CLOSE.INITIAL_STOCK_STATUSES.includes(nextStatus)
+        && ['STAY', 'RECHECKIN'].includes(previousStatus);
 
       if (isDeparture) {
         // 아직 청소완료되지 않은 재고/퇴실 정비대상에서 일반↔R/C↔H/U 또는 재고→퇴실로 바뀌면
@@ -1408,6 +1410,24 @@ function buildRoommaidCloseWorkloadEvents_(initialMap, historyRows, completionEv
             startedVersion: item.version,
             startedAt: item.eventAt
           });
+        }
+      } else if (isOpeningStockReturn) {
+        // 업로드 당시 전일재고가 STAY/RECHECKIN으로 잠시 취소된 뒤
+        // 같은 STOCK/RC/HU 상태로 돌아오면 새 작업을 만들지 않고 원래 전일재고 주기를 복구한다.
+        // 예: STOCK -> STAY -> STOCK -> 청소완료.
+        const restoredOpeningStock = [...(eventsByRoom[roomNo] || [])].reverse().find(event =>
+          event && event.initialStock && !event.manualInitialStock
+          && !event.completed && event.canceled
+          && ['STAY', 'RECHECKIN'].includes(String(event.cancelReason || '').trim().toUpperCase())
+          && normalizeRoommaidCloseRoomStatus_(event.sourceStatus, statusNormalizer) === nextStatus
+        ) || null;
+        if (restoredOpeningStock) {
+          restoredOpeningStock.canceled = false;
+          restoredOpeningStock.cancelReason = '';
+          restoredOpeningStock.restoredAfterStatus = previousStatus;
+          restoredOpeningStock.restoredVersion = item.version;
+          restoredOpeningStock.restoredAt = item.eventAt;
+          activeByRoom[roomNo] = restoredOpeningStock;
         }
       } else if (isManualInitialStock) {
         if (active && !active.completed && !active.canceled && (active.initialStock || active.departure)) {
