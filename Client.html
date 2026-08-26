@@ -1255,18 +1255,30 @@
     }
   }
 
-  function restoreShiftManagementContext_() { // (근무조 화면 새로고침 후 업무일자·사업장 복원)
+  function restoreShiftManagementContext_() { // (근무조 화면 새로고침 후 업무일자·사업장·담당동 편집대상 복원)
     try {
       if (!state.shifts.businessDate) state.shifts.businessDate = String(sessionStorage.getItem('novaShiftBusinessDate') || '').trim();
       if (!state.shifts.site) state.shifts.site = String(sessionStorage.getItem('novaShiftSite') || '').trim();
+      const zoneEmployeeNo = String(sessionStorage.getItem('novaShiftZoneEmployeeNo') || '').trim();
+      const zoneBuildings = String(sessionStorage.getItem('novaShiftZoneBuildings') || '')
+        .split(',').map(value => value.trim()).filter(Boolean);
+      if (!String(state.shifts.zoneDraft?.employeeNo || '').trim() && zoneEmployeeNo) {
+        state.shifts.zoneDraft = { employeeNo: zoneEmployeeNo, buildings: zoneBuildings };
+      }
     } catch (ignore) {}
   }
 
-  function persistShiftManagementContext_() { // (근무조 조회조건 새로고침 유지)
+  function persistShiftManagementContext_() { // (근무조 조회조건·담당동 편집대상 새로고침 유지)
     try {
       if (state.shifts.businessDate) sessionStorage.setItem('novaShiftBusinessDate', state.shifts.businessDate);
       if (state.shifts.site) sessionStorage.setItem('novaShiftSite', state.shifts.site);
       else sessionStorage.removeItem('novaShiftSite');
+      const zoneEmployeeNo = String(state.shifts.zoneDraft?.employeeNo || '').trim();
+      const zoneBuildings = Array.isArray(state.shifts.zoneDraft?.buildings) ? state.shifts.zoneDraft.buildings.filter(Boolean) : [];
+      if (zoneEmployeeNo) sessionStorage.setItem('novaShiftZoneEmployeeNo', zoneEmployeeNo);
+      else sessionStorage.removeItem('novaShiftZoneEmployeeNo');
+      if (zoneEmployeeNo && zoneBuildings.length) sessionStorage.setItem('novaShiftZoneBuildings', zoneBuildings.join(','));
+      else sessionStorage.removeItem('novaShiftZoneBuildings');
     } catch (ignore) {}
   }
 
@@ -1344,6 +1356,7 @@
         employeeNo: selectedZoneEmployee && (result.attendanceStaff || []).some(item => item.employeeNo === selectedZoneEmployee) ? selectedZoneEmployee : '',
         buildings: selectedZone ? [...(selectedZone.buildings || [])] : []
       };
+      persistShiftManagementContext_();
       if (state.activeMenu === 'shifts') renderShiftManagementData_();
       setSyncStatus(`근무조 조회 · 서버 ${result.performance?.elapsedMs ?? '-'}ms`);
     } catch (error) {
@@ -1411,6 +1424,7 @@
         employeeNo,
         buildings: existing ? [...(existing.buildings || [])] : []
       };
+      persistShiftManagementContext_();
       renderZoneAssignmentManagement_();
     };
 
@@ -1426,6 +1440,7 @@
       const draft = new Set(state.shifts.zoneDraft.buildings || []);
       if (draft.has(building)) draft.delete(building); else draft.add(building);
       state.shifts.zoneDraft.buildings = Array.from(draft).sort((a, b) => Number(a.replace(/\D/g, '')) - Number(b.replace(/\D/g, '')));
+      persistShiftManagementContext_();
       renderZoneAssignmentManagement_();
     }));
 
@@ -1447,6 +1462,7 @@
       const employeeNo = button.dataset.zoneLoad;
       const existing = data.zoneAssignments?.[employeeNo];
       state.shifts.zoneDraft = { employeeNo, buildings: [...(existing?.buildings || [])] };
+      persistShiftManagementContext_();
       renderZoneAssignmentManagement_();
     }));
 
@@ -1477,6 +1493,7 @@
       if (!result?.ok) throw new Error(result?.message || '담당동을 처리하지 못했습니다.');
       showToast(result.message || '담당동을 처리했습니다.');
       state.shifts.zoneDraft = { employeeNo: action === 'CANCEL' ? '' : employeeNo, buildings: action === 'CANCEL' ? [] : [...(result.buildings || [])] };
+      persistShiftManagementContext_();
       await loadShiftManagement_({ force: true });
     } catch (error) {
       showToast(error?.message || '담당동 처리 오류');
