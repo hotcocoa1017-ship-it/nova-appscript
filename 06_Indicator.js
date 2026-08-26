@@ -847,15 +847,12 @@ function resetIndicatorRoomCleaningFast_(user, payload, context) { // (객실 �
   let removedCompletionCount = 0;
   let removedCompletionRecordIds = [];
   let removedEmployeeNos = [];
-  const phaseTiming = {};
-  let phaseStartedMs = Date.now();
 
   try {
     const currentSheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
     const rowInfo = findCurrentRoomRowFast_(currentSheet, businessDate, site, roomNo, safe.rowNumber);
     if (!rowInfo) throw new Error('현재객실현황에서 해당 객실을 찾을 수 없습니다.');
     assertExpectedVersion_(safe.expectedVersion, rowInfo.data['마지막변경버전'], `${roomNo}호 객실`);
-    phaseTiming.currentRoomLookupMs = Math.max(0, Date.now() - phaseStartedMs);
 
     rowNumber = rowInfo.rowNumber;
     responseSite = String(rowInfo.data['사업장'] || site).trim();
@@ -869,10 +866,8 @@ function resetIndicatorRoomCleaningFast_(user, payload, context) { // (객실 �
       throw new Error(`${roomNo}호는 청소완료 상태에서만 청소초기화할 수 있습니다.`);
     }
 
-    phaseStartedMs = Date.now();
     const historySheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
     const completions = findIndicatorRoomActiveCleaningCompletions_(historySheet, businessDate, responseSite, roomNo);
-    phaseTiming.historyLookupMs = Math.max(0, Date.now() - phaseStartedMs);
     if (!completions.length) {
       throw new Error(`${roomNo}호에 초기화할 활성 청소완료 이력이 없습니다.`);
     }
@@ -884,13 +879,9 @@ function resetIndicatorRoomCleaningFast_(user, payload, context) { // (객실 �
     const previousSecondaryEmployeeNo = String(rowInfo.data['보조룸메이드사번'] || '').trim();
     const previousQmEmployeeNo = String(rowInfo.data['QM사번'] || '').trim();
 
-    phaseStartedMs = Date.now();
     version = reserveDataVersion_({ lockHeld: true });
-    phaseTiming.reserveVersionMs = Math.max(0, Date.now() - phaseStartedMs);
 
-    phaseStartedMs = Date.now();
     markIndicatorRoomCleaningCompletionsDeleted_(historySheet, completions, resetAt);
-    phaseTiming.markHistoryDeletedMs = Math.max(0, Date.now() - phaseStartedMs);
     removedCompletionCount = completions.length;
     removedCompletionRecordIds = completions.map(item => item.recordId).filter(Boolean);
     removedEmployeeNos = Array.from(new Set(completions.flatMap(item => [
@@ -899,7 +890,6 @@ function resetIndicatorRoomCleaningFast_(user, payload, context) { // (객실 �
       item.secondaryEmployeeNo
     ]).map(value => String(value || '').trim()).filter(Boolean)));
 
-    phaseStartedMs = Date.now();
     updateRowByHeaders_(currentSheet, rowInfo.rowNumber, {
       '청소상태': 'WAITING',
       '정비유형': '',
@@ -910,9 +900,7 @@ function resetIndicatorRoomCleaningFast_(user, payload, context) { // (객실 �
       '수정일시': resetAt,
       '마지막변경버전': version
     });
-    phaseTiming.updateCurrentRoomMs = Math.max(0, Date.now() - phaseStartedMs);
 
-    phaseStartedMs = Date.now();
     appendUnifiedHistory_({
       recordType: NOVA.RECORD_TYPES.CLEANING,
       businessDate,
@@ -940,20 +928,15 @@ function resetIndicatorRoomCleaningFast_(user, payload, context) { // (객실 �
       registeredBy: user.employeeNo,
       version
     });
-    phaseTiming.appendResetHistoryMs = Math.max(0, Date.now() - phaseStartedMs);
 
-    phaseStartedMs = Date.now();
     SpreadsheetApp.flush();
-    phaseTiming.flushMs = Math.max(0, Date.now() - phaseStartedMs);
 
-    phaseStartedMs = Date.now();
     publishDataVersion_(version, {
       domains: ['ROOM', 'REPORT'],
       businessDate,
       site: responseSite,
       lockHeld: true
     });
-    phaseTiming.publishVersionMs = Math.max(0, Date.now() - phaseStartedMs);
   } finally {
     writeLock.releaseLock();
   }
@@ -988,8 +971,7 @@ function resetIndicatorRoomCleaningFast_(user, payload, context) { // (객실 �
       cleaningReset: true,
       lockWaitMs: Math.max(0, writeLockAcquiredMs - writeLockRequestedMs),
       coreMs: Math.max(0, finishedMs - writeLockAcquiredMs),
-      totalMs: Math.max(0, finishedMs - startedMs),
-      phases: phaseTiming
+      totalMs: Math.max(0, finishedMs - startedMs)
     }
   };
 }

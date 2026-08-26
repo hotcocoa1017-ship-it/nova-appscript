@@ -1644,7 +1644,7 @@ app.get(
                 ? row.event_time.toISOString()
                 : String(row.event_time || '')
           };
-          if (action === 'CLEAR_ASSIGNMENT') {
+          if (action === 'CLEAR_ASSIGNMENT' || action === 'CLEANING_RESET') {
             delete room.cleaningStatus;
             room.cleaningStatus = 'WAITING';
             room.cleaningType = '';
@@ -1801,7 +1801,7 @@ app.post(
       }
 
       if (
-        !['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'CHANGE_ROOM_STATUS', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(action)
+        !['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'CHANGE_ROOM_STATUS', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(action)
       ) {
         throw httpError(
           400,
@@ -2059,6 +2059,104 @@ app.post(
         return res.json(response);
       }
 
+
+
+      if (action === 'CLEANING_RESET') {
+        if (!['ADMIN', 'ORDER'].includes(user.role)) {
+          throw httpError(403, 'FORBIDDEN', '청소 초기화 권한이 없습니다.');
+        }
+
+        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
+          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
+            currentRoom: roomDto(room)
+          });
+        }
+
+        const previousCleaningStatus = String(room.cleaning_status || '').trim().toUpperCase();
+        const resetAllowedStatuses = new Set(['COMPLETED', 'QM_WAITING', 'QM_CHECKING', 'QM_COMPLETED']);
+        if (!resetAllowedStatuses.has(previousCleaningStatus)) {
+          throw httpError(400, 'INVALID_STATE', '청소완료 상태에서만 청소초기화할 수 있습니다.');
+        }
+
+        const detail = {
+          source: 'NOVA_REALTIME',
+          role: user.role,
+          resetScope: 'ALL_ACTIVE_COMPLETIONS_FOR_ROOM_DATE_SITE',
+          previousCleaningStatus,
+          previousCleaningType: String(room.cleaning_type || ''),
+          previousAssignmentType: String(room.assignment_type || ''),
+          previousPrimaryEmployeeNo: String(room.roommaid_employee_no || ''),
+          previousSecondaryEmployeeNo: String(room.secondary_roommaid_employee_no || ''),
+          previousQmEmployeeNo: String(room.qm_employee_no || ''),
+          cleaningStatus: 'WAITING',
+          cleaningType: '',
+          assignmentType: '',
+          primaryEmployeeNo: '',
+          secondaryEmployeeNo: '',
+          qmEmployeeNo: ''
+        };
+
+        const updated = await client.query(
+          `update public.nova_rooms_current
+              set cleaning_status='WAITING',
+                  cleaning_type='NORMAL',
+                  assignment_type='SOLO',
+                  roommaid_employee_no=null,
+                  secondary_roommaid_employee_no=null,
+                  qm_employee_no=null,
+                  version=version+1,
+                  updated_by=$4,
+                  updated_at=now()
+            where business_date=$1 and site=$2 and room_no=$3
+            returning *`,
+          [businessDate, site, roomNo, user.employee_no]
+        );
+        const nextRoom = updated.rows[0];
+
+        await client.query(
+          `insert into public.nova_room_events(
+            request_id,business_date,site,room_no,action,before_status,after_status,
+            employee_no,room_version,detail
+          ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+          [
+            requestId,
+            businessDate,
+            site,
+            roomNo,
+            action,
+            previousCleaningStatus,
+            'WAITING',
+            user.employee_no,
+            nextRoom.version,
+            JSON.stringify(detail)
+          ]
+        );
+
+        const responseRoom = {
+          ...roomDto(nextRoom),
+          cleaningStatus: 'WAITING',
+          cleaningType: '',
+          assignmentType: '',
+          roommaidEmployeeNo: '',
+          secondaryRoommaidEmployeeNo: '',
+          qmEmployeeNo: ''
+        };
+        const response = {
+          ok: true,
+          action,
+          requestId,
+          room: responseRoom,
+          version: Number(nextRoom.version || 0),
+          mirrorPending: true,
+          timing: { totalMs: Date.now() - startedAt }
+        };
+        await client.query(
+          `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+          [requestId, JSON.stringify(response)]
+        );
+        await client.query('commit');
+        return res.json(response);
+      }
 
       if (action === 'CLEAR_ASSIGNMENT') {
         if (!['ADMIN', 'ORDER'].includes(user.role)) {

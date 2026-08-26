@@ -675,7 +675,12 @@
     const mappedAction = rawAction === 'START' ? 'CLEANING_START'
       : rawAction === 'COMPLETE' ? 'CLEANING_COMPLETE'
       : rawAction;
-    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
+    const legacySafe = Object.assign({}, safe);
+    if (mappedAction === 'CLEANING_RESET') {
+      legacySafe.expectedVersion = Number(safe.sheetExpectedVersion || safe.expectedVersion || 0);
+    }
+    delete legacySafe.sheetExpectedVersion;
+    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
       || (mappedAction === 'CHANGE_ROOM_STATUS'
         && String(safe.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT');
 
@@ -684,7 +689,7 @@
         || (mappedAction === 'CHANGE_ROOM_STATUS'
           && String(safe.roomStatus || '').trim().toUpperCase() === 'CHECKED_OUT');
 
-      if (!retryableLegacyAction) return callServer(legacyMethod, state.token, safe);
+      if (!retryableLegacyAction) return callServer(legacyMethod, state.token, legacySafe);
 
       // 고장·객실확인·퇴실은 서버가 동일상태 재요청을 멱등 처리하므로
       // Apps Script 일시적 과부하/잠금경합에 한해 짧게 자동 재시도한다.
@@ -693,7 +698,7 @@
       for (let index = 0; index < delays.length; index += 1) {
         if (delays[index]) await wait_(delays[index] + Math.round(Math.random() * 250));
         try {
-          return await callServer(legacyMethod, state.token, safe);
+          return await callServer(legacyMethod, state.token, legacySafe);
         } catch (error) {
           lastError = error;
           if (!isTransientServerError_(error) || index === delays.length - 1) throw error;
@@ -708,9 +713,10 @@
       throw new Error('Realtime 설정을 확인하지 못했습니다. 잠시 후 다시 시도하세요.');
     }
     if (!novaRealtimeIsEnabled_()) {
-      return callServer(legacyMethod, state.token, safe);
+      return callServer(legacyMethod, state.token, legacySafe);
     }
 
+    delete safe.sheetExpectedVersion;
     safe.action = mappedAction;
     safe.requestId = safe.requestId || novaRealtimeRequestId_(mappedAction, safe.roomNo);
     const send = () => novaRealtimeFetch_(`/v1/rooms/${encodeURIComponent(String(safe.roomNo || ''))}/action`, {
@@ -745,7 +751,7 @@
         });
       }
     }
-    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : mappedAction === 'ASSIGN_ROOMMAID' ? '룸메이드 배정을 저장했습니다.' : mappedAction === 'QM_ASSIGN' ? 'QM 배정을 저장했습니다.' : mappedAction === 'CHANGE_ROOM_STATUS' ? '객실상태를 저장했습니다.' : mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' ? '객실 조치상태를 저장했습니다.' : mappedAction === 'UPDATE_OPERATION_FLAGS' ? '운영표시를 저장했습니다.' : mappedAction === 'CLEAR_ASSIGNMENT' ? '배정을 초기화했습니다.' : '청소완료 처리했습니다.');
+    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : mappedAction === 'ASSIGN_ROOMMAID' ? '룸메이드 배정을 저장했습니다.' : mappedAction === 'QM_ASSIGN' ? 'QM 배정을 저장했습니다.' : mappedAction === 'CHANGE_ROOM_STATUS' ? '객실상태를 저장했습니다.' : mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' ? '객실 조치상태를 저장했습니다.' : mappedAction === 'UPDATE_OPERATION_FLAGS' ? '운영표시를 저장했습니다.' : mappedAction === 'CLEAR_ASSIGNMENT' ? '배정을 초기화했습니다.' : mappedAction === 'CLEANING_RESET' ? '청소완료 실적 초기화를 저장했습니다.' : '청소완료 처리했습니다.');
     return result;
   }
 
@@ -4631,11 +4637,12 @@
       vip: action === 'UPDATE_OPERATION_FLAGS' ? Boolean($('roomVipFlag')?.checked) : Boolean(room.vip),
       importantRoom: action === 'UPDATE_OPERATION_FLAGS' ? Boolean($('roomImportantFlag')?.checked) : Boolean(room.importantRoom),
       operationalStatus: action === 'UPDATE_ROOM_OPERATION_STATUS' ? normalizeIndicatorRoomOperationalStatus_(forcedOperationalStatus) : normalizeIndicatorRoomOperationalStatus_(room.operationalStatus),
-      // CLEANING_RESET remains Sheet-owned because it cancels the existing completion/history records.
-      // Realtime room.version is a DB version, so use the preserved Sheet version only for reset.
-      expectedVersion: action === 'CLEANING_RESET'
+      // Realtime 요청은 DB version을 사용하고, Realtime 비활성/장애 시 legacy CLEANING_RESET만
+      // 별도로 보존한 Sheet version을 사용한다. 두 버전 도메인을 섞지 않는다.
+      expectedVersion: Number(room.version || 0),
+      sheetExpectedVersion: action === 'CLEANING_RESET'
         ? Number(room.__sheetVersion ?? room.version ?? 0)
-        : Number(room.version || 0)
+        : 0
     };
     const validationError = validateRoomActionPayload_(payload);
     if (validationError) {
@@ -4697,7 +4704,7 @@
       const result = await saveRoomActionRealtimeOrLegacy_('updateRoomOperation', payload);
       if (!result?.ok) throw new Error(result?.message || '객실 작업을 저장하지 못했습니다.');
       const resultRoom = Object.assign({}, result.room || {});
-      if (action === 'CLEAR_ASSIGNMENT') {
+      if (action === 'CLEAR_ASSIGNMENT' || action === 'CLEANING_RESET') {
         Object.assign(resultRoom, emptyRoomAssignmentPatch_(), { cleaningStatus: 'WAITING' });
       }
       if (action === 'UPDATE_ROOM_OPERATION_STATUS') {
@@ -4735,19 +4742,17 @@
 
       const totalMs = Math.round(performance.now() - clickedAt);
       const serverMs = Number(result.timing?.totalMs || result.performance?.elapsedMs || 0);
-      const resetPhases = action === 'CLEANING_RESET' ? (result.timing?.phases || {}) : {};
-      const resetTimingText = action === 'CLEANING_RESET'
-        ? ` · 조회${Number(resetPhases.historyLookupMs || 0)} · 삭제${Number(resetPhases.markHistoryDeletedMs || 0)} · 현재${Number(resetPhases.updateCurrentRoomMs || 0)} · 이력${Number(resetPhases.appendResetHistoryMs || 0)} · flush${Number(resetPhases.flushMs || 0)} · 발행${Number(resetPhases.publishVersionMs || 0)}`
-        : '';
       const duplicateIgnored = action === 'CLEANING_COMPLETE' && result.alreadyCompleted === true;
       setSyncStatus(duplicateIgnored
         ? `${room.roomNo}호 중복 청소완료 요청 제외 · 화면 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}`
-        : `${room.roomNo}호 저장 완료 · 화면 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}${resetTimingText}`);
+        : `${room.roomNo}호 저장 완료 · 화면 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}`);
       if (!fastAction) closeModal();
       showRoomActionToast_(duplicateIgnored
         ? `${room.roomNo}호는 이미 청소완료 처리되어 중복 요청을 제외했습니다.`
         : action === 'CLEANING_RESET'
-          ? `${room.roomNo}호 청소완료 실적 ${Number(result.resetCompletionCount || 0)}건 초기화 완료`
+          ? (result.mirrorPending === true
+              ? `${room.roomNo}호 청소완료 실적 초기화 완료 · 이력 동기화 중`
+              : `${room.roomNo}호 청소완료 실적 ${Number(result.resetCompletionCount || 0)}건 초기화 완료`)
           : `${room.roomNo}호 ${actionLabel} 완료`);
     } catch (error) {
       if (fastAction && index >= 0 && beforeRoom) {

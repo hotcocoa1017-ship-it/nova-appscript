@@ -313,6 +313,126 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
         continue;
       }
 
+      if (action === 'CLEANING_RESET') {
+        const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const previousRoomStatus = String(rowInfo.data['객실상태'] || '').trim().toUpperCase();
+        const previousCleaningStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
+        const previousCleaningType = String(rowInfo.data['정비유형'] || '').trim().toUpperCase();
+        const previousAssignmentType = String(rowInfo.data['배정유형'] || '').trim().toUpperCase();
+        const previousPrimaryEmployeeNo = String(rowInfo.data['룸메이드사번'] || '').trim();
+        const previousSecondaryEmployeeNo = String(rowInfo.data['보조룸메이드사번'] || '').trim();
+        const previousQmEmployeeNo = String(rowInfo.data['QM사번'] || '').trim();
+
+        // 이미 Sheet에 기록된 완료실적은 기존 CLEANING_RESET과 동일하게 소프트삭제한다.
+        const historySheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
+        const persistedCompletions = findIndicatorRoomActiveCleaningCompletions_(
+          historySheet,
+          eventBusinessDate,
+          eventSite,
+          eventRoomNo
+        );
+
+        // COMPLETE와 RESET이 같은 1분 미러 배치에 함께 들어온 경우,
+        // 아직 Sheet에 쓰지 않은 완료이력은 historyPayloads에서 제거해 처음부터 실적에 포함시키지 않는다.
+        const pendingCompletions = [];
+        for (let index = historyPayloads.length - 1; index >= 0; index -= 1) {
+          const item = historyPayloads[index] || {};
+          if (String(item.recordType || '').trim() !== NOVA.RECORD_TYPES.CLEANING) continue;
+          if (String(item.businessDate || '').trim() !== eventBusinessDate) continue;
+          if (String(item.site || '').trim() !== eventSite) continue;
+          if (String(item.roomNo || '').trim() !== eventRoomNo) continue;
+          if (!['CLEANING_COMPLETE', 'ROOMMAID_COMPLETE'].includes(String(item.status || '').trim().toUpperCase())) continue;
+          pendingCompletions.unshift(item);
+          historyPayloads.splice(index, 1);
+        }
+
+        // 같은 배치에서 COMPLETE가 만든 QM 알림도 RESET 뒤에는 발송하지 않는다.
+        for (let index = qmNotifications.length - 1; index >= 0; index -= 1) {
+          const item = qmNotifications[index] || {};
+          if (String(item.businessDate || '').trim() === eventBusinessDate
+              && String(item.site || '').trim() === eventSite
+              && String(item.roomNo || '').trim() === eventRoomNo) {
+            qmNotifications.splice(index, 1);
+          }
+        }
+
+        const resetAt = nowText_();
+        if (persistedCompletions.length) {
+          markIndicatorRoomCleaningCompletionsDeleted_(historySheet, persistedCompletions, resetAt);
+        }
+
+        const removedCompletionRecordIds = persistedCompletions.map(item => item.recordId).filter(Boolean);
+        const removedEmployeeNos = Array.from(new Set(
+          persistedCompletions.flatMap(item => [
+            item.targetEmployeeNo,
+            item.primaryEmployeeNo,
+            item.secondaryEmployeeNo
+          ]).concat(
+            pendingCompletions.flatMap(item => [
+              item.targetEmployeeNo,
+              item.detail && item.detail.primaryEmployeeNo,
+              item.detail && item.detail.secondaryEmployeeNo
+            ])
+          ).map(value => String(value || '').trim()).filter(Boolean)
+        ));
+        const removedCompletionCount = persistedCompletions.length + pendingCompletions.length;
+
+        roomUpdates.push({
+          rowNumber: rowInfo.rowNumber,
+          cleaningStatus: 'WAITING',
+          cleaningType: '',
+          assignmentType: '',
+          roommaidEmployeeNo: '',
+          secondaryRoommaidEmployeeNo: '',
+          qmEmployeeNo: '',
+          version,
+          updatedAt: resetAt
+        });
+        rowInfo.data['청소상태'] = 'WAITING';
+        rowInfo.data['정비유형'] = '';
+        rowInfo.data['배정유형'] = '';
+        rowInfo.data['룸메이드사번'] = '';
+        rowInfo.data['보조룸메이드사번'] = '';
+        rowInfo.data['QM사번'] = '';
+
+        historyPayloads.push({
+          recordType: NOVA.RECORD_TYPES.CLEANING,
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          targetEmployeeNo: '',
+          status: 'CLEANING_RESET',
+          detail: {
+            requestId,
+            realtime: true,
+            action: 'CLEANING_RESET',
+            resetScope: String(eventDetail.resetScope || 'ALL_ACTIVE_COMPLETIONS_FOR_ROOM_DATE_SITE'),
+            previousRoomStatus,
+            roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+            previousCleaningStatus,
+            cleaningStatus: 'WAITING',
+            previousCleaningType,
+            previousAssignmentType,
+            previousPrimaryEmployeeNo,
+            previousSecondaryEmployeeNo,
+            previousQmEmployeeNo,
+            removedCompletionCount,
+            removedCompletionRecordIds,
+            removedEmployeeNos,
+            resetBy: employeeNo,
+            resetAt,
+            dbRoomVersion: Number(event.roomVersion || 0),
+            dbEventTime: String(event.eventTime || '')
+          },
+          registeredBy: employeeNo,
+          version
+        });
+
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
       if (action === 'CLEAR_ASSIGNMENT') {
         const previousRoomStatus = String(rowInfo.data['객실상태'] || '').trim().toUpperCase();
         const previousCleaningStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
