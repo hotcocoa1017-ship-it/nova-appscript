@@ -13,7 +13,7 @@ app.use(express.json({
   }
 }));
 
-const NOVA_REALTIME_BUILD = 'phase1-v3.8-houseman-create';
+const NOVA_REALTIME_BUILD = 'phase1-v3.9-houseman-manual-assign';
 const PORT = Number(process.env.PORT || 8080);
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const PG_HOST = process.env.PG_HOST || '';
@@ -3681,6 +3681,184 @@ app.post(
       if (client) {
         client.release();
       }
+    }
+  }
+);
+
+
+/**
+ * 미배정 하우스맨 오더 수동배정 Realtime 확정.
+ * PostgreSQL 배정을 먼저 확정하고 Sheet 감사/Telegram은 Apps Script가 백그라운드 미러합니다.
+ */
+app.post(
+  '/v1/houseman-orders/:orderId/assign',
+  async (req, res, next) => {
+    const startedAt = Date.now();
+    let client;
+
+    try {
+      client = await pool.connect();
+      const auth = authBearer(req);
+      const body = req.body || {};
+      const orderId = cleanText_(req.params.orderId, 80).toUpperCase();
+      const employeeNo = cleanText_(body.employeeNo, 80);
+      const requestId = cleanText_(
+        body.requestId || req.headers['x-request-id'],
+        200
+      );
+
+      if (!/^HO-\d{8}-[A-Z0-9]{8,32}$/.test(orderId) || !employeeNo || !requestId) {
+        throw httpError(
+          400,
+          'INVALID_REQUEST',
+          '오더번호·배정직원·requestId가 필요합니다.'
+        );
+      }
+
+      await client.query('begin');
+
+      const user = await loadUser(client, auth.employeeNo);
+      if (!['ADMIN', 'ORDER'].includes(String(user.role || '').toUpperCase())) {
+        throw httpError(403, 'FORBIDDEN', '직원배정 권한이 없습니다.');
+      }
+
+      const dedup = await client.query(
+        `insert into public.nova_request_dedup(request_id,employee_no,action)
+         values($1,$2,'HOUSEMAN_ASSIGN')
+         on conflict(request_id) do nothing
+         returning request_id`,
+        [requestId, user.employee_no]
+      );
+
+      if (!dedup.rowCount) {
+        const prior = await client.query(
+          `select response_json from public.nova_request_dedup where request_id=$1`,
+          [requestId]
+        );
+        await client.query('commit');
+        if (prior.rows[0]?.response_json) {
+          return res.json({
+            ...prior.rows[0].response_json,
+            duplicateRequest: true
+          });
+        }
+        throw httpError(409, 'REQUEST_IN_PROGRESS', '동일 배정 요청이 처리 중입니다.');
+      }
+
+      const found = await client.query(
+        `select * from public.nova_houseman_orders where order_id=$1 for update`,
+        [orderId]
+      );
+      const order = found.rows[0];
+      if (!order) {
+        throw httpError(404, 'HOUSEMAN_ORDER_NOT_FOUND', 'Realtime 하우스맨 오더를 찾을 수 없습니다.');
+      }
+
+      if (!allowedForSite(user, String(order.site || ''))) {
+        throw httpError(403, 'FORBIDDEN', '해당 사업장 처리 권한이 없습니다.');
+      }
+
+      const staffResult = await client.query(
+        `select employee_no,name,role,enabled
+           from public.nova_users
+          where employee_no=$1
+          limit 1`,
+        [employeeNo]
+      );
+      const assigned = staffResult.rows[0];
+      if (
+        !assigned
+        || assigned.enabled !== true
+        || String(assigned.role || '').toUpperCase() !== 'HOUSEMAN'
+      ) {
+        throw httpError(409, 'HOUSEMAN_NOT_AVAILABLE', '사용 가능한 하우스맨 계정이 아닙니다.');
+      }
+
+      const currentStatus = String(order.status_code || '').toUpperCase();
+      const currentEmployeeNo = String(order.assigned_employee_no || '');
+
+      if (currentStatus === 'ASSIGNED' && currentEmployeeNo === employeeNo) {
+        const response = {
+          ok: true,
+          action: 'HOUSEMAN_ASSIGN',
+          requestId,
+          idempotent: true,
+          order: housemanOrderDto_(order),
+          orderVersion: Number(order.version || 0),
+          timing: { totalMs: Date.now() - startedAt }
+        };
+        await client.query(
+          `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+          [requestId, JSON.stringify(response)]
+        );
+        await client.query('commit');
+        return res.json(response);
+      }
+
+      if (currentStatus !== 'REGISTERED') {
+        throw httpError(
+          409,
+          'HOUSEMAN_ORDER_STATE_CONFLICT',
+          '미배정 상태의 오더만 Realtime 수동배정할 수 있습니다.'
+        );
+      }
+
+      const assignedBuilding = cleanText_(
+        order.assigned_building || `${String(order.room_no || '').charAt(0)}동`,
+        40
+      );
+
+      const updated = await client.query(
+        `update public.nova_houseman_orders
+            set assigned_employee_no=$2,
+                assigned_name=$3,
+                status_code='ASSIGNED',
+                assignment_mode='MANUAL',
+                auto_assigned=false,
+                assigned_building=$4,
+                assigned_shift_code='',
+                assigned_shift_codes='{}'::text[],
+                route_candidate_employee_nos=$5::text[],
+                route_candidate_names=$6::text[],
+                route_locked=true,
+                version=version+1,
+                updated_at=now()
+          where order_id=$1
+          returning *`,
+        [
+          orderId,
+          employeeNo,
+          String(assigned.name || employeeNo),
+          assignedBuilding,
+          [employeeNo],
+          [String(assigned.name || employeeNo)]
+        ]
+      );
+
+      const nextOrder = updated.rows[0];
+      const response = {
+        ok: true,
+        action: 'HOUSEMAN_ASSIGN',
+        requestId,
+        order: housemanOrderDto_(nextOrder),
+        orderVersion: Number(nextOrder.version || 0),
+        timing: { totalMs: Date.now() - startedAt }
+      };
+
+      await client.query(
+        `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+        [requestId, JSON.stringify(response)]
+      );
+      await client.query('commit');
+      return res.json(response);
+
+    } catch (e) {
+      if (client) {
+        try { await client.query('rollback'); } catch {}
+      }
+      next(e);
+    } finally {
+      if (client) client.release();
     }
   }
 );

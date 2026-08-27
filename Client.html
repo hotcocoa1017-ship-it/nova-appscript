@@ -3907,6 +3907,72 @@
     };
   }
 
+
+  async function novaRealtimeAssignHousemanOrder_(order, employeeNo) { // (미배정 하우스맨 오더 Realtime 수동배정)
+    if (!novaRealtimeIsEnabled_()) throw new Error('Realtime이 비활성화되어 있습니다.');
+    const orderId = String(order?.orderId || '').trim();
+    const assignedEmployeeNo = String(employeeNo || '').trim();
+    if (!orderId || !assignedEmployeeNo) throw new Error('배정할 오더와 직원을 확인하세요.');
+
+    const requestId = novaRealtimeRequestId_('houseman-assign');
+    const result = await novaRealtimeFetch_(
+      `/v1/houseman-orders/${encodeURIComponent(orderId)}/assign`,
+      {
+        method: 'POST',
+        headers: { 'X-Request-Id': requestId },
+        body: JSON.stringify({
+          employeeNo: assignedEmployeeNo,
+          requestId
+        })
+      }
+    );
+
+    const mapped = novaRealtimeMapHousemanOrder_(result.order) || result.order;
+    return {
+      ok: true,
+      order: mapped,
+      orderVersion: Number(result.orderVersion || result.order?.version || 0),
+      timing: result.timing || {},
+      requestId
+    };
+  }
+
+  async function mirrorRealtimeHousemanAssignmentToSheet_(sourceOrder, employeeNo) { // (Realtime 수동배정 Sheet·감사·Telegram 백그라운드 미러)
+    const payload = {
+      orderId: String(sourceOrder?.orderId || '').trim(),
+      action: 'ASSIGN',
+      expectedVersion: Number(sourceOrder?.version || 0),
+      rowNumber: Number(sourceOrder?.rowNumber || 0),
+      employeeNo: String(employeeNo || '').trim()
+    };
+
+    try {
+      const mirror = await callServer('assignHousemanOrderFast', state.token, payload);
+      if (!mirror?.ok) throw new Error(mirror?.message || '수동배정 이력 동기화에 실패했습니다.');
+      upsertOrderLocal_(mirror.order, mirror.version);
+
+      const aux = await callServer('finalizeHousemanAssignmentAux', state.token, {
+        orderId: mirror.order.orderId,
+        employeeNo: mirror.order.assignedEmployeeNo,
+        rowNumber: Number(mirror.order.rowNumber || 0),
+        version: Number(mirror.version || mirror.order.version || 0)
+      });
+      const telegram = aux?.telegram || {};
+      if (telegram.queued && telegram.queueRecordId) {
+        void callServer('dispatchHousemanOrderTelegramFast', state.token, {
+          recordId: telegram.queueRecordId,
+          rowNumber: Number(telegram.queueRowNumber || 0)
+        }).catch(error => {
+          console.warn('Realtime 수동배정 텔레그램 즉시발송은 큐 재시도로 전환됩니다.', error?.message || error);
+        });
+      }
+      setSyncStatus(`${mirror.order.roomNo}호 배정 이력 동기화 완료`);
+    } catch (error) {
+      console.warn('Realtime 수동배정 Sheet 미러 실패', error?.message || error);
+      setSyncStatus(`${sourceOrder?.roomNo || ''}호 Realtime 배정 완료 · 기존 이력 동기화 재확인 필요`);
+    }
+  }
+
   async function mirrorRealtimeHousemanOrderToSheet_(mirrorPayload, attempt = 0) { // (기존 이력·감사·Telegram 보존)
     try {
       const result = await callServer('createHousemanOrder', state.token, mirrorPayload);
@@ -4234,6 +4300,32 @@
     }
     const actionStartedAt = performance.now();
     try {
+      if (
+        action === 'ASSIGN'
+        && String(order?.statusCode || '').trim().toUpperCase() === 'REGISTERED'
+        && novaRealtimeIsEnabled_()
+      ) {
+        try {
+          const realtime = await novaRealtimeAssignHousemanOrder_(order, payload.employeeNo);
+          const elapsed = Math.round(performance.now() - actionStartedAt);
+          const serverElapsed = Number(realtime.timing?.totalMs || 0);
+          const pendingOrder = Object.assign({}, realtime.order, {
+            rowNumber: Number(order.rowNumber || 0),
+            version: Number(order.version || 0),
+            __sheetMirrorPending: true,
+            __sheetMirrorStartedAt: Date.now()
+          });
+          upsertOrderLocal_(pendingOrder, state.indicator.version);
+          closeModal();
+          showToast(`${pendingOrder.roomNo}호 배정 완료 · Realtime ${elapsed}ms${serverElapsed ? ` · 서버 ${serverElapsed}ms` : ''}`);
+          setSyncStatus(`하우스맨 배정 DB 확정 · ${elapsed}ms${serverElapsed ? ` · 서버 ${serverElapsed}ms` : ''}`);
+          void mirrorRealtimeHousemanAssignmentToSheet_(order, payload.employeeNo);
+          return;
+        } catch (realtimeError) {
+          console.warn('[NOVA Realtime] 미배정 수동배정은 기존 저장경로로 자동 전환합니다.', realtimeError?.message || realtimeError);
+        }
+      }
+
       const result = action === 'ASSIGN'
         ? await callServer('assignHousemanOrderFast', state.token, payload)
         : await callServer('updateHousemanOrder', state.token, payload);
