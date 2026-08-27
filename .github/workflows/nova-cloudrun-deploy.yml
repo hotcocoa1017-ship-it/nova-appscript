@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: nova-cloudrun-production
@@ -29,43 +30,24 @@ jobs:
       - name: Validate Cloud Run source
         run: node --check cloudrun/index.js
 
-      - name: Check Cloud Run deployment credential
-        env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ -n "$GCP_SA_KEY" ]] || { echo 'Missing GitHub secret: GCP_SA_KEY' >&2; exit 1; }
-          python - <<'PY'
-          import json, os
-          data = json.loads(os.environ['GCP_SA_KEY'])
-          if not data.get('project_id') or not data.get('client_email'):
-              raise SystemExit('GCP_SA_KEY does not contain project_id/client_email')
-          print('Cloud Run deployment credential: configured')
-          PY
-
-      - name: Authenticate to Google Cloud
+      - name: Authenticate to Google Cloud with WIF
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/nova-github-pool/providers/nova-github
+          service_account: 479836905263-compute@developer.gserviceaccount.com
 
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Resolve Google Cloud project
         id: project
-        env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         shell: bash
         run: |
           set -euo pipefail
-          PROJECT_ID="$(python - <<'PY'
-          import json, os
-          print(json.loads(os.environ['GCP_SA_KEY'])['project_id'])
-          PY
-          )"
+          PROJECT_ID="$(gcloud projects describe 479836905263 --format='value(projectId)')"
+          [[ -n "$PROJECT_ID" ]] || { echo 'Google Cloud project ID not found.' >&2; exit 1; }
           echo "id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
-          echo "Google Cloud project resolved."
+          echo "Google Cloud project resolved: $PROJECT_ID"
 
       - name: Deploy nova-realtime-api
         env:
@@ -95,6 +77,7 @@ jobs:
       - name: Deployment summary
         run: |
           echo '### NOVA Cloud Run deployment' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Authentication: Workload Identity Federation' >> "$GITHUB_STEP_SUMMARY"
           echo '- Service: nova-realtime-api' >> "$GITHUB_STEP_SUMMARY"
           echo '- Region: asia-southeast1' >> "$GITHUB_STEP_SUMMARY"
           echo '- Source validation: PASS' >> "$GITHUB_STEP_SUMMARY"
