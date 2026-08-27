@@ -116,7 +116,7 @@ jobs:
             --retry-all-errors \
             -o "$MAIN_OUT" \
             -w '%{http_code}' \
-            "$MAIN_URL/healthz")"
+            "$MAIN_URL/health")"
           [[ "$MAIN_STATUS" == "200" ]]
           node - "$MAIN_OUT" <<'NODE'
           const fs = require('fs');
