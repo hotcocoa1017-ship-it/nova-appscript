@@ -1,0 +1,81 @@
+name: NOVA Supabase event_time Migration
+
+on:
+  push:
+    branches:
+      - perf/room-actions-v16
+    paths:
+      - '.github/workflows/nova-supabase-event-time-migrate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: nova-supabase-event-time-migration
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: perf/room-actions-v16
+
+      - name: Authenticate to Google Cloud with WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/nova-github-pool/providers/nova-github
+          service_account: 479836905263-compute@developer.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Prepare isolated migration source
+        shell: bash
+        run: |
+          set -euo pipefail
+          MIGRATION_SOURCE="$RUNNER_TEMP/nova-event-time-migration"
+          mkdir -p "$MIGRATION_SOURCE"
+          cp cloudrun/package.json "$MIGRATION_SOURCE/package.json"
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));p.scripts.start='node migrate.js';fs.writeFileSync(process.argv[1],JSON.stringify(p,null,2)+'\\n');" "$MIGRATION_SOURCE/package.json"
+          cp .github/migrations/nova-event-time-migrate.js "$MIGRATION_SOURCE/migrate.js"
+          echo "MIGRATION_SOURCE=$MIGRATION_SOURCE" >> "$GITHUB_ENV"
+
+      - name: Deploy no-traffic migration revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_ID="$(gcloud projects describe 479836905263 --format='value(projectId)')"
+          BEFORE_TRAFFIC="$(gcloud run services describe nova-realtime-api --region asia-southeast1 --project "$PROJECT_ID" --format='value(status.traffic.revisionName,status.traffic.percent)')"
+          echo "Before migration traffic: $BEFORE_TRAFFIC"
+          gcloud run deploy nova-realtime-api \
+            --source "$MIGRATION_SOURCE" \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --no-traffic \
+            --revision-suffix "eventtime-${GITHUB_RUN_NUMBER}" \
+            --quiet
+          AFTER_TRAFFIC="$(gcloud run services describe nova-realtime-api --region asia-southeast1 --project "$PROJECT_ID" --format='value(status.traffic.revisionName,status.traffic.percent)')"
+          echo "After migration traffic: $AFTER_TRAFFIC"
+          [[ "$AFTER_TRAFFIC" == "$BEFORE_TRAFFIC" ]] || {
+            echo 'Production traffic changed unexpectedly.' >&2
+            exit 1
+          }
+          gcloud run services describe nova-realtime-api \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --format='yaml(status.latestCreatedRevisionName,status.latestReadyRevisionName,status.traffic)'
+
+      - name: Migration summary
+        run: |
+          echo '### NOVA Supabase event_time migration' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Migration revision: no traffic' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Existing event timestamps: preserved from created_at/updated_at when available' >> "$GITHUB_STEP_SUMMARY"
+          echo '- event_time default and not-null guard: applied' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Cursor index: applied' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Production traffic: unchanged' >> "$GITHUB_STEP_SUMMARY"
