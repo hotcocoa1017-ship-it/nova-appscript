@@ -1,0 +1,69 @@
+name: NOVA Cloud Run Request Diagnose
+
+on:
+  push:
+    branches:
+      - perf/room-actions-v16
+    paths:
+      - '.github/workflows/nova-cloudrun-request-diagnose.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  diagnose-requests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: perf/room-actions-v16
+
+      - name: Authenticate to Google Cloud with WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/nova-github-pool/providers/nova-github
+          service_account: 479836905263-compute@developer.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Read recent Cloud Run request failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_ID="$(gcloud projects describe 479836905263 --format='value(projectId)')"
+          echo '--- HTTP request failures (30m) ---'
+          gcloud logging read \
+            'resource.type="cloud_run_revision" AND resource.labels.service_name="nova-realtime-api" AND httpRequest.status>=400' \
+            --project "$PROJECT_ID" \
+            --freshness=30m \
+            --limit=300 \
+            --order=desc \
+            --format='table(timestamp,resource.labels.revision_name,httpRequest.requestMethod,httpRequest.status,httpRequest.requestUrl,httpRequest.latency,trace)'
+          echo '--- Application stderr (30m) ---'
+          gcloud logging read \
+            'resource.type="cloud_run_revision" AND resource.labels.service_name="nova-realtime-api" AND logName:"run.googleapis.com%2Fstderr"' \
+            --project "$PROJECT_ID" \
+            --freshness=30m \
+            --limit=500 \
+            --order=desc \
+            --format='value(timestamp,resource.labels.revision_name,trace,textPayload)'
+          echo '--- PostgreSQL error headers (30m) ---'
+          gcloud logging read \
+            'resource.type="cloud_run_revision" AND resource.labels.service_name="nova-realtime-api" AND severity>=ERROR' \
+            --project "$PROJECT_ID" \
+            --freshness=30m \
+            --limit=500 \
+            --order=desc \
+            --format=json \
+            | jq -r '.[] | [(.timestamp // ""), (.resource.labels.revision_name // ""), (.trace // ""), (.textPayload // ""), (.jsonPayload.message // ""), (.jsonPayload.code // "")] | @tsv'
+
+      - name: Diagnostic summary
+        run: |
+          echo '### NOVA Cloud Run request diagnostics' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Request errors: collected' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Application stderr: collected' >> "$GITHUB_STEP_SUMMARY"
+          echo '- PostgreSQL error metadata: collected' >> "$GITHUB_STEP_SUMMARY"
