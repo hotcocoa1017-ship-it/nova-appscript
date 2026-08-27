@@ -1,0 +1,3 @@
+NOVA room concurrency v57 production deployment trigger.
+Source commit: 0857a08b81edc597f5ad4cc64bd746173067bff2
+Policy: PostgreSQL room row-lock + action-scoped conflict detection.
