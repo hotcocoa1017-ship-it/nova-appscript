@@ -1,0 +1,60 @@
+name: NOVA Cloud Run Diagnose
+
+on:
+  push:
+    branches:
+      - perf/room-actions-v16
+    paths:
+      - '.github/workflows/nova-cloudrun-diagnose.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: perf/room-actions-v16
+
+      - name: Authenticate to Google Cloud with WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/nova-github-pool/providers/nova-github
+          service_account: 479836905263-compute@developer.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Diagnose nova-realtime-api
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_ID="$(gcloud projects describe 479836905263 --format='value(projectId)')"
+          echo "PROJECT_ID=$PROJECT_ID"
+          gcloud run services describe nova-realtime-api \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --format='yaml(status.url,status.latestReadyRevisionName,status.latestCreatedRevisionName,status.traffic)'
+          echo '--- recent ERROR logs ---'
+          gcloud logging read \
+            'resource.type="cloud_run_revision" AND resource.labels.service_name="nova-realtime-api" AND severity>=ERROR' \
+            --project "$PROJECT_ID" \
+            --freshness=3h \
+            --limit=80 \
+            --order=desc \
+            --format='value(timestamp,resource.labels.revision_name,textPayload,jsonPayload.message,jsonPayload.code)' || true
+          echo '--- recent CLEANING_COMPLETE / postgres-related logs ---'
+          gcloud logging read \
+            'resource.type="cloud_run_revision" AND resource.labels.service_name="nova-realtime-api"' \
+            --project "$PROJECT_ID" \
+            --freshness=3h \
+            --limit=200 \
+            --order=desc \
+            --format=json \
+            | grep -Ei 'CLEANING_COMPLETE|duplicate key|constraint|Postgres|error|nova_room_events|nova_request_dedup' \
+            | tail -n 160 || true
