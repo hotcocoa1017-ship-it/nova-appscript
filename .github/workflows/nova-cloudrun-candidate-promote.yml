@@ -1,0 +1,139 @@
+name: NOVA Cloud Run Candidate Promote
+
+on:
+  push:
+    branches:
+      - perf/room-actions-v16
+    paths:
+      - '.github/workflows/nova-cloudrun-candidate-promote.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: nova-cloudrun-production
+  cancel-in-progress: false
+
+jobs:
+  verify-and-promote:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: perf/room-actions-v16
+
+      - name: Authenticate to Google Cloud with WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/nova-github-pool/providers/nova-github
+          service_account: 479836905263-compute@developer.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Verify candidate and promote with rollback guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_ID="$(gcloud projects describe 479836905263 --format='value(projectId)')"
+          SERVICE_JSON="$RUNNER_TEMP/nova-service.json"
+          gcloud run services describe nova-realtime-api \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --format=json > "$SERVICE_JSON"
+
+          PREVIOUS_REVISION="$(node -e "const s=require(process.argv[1]);const t=(s?.status?.traffic||[]).find(x=>Number(x.percent||0)===100&&!x.tag);process.stdout.write(String(t?.revisionName||''));" "$SERVICE_JSON")"
+          CANDIDATE_REVISION="$(node -e "const s=require(process.argv[1]);const t=(s?.status?.traffic||[]).find(x=>x.tag==='nova-candidate');process.stdout.write(String(t?.revisionName||''));" "$SERVICE_JSON")"
+          TAG_URL="$(node -e "const s=require(process.argv[1]);const t=(s?.status?.traffic||[]).find(x=>x.tag==='nova-candidate');process.stdout.write(String(t?.url||''));" "$SERVICE_JSON")"
+          [[ -n "$PREVIOUS_REVISION" && -n "$CANDIDATE_REVISION" && -n "$TAG_URL" ]] || {
+            echo 'Production or candidate revision route was not found.' >&2
+            exit 1
+          }
+          echo "Previous revision: $PREVIOUS_REVISION"
+          echo "Candidate revision: $CANDIDATE_REVISION"
+
+          LEGACY_TAG_URL="https://nova-candidate---nova-realtime-api-479836905263.asia-southeast1.run.app"
+          VALID_URL=""
+          for BASE_URL in "$TAG_URL" "$LEGACY_TAG_URL"; do
+            for HEALTH_PATH in healthz health; do
+              OUT="$RUNNER_TEMP/candidate-${HEALTH_PATH}.json"
+              STATUS="$(curl -sS \
+                --max-time 30 \
+                --retry 8 \
+                --retry-delay 3 \
+                --retry-all-errors \
+                -o "$OUT" \
+                -w '%{http_code}' \
+                "$BASE_URL/$HEALTH_PATH" || true)"
+              echo "Candidate probe: $BASE_URL/$HEALTH_PATH -> $STATUS"
+              if [[ "$STATUS" == "200" ]] && node - "$OUT" <<'NODE'
+          const fs = require('fs');
+          const health = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if (health?.build !== 'phase1-v3.9-houseman-manual-assign') process.exit(1);
+          if (health?.eventTimeReady !== true) process.exit(1);
+          NODE
+              then
+                VALID_URL="$BASE_URL"
+                break 2
+              fi
+            done
+          done
+          [[ -n "$VALID_URL" ]] || {
+            echo 'No public candidate health URL passed verification.' >&2
+            exit 1
+          }
+
+          TRAFFIC_SHIFTED=false
+          rollback() {
+            if [[ "$TRAFFIC_SHIFTED" == "true" ]]; then
+              echo "Rolling back traffic to $PREVIOUS_REVISION" >&2
+              gcloud run services update-traffic nova-realtime-api \
+                --region asia-southeast1 \
+                --project "$PROJECT_ID" \
+                --to-revisions "$PREVIOUS_REVISION=100" \
+                --quiet || true
+            fi
+          }
+          trap rollback ERR
+
+          gcloud run services update-traffic nova-realtime-api \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --to-revisions "$CANDIDATE_REVISION=100" \
+            --quiet
+          TRAFFIC_SHIFTED=true
+
+          MAIN_URL="$(gcloud run services describe nova-realtime-api --region asia-southeast1 --project "$PROJECT_ID" --format='value(status.url)')"
+          MAIN_OUT="$RUNNER_TEMP/production-health.json"
+          MAIN_STATUS="$(curl -sS \
+            --max-time 30 \
+            --retry 12 \
+            --retry-delay 3 \
+            --retry-all-errors \
+            -o "$MAIN_OUT" \
+            -w '%{http_code}' \
+            "$MAIN_URL/healthz")"
+          [[ "$MAIN_STATUS" == "200" ]]
+          node - "$MAIN_OUT" <<'NODE'
+          const fs = require('fs');
+          const health = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if (health?.build !== 'phase1-v3.9-houseman-manual-assign' || health?.eventTimeReady !== true) {
+            throw new Error('Production health verification failed.');
+          }
+          NODE
+          TRAFFIC_SHIFTED=false
+          trap - ERR
+          echo "Promoted revision: $CANDIDATE_REVISION"
+          echo "Validated candidate URL: $VALID_URL"
+
+      - name: Promotion summary
+        run: |
+          echo '### NOVA Cloud Run candidate promotion' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Candidate schema check: PASS' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Public candidate health check: PASS' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Production traffic switch: PASS' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Rollback guard: armed during verification' >> "$GITHUB_STEP_SUMMARY"
