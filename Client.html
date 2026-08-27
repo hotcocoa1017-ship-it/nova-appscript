@@ -755,14 +755,23 @@
       result = await send();
     } catch (error) {
       const code = String(error?.code || '').trim().toUpperCase();
-      if (!['ROOM_NOT_FOUND', 'FORBIDDEN', 'INVALID_STATE', 'ROOMMAID_NOT_AVAILABLE', 'QM_NOT_AVAILABLE'].includes(code)) throw error;
-      // 업무일 생성/최근 배정·QM 변경이 DB에 아직 없을 때 해당 객실만 Sheets->DB 보정 후 동일 requestId로 1회 재시도.
+
+      // 권한/상태 오류는 DB 보정으로 해결되지 않으므로 느린 Sheets JIT 동기화를 실행하지 않습니다.
+      // 누락 객실 또는 배정대상 사용자 누락처럼 실제 DB 보정이 필요한 경우에만 1회 동기화합니다.
+      const jitCodes = mappedAction === 'ASSIGN_ROOMMAID'
+        ? ['ROOM_NOT_FOUND', 'ROOMMAID_NOT_AVAILABLE']
+        : mappedAction === 'QM_ASSIGN'
+          ? ['ROOM_NOT_FOUND', 'QM_NOT_AVAILABLE']
+          : ['ROOM_NOT_FOUND'];
+      if (!jitCodes.includes(code)) throw error;
+
       await callServer('syncNovaRealtimeRoomForAction', state.token, {
         businessDate: safe.businessDate,
         site: safe.site,
         roomNo: safe.roomNo,
         action: mappedAction
       });
+      if (mappedAction === 'CLEAR_ASSIGNMENT') safe.expectedVersion = 0;
       result = await send();
     }
     result.version = Number(result.version || result.room?.version || 0);
@@ -4886,7 +4895,9 @@
       operationalStatus: action === 'UPDATE_ROOM_OPERATION_STATUS' ? normalizeIndicatorRoomOperationalStatus_(forcedOperationalStatus) : normalizeIndicatorRoomOperationalStatus_(room.operationalStatus),
       // Realtime 요청은 DB version을 사용하고, Realtime 비활성/장애 시 legacy CLEANING_RESET만
       // 별도로 보존한 Sheet version을 사용한다. 두 버전 도메인을 섞지 않는다.
-      expectedVersion: Number(room.version || 0),
+      // CLEAR_ASSIGNMENT는 관리자가 현재 배정을 '없음'으로 만드는 멱등 작업이므로
+      // 지연된 Realtime version 때문에 초기화가 거절되지 않도록 version 충돌검사를 사용하지 않는다.
+      expectedVersion: action === 'CLEAR_ASSIGNMENT' ? 0 : Number(room.version || 0),
       sheetExpectedVersion: action === 'CLEANING_RESET'
         ? Number(room.__sheetVersion ?? room.version ?? 0)
         : 0
@@ -5153,6 +5164,7 @@
 
   function handleRoomUploadPreview(event) { // (업로드 파일 서버 검증)
     event.preventDefault();
+    const previewStartedAt = performance.now();
     const form = event.currentTarget;
     const file = $('roomUploadFile').files?.[0];
     if (!file) return showToast('업로드할 파일을 선택하세요.');
@@ -5167,6 +5179,9 @@
         }
         state.indicator.uploadPreviewId = result.previewId || '';
         renderRoomUploadPreview_(result);
+        const totalMs = Math.round(performance.now() - previewStartedAt);
+        const serverMs = Number(result.performance?.elapsedMs || 0);
+        setSyncStatus(`객실현황 검증 완료 · 총 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}`);
       })
       .withFailureHandler(error => {
         setUploadBusy_(false);
@@ -5211,6 +5226,7 @@
   }
 
   async function applyRoomUploadPreview_(resetExisting) { // (검증된 객실현황 유지 반영·초기화 후 교체)
+    const clickedAt = performance.now();
     const previewId = state.indicator.uploadPreviewId;
     if (!previewId) return showToast('유효한 업로드 미리보기가 없습니다.');
 
@@ -5248,7 +5264,23 @@
         renderRoomGrid();
       }
       showToast(result.message || '객실현황을 반영했습니다.');
-      await loadIndicatorSnapshot({ silent: true, force: true });
+      const totalMs = Math.round(performance.now() - clickedAt);
+      const serverMs = Number(result.performance?.elapsedMs || result.timing?.totalMs || 0);
+      const writeMs = Number(result.timing?.currentWriteMs || 0);
+      const lockMs = Number(result.timing?.lockWaitMs || 0);
+      const flushMs = Number(result.timing?.flushMs || 0);
+      setSyncStatus(
+        `객실현황 반영 완료 · 총 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}`
+        + `${writeMs ? ` · 저장 ${writeMs}ms` : ''}${lockMs ? ` · 잠금 ${lockMs}ms` : ''}${flushMs ? ` · flush ${flushMs}ms` : ''}`
+      );
+
+      // 서버가 이미 최신 객실목록을 반환했으므로 완료 응답 직후 동일 자료를 다시 전체조회하지 않습니다.
+      // 보조 재조회는 사용자 응답 경로 밖에서 수행해 업로드 완료 체감을 지연시키지 않습니다.
+      window.setTimeout(() => {
+        if (state.activeMenu !== 'indicator' || !state.indicator.loaded) return;
+        void loadIndicatorSnapshot({ silent: true, force: true })
+          .catch(error => console.error('[NOVA] 업로드 후 보조 동기화 실패:', error));
+      }, 1200);
     } catch (error) {
       if (button) {
         button.disabled = false;
