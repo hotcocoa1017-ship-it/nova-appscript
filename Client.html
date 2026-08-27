@@ -3853,7 +3853,7 @@
     };
   }
 
-  async function novaRealtimeCreateHousemanOrder_(payload) { // (Cloud Run/PostgreSQL 등록 확정)
+  async function novaRealtimeCreateHousemanOrder_(payload, authRetry = 0) { // (Cloud Run/PostgreSQL 등록 확정)
     if (!novaRealtimeIsEnabled_()) throw new Error('Realtime이 비활성화되어 있습니다.');
     const assignment = novaRealtimeHousemanAssignmentSnapshot_(payload);
     if (String(payload.assignmentMode || '').trim().toUpperCase() === 'AUTO' && !assignment?.employeeNo) {
@@ -3870,11 +3870,26 @@
       assignment,
       handoverTargetShift: payload.handover ? novaRealtimeNextShift_(currentShift) : ''
     });
-    const result = await novaRealtimeFetch_('/v1/houseman-orders', {
-      method: 'POST',
-      headers: { 'X-Request-Id': requestId },
-      body: JSON.stringify(apiPayload)
-    });
+    let result;
+    try {
+      result = await novaRealtimeFetch_('/v1/houseman-orders', {
+        method: 'POST',
+        headers: { 'X-Request-Id': requestId },
+        body: JSON.stringify(apiPayload)
+      });
+    } catch (error) {
+      // Apps Script 로그인은 정상인데 Realtime DB 사용자/서명이 뒤처진 경우 1회 자가복구합니다.
+      // 기존 signed JIT sync가 현재 사용자와 객실을 PostgreSQL에 맞춘 뒤 동일 등록을 재시도합니다.
+      if (authRetry < 1 && String(error?.code || '').trim().toUpperCase() === 'UNAUTHORIZED') {
+        await callServer('syncNovaRealtimeRoomForAction', state.token, {
+          businessDate: String(payload.businessDate || ''),
+          site: String(payload.site || ''),
+          roomNo: String(payload.roomNo || '')
+        });
+        return novaRealtimeCreateHousemanOrder_(payload, authRetry + 1);
+      }
+      throw error;
+    }
     const order = novaRealtimeMapHousemanOrder_(result.order) || result.order;
     if (!order?.orderId) throw new Error('Realtime 오더 저장 응답이 올바르지 않습니다.');
     order.__sheetMirrorPending = true;
