@@ -53,12 +53,64 @@ jobs:
           PROJECT_ID="$(gcloud projects describe 479836905263 --format='value(projectId)')"
           BEFORE_TRAFFIC="$(gcloud run services describe nova-realtime-api --region asia-southeast1 --project "$PROJECT_ID" --format='value(status.traffic.revisionName,status.traffic.percent)')"
           echo "Before migration traffic: $BEFORE_TRAFFIC"
+
+          PROD_REVISION="$(gcloud run services describe nova-realtime-api \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --format='value(status.traffic[0].revisionName)')"
+          [[ -n "$PROD_REVISION" ]] || {
+            echo 'Production revision was not found.' >&2
+            exit 1
+          }
+          echo "Migration target revision: $PROD_REVISION"
+
+          PROD_REVISION_JSON="$RUNNER_TEMP/nova-production-revision.json"
+          PROD_ENV_YAML="$RUNNER_TEMP/nova-production-env.yaml"
+          PROD_SECRET_FLAGS="$RUNNER_TEMP/nova-production-secrets.txt"
+          gcloud run revisions describe "$PROD_REVISION" \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --format=json > "$PROD_REVISION_JSON"
+
+          node - "$PROD_REVISION_JSON" "$PROD_ENV_YAML" "$PROD_SECRET_FLAGS" <<'NODE'
+          const fs = require('fs');
+          const revision = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const env = revision?.spec?.containers?.[0]?.env || [];
+          const literalLines = [];
+          const secretFlags = [];
+          for (const item of env) {
+            const name = String(item?.name || '');
+            if (!name) continue;
+            if (Object.prototype.hasOwnProperty.call(item, 'value')) {
+              literalLines.push(`${name}: ${JSON.stringify(String(item.value ?? ''))}`);
+              continue;
+            }
+            const ref = item?.valueFrom?.secretKeyRef;
+            if (ref?.name && ref?.key) {
+              secretFlags.push(`${name}=${ref.name}:${ref.key}`);
+            }
+          }
+          fs.writeFileSync(process.argv[3], literalLines.join('\n') + '\n');
+          fs.writeFileSync(process.argv[4], secretFlags.join(','));
+          NODE
+
+          DEPLOY_ENV_ARGS=(--env-vars-file "$PROD_ENV_YAML")
+          SECRET_FLAGS="$(<"$PROD_SECRET_FLAGS")"
+          if [[ -n "$SECRET_FLAGS" ]]; then
+            DEPLOY_ENV_ARGS+=(--set-secrets "$SECRET_FLAGS")
+          fi
+          PROD_SERVICE_ACCOUNT="$(node -e "const r=require(process.argv[1]);process.stdout.write(String(r?.spec?.serviceAccountName||''));" "$PROD_REVISION_JSON")"
+          if [[ -n "$PROD_SERVICE_ACCOUNT" ]]; then
+            DEPLOY_ENV_ARGS+=(--service-account "$PROD_SERVICE_ACCOUNT")
+          fi
+
           gcloud run deploy nova-realtime-api \
             --source "$MIGRATION_SOURCE" \
             --region asia-southeast1 \
             --project "$PROJECT_ID" \
             --no-traffic \
-            --revision-suffix "eventtime-${GITHUB_RUN_NUMBER}" \
+            --revision-suffix "eventtime-prod-${GITHUB_RUN_NUMBER}" \
+            "${DEPLOY_ENV_ARGS[@]}" \
             --quiet
           AFTER_TRAFFIC="$(gcloud run services describe nova-realtime-api --region asia-southeast1 --project "$PROJECT_ID" --format='value(status.traffic.revisionName,status.traffic.percent)')"
           echo "After migration traffic: $AFTER_TRAFFIC"
