@@ -270,6 +270,79 @@ function roomDto(r) {
   };
 }
 
+
+function roomActionExpectedStateMatches_(action, expectedState, room) {
+  if (!expectedState || typeof expectedState !== 'object' || !room) return false;
+
+  const upper = value => String(value ?? '').trim().toUpperCase();
+  const actual = {
+    roomStatus: upper(room.room_status),
+    cleaningStatus: upper(room.cleaning_status),
+    cleaningType: upper(room.cleaning_type || 'NORMAL'),
+    assignmentType: upper(room.assignment_type || 'SOLO'),
+    roommaidEmployeeNo: String(room.roommaid_employee_no || '').trim(),
+    secondaryRoommaidEmployeeNo: String(room.secondary_roommaid_employee_no || '').trim(),
+    qmEmployeeNo: String(room.qm_employee_no || '').trim(),
+    operationalStatus: upper(room.operational_status)
+  };
+  const expected = {
+    roomStatus: upper(expectedState.roomStatus),
+    cleaningStatus: upper(expectedState.cleaningStatus),
+    cleaningType: upper(expectedState.cleaningType || 'NORMAL'),
+    assignmentType: upper(expectedState.assignmentType || 'SOLO'),
+    roommaidEmployeeNo: String(expectedState.roommaidEmployeeNo || '').trim(),
+    secondaryRoommaidEmployeeNo: String(expectedState.secondaryRoommaidEmployeeNo || '').trim(),
+    qmEmployeeNo: String(expectedState.qmEmployeeNo || '').trim(),
+    operationalStatus: upper(expectedState.operationalStatus)
+  };
+
+  const actionKey = String(action || '').trim().toUpperCase();
+  const fieldsByAction = {
+    ASSIGN_ROOMMAID: [
+      'cleaningStatus', 'cleaningType', 'assignmentType',
+      'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo'
+    ],
+    CLEANING_RESET: [
+      'roomStatus', 'cleaningStatus', 'cleaningType', 'assignmentType',
+      'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo'
+    ],
+    QM_ASSIGN: ['cleaningStatus', 'qmEmployeeNo'],
+    CHANGE_ROOM_STATUS: [
+      'roomStatus', 'cleaningStatus', 'cleaningType', 'assignmentType',
+      'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo'
+    ],
+    UPDATE_ROOM_OPERATION_STATUS: ['operationalStatus']
+  };
+  const fields = fieldsByAction[actionKey] || [];
+  return fields.length > 0 && fields.every(key => actual[key] === expected[key]);
+}
+
+function assertRoomActionVersion_(action, expectedVersion, expectedState, room) {
+  const expected = Number(expectedVersion || 0);
+  const actual = Number(room?.version || 0);
+  if (expected <= 0 || expected === actual) return;
+
+  const actionKey = String(action || '').trim().toUpperCase();
+
+  // 룸메이드 청소 진행은 DB row-lock + 실제 배정자 + 현재 청소상태 검증이 더 정확하다.
+  // VIP/객실상태/운영표시 같은 독립 필드 변경 때문에 청소가 막히지 않게 한다.
+  if (['CLEANING_START', 'CLEANING_COMPLETE'].includes(actionKey)) return;
+
+  // 운영표시는 현재 DB에서 이벤트 기반으로 보존되는 독립 도메인이다.
+  // 동일 객실의 청소/배정 version 증가와 결합시키지 않는다.
+  if (actionKey === 'UPDATE_OPERATION_FLAGS') return;
+
+  // 배정초기화는 현재 상태를 '없음'으로 만드는 멱등 작업이며 Client도 version=0으로 요청한다.
+  if (actionKey === 'CLEAR_ASSIGNMENT') return;
+
+  // 같은 객실이라도 이 작업이 다루는 필드가 그대로라면 unrelated version bump이므로 허용한다.
+  if (roomActionExpectedStateMatches_(actionKey, expectedState, room)) return;
+
+  throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
+    currentRoom: roomDto(room)
+  });
+}
+
 const HOUSEMAN_STATUS_LABELS_ = Object.freeze({
   REGISTERED: '등록',
   ASSIGNED: '배정',
@@ -1995,11 +2068,7 @@ app.post(
           throw httpError(403, 'FORBIDDEN', '룸메이드 배정 권한이 없습니다.');
         }
 
-        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
-          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
-            currentRoom: roomDto(room)
-          });
-        }
+        assertRoomActionVersion_(action, expectedVersion, body.expectedState, room);
 
         const primaryEmployeeNo = cleanText_(body.employeeNo, 80);
         const rawSecondaryEmployeeNo = cleanText_(body.secondaryEmployeeNo, 80);
@@ -2146,11 +2215,7 @@ app.post(
           throw httpError(403, 'FORBIDDEN', '청소 초기화 권한이 없습니다.');
         }
 
-        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
-          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
-            currentRoom: roomDto(room)
-          });
-        }
+        assertRoomActionVersion_(action, expectedVersion, body.expectedState, room);
 
         const roomStatus = String(room.room_status || '').trim().toUpperCase();
         const resetAllowedRoomStatuses = new Set([
@@ -2252,11 +2317,7 @@ app.post(
           throw httpError(403, 'FORBIDDEN', '객실 배정 초기화 권한이 없습니다.');
         }
 
-        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
-          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
-            currentRoom: roomDto(room)
-          });
-        }
+        assertRoomActionVersion_(action, expectedVersion, body.expectedState, room);
 
         const alreadyClear = String(room.cleaning_status || '').toUpperCase() === 'WAITING'
           && !String(room.roommaid_employee_no || '')
@@ -2390,11 +2451,7 @@ app.post(
           throw httpError(403, 'FORBIDDEN', '객실 운영표시 변경 권한이 없습니다.');
         }
 
-        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
-          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
-            currentRoom: roomDto(room)
-          });
-        }
+        assertRoomActionVersion_(action, expectedVersion, body.expectedState, room);
 
         const preassigned = body.preassigned === true;
         const vip = body.vip === true;
@@ -2464,11 +2521,7 @@ app.post(
           throw httpError(403, 'FORBIDDEN', '객실 조치상태 변경 권한이 없습니다.');
         }
 
-        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
-          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
-            currentRoom: roomDto(room)
-          });
-        }
+        assertRoomActionVersion_(action, expectedVersion, body.expectedState, room);
 
         const rawOperationalStatus = cleanText_(body.operationalStatus, 40).toUpperCase();
         const operationalStatus = rawOperationalStatus === ''
@@ -2559,11 +2612,7 @@ app.post(
           throw httpError(403, 'FORBIDDEN', '객실상태 변경 권한이 없습니다.');
         }
 
-        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
-          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
-            currentRoom: roomDto(room)
-          });
-        }
+        assertRoomActionVersion_(action, expectedVersion, body.expectedState, room);
 
         const requestedRoomStatus = cleanText_(body.roomStatus, 40).toUpperCase();
         if (!requestedRoomStatus) {
@@ -2708,11 +2757,7 @@ app.post(
           throw httpError(403, 'FORBIDDEN', 'QM 배정 권한이 없습니다.');
         }
 
-        if (expectedVersion > 0 && expectedVersion !== Number(room.version)) {
-          throw httpError(409, 'VERSION_CONFLICT', '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.', {
-            currentRoom: roomDto(room)
-          });
-        }
+        assertRoomActionVersion_(action, expectedVersion, body.expectedState, room);
 
         const qmEmployeeNo = cleanText_(body.employeeNo, 80);
         if (!qmEmployeeNo) {
@@ -2885,22 +2930,7 @@ app.post(
         return res.json(response);
       }
 
-      if (
-        expectedVersion > 0
-        && expectedVersion
-          !== Number(room.version)
-      ) {
-
-        throw httpError(
-          409,
-          'VERSION_CONFLICT',
-          '객실 정보가 다른 사용자에 의해 먼저 변경되었습니다.',
-          {
-            currentRoom:
-              roomDto(room)
-          }
-        );
-      }
+      assertRoomActionVersion_(action, expectedVersion, body.expectedState, room);
 
       if (
         action === 'CLEANING_START'

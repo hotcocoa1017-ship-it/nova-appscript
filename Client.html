@@ -725,8 +725,10 @@
       : rawAction === 'COMPLETE' ? 'CLEANING_COMPLETE'
       : rawAction;
     const legacySafe = Object.assign({}, safe);
-    if (mappedAction === 'CLEANING_RESET') {
-      legacySafe.expectedVersion = Number(safe.sheetExpectedVersion || safe.expectedVersion || 0);
+    // Realtime room.version(DB)과 Sheet 마지막변경버전은 서로 다른 버전 도메인이다.
+    // Apps Script legacy 경로(퇴실 포함)로 내려갈 때는 항상 별도 보존한 Sheet version을 사용한다.
+    if (Number(safe.sheetExpectedVersion || 0) > 0) {
+      legacySafe.expectedVersion = Number(safe.sheetExpectedVersion || 0);
     }
     delete legacySafe.sheetExpectedVersion;
     const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
@@ -4927,9 +4929,20 @@
       // CLEAR_ASSIGNMENT는 관리자가 현재 배정을 '없음'으로 만드는 멱등 작업이므로
       // 지연된 Realtime version 때문에 초기화가 거절되지 않도록 version 충돌검사를 사용하지 않는다.
       expectedVersion: action === 'CLEAR_ASSIGNMENT' ? 0 : Number(room.version || 0),
-      sheetExpectedVersion: action === 'CLEANING_RESET'
-        ? Number(room.__sheetVersion ?? room.version ?? 0)
-        : 0
+      // Cloud Run은 DB version을 사용하되, version이 달라졌을 때 실제로 이 작업과
+      // 충돌하는 필드가 바뀌었는지 expectedState로 한 번 더 판정한다.
+      expectedState: {
+        roomStatus: String(room.roomStatus || ''),
+        cleaningStatus: String(room.cleaningStatus || ''),
+        cleaningType: String(room.cleaningType || 'NORMAL'),
+        assignmentType: String(room.assignmentType || 'SOLO'),
+        roommaidEmployeeNo: String(room.roommaidEmployeeNo || ''),
+        secondaryRoommaidEmployeeNo: String(room.secondaryRoommaidEmployeeNo || ''),
+        qmEmployeeNo: String(room.qmEmployeeNo || ''),
+        operationalStatus: String(room.operationalStatus || '')
+      },
+      // Realtime 비활성/legacy 퇴실 경로에서는 반드시 Sheet version을 사용한다.
+      sheetExpectedVersion: Number(room.__sheetVersion ?? room.version ?? 0)
     };
     const validationError = validateRoomActionPayload_(payload);
     if (validationError) {

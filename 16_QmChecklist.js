@@ -182,7 +182,8 @@ function startQmInspection(token, payload) { // (QM 점검 시작·실시간 초
     const currentSheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
     const rowInfo = findCurrentRoomRow_(currentSheet, businessDate, site, roomNo);
     if (!rowInfo) throw new Error('현재객실현황에서 해당 객실을 찾을 수 없습니다.');
-    assertExpectedVersion_(safe.expectedVersion, rowInfo.data['마지막변경버전'], `${roomNo}호 객실`);
+    // QM은 본인 배정 여부와 청소상태를 잠금 안에서 다시 검증하므로, DB 미러 등 독립 변경의
+    // Sheet 전체버전 증가만으로 정상 점검을 거절하지 않는다. 실제 흐름 변경은 아래 상태검증이 차단한다.
     if (String(rowInfo.data['QM사번'] || '').trim() !== user.employeeNo) throw new Error('본인에게 배정된 객실만 점검할 수 있습니다.');
     const currentStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
     if (!['QM_WAITING', 'COMPLETED', 'QM_CHECKING'].includes(currentStatus)) throw new Error('QM 점검대기 또는 점검중 객실만 시작할 수 있습니다.');
@@ -388,7 +389,8 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
     const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
     const rowInfo = findCurrentRoomRow_(sheet, businessDate, site, roomNo);
     if (!rowInfo) throw new Error('현재객실현황에서 해당 객실을 찾을 수 없습니다.');
-    assertExpectedVersion_(safe.expectedVersion, rowInfo.data['마지막변경버전'], `${roomNo}호 객실`);
+    // QM은 본인 배정 여부와 청소상태를 잠금 안에서 다시 검증하므로, DB 미러 등 독립 변경의
+    // Sheet 전체버전 증가만으로 정상 점검을 거절하지 않는다. 실제 흐름 변경은 아래 상태검증이 차단한다.
     const qmNo = String(rowInfo.data['QM사번'] || '').trim();
     if (qmNo !== user.employeeNo) throw new Error('본인에게 배정된 객실만 점검할 수 있습니다.');
     if (String(rowInfo.data['청소상태'] || '').trim().toUpperCase() !== 'QM_CHECKING') throw new Error('점검중 상태의 객실에서만 체크리스트를 제출할 수 있습니다.');

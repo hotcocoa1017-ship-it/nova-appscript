@@ -240,7 +240,11 @@ function updateMobileRoomOperation(token, payload) { // (룸메이드·QM 모바
     const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
     const rowInfo = findCurrentRoomRowForMobileUpdate_(sheet, businessDate, site, roomNo, safe.rowNumber);
     if (!rowInfo) throw new Error('현재객실현황에서 해당 객실을 찾을 수 없습니다.');
-    assertExpectedVersion_(safe.expectedVersion, rowInfo.data['마지막변경버전'], `${roomNo}호 객실`);
+    // QM은 아래의 본인배정 검증과 작업상태 검증을 원본으로 사용한다.
+    // Sheet 전체버전은 Realtime 미러 등 독립 변경에도 증가하므로 QM 작업에는 직접 충돌키로 쓰지 않는다.
+    if (role !== 'QM') {
+      assertExpectedVersion_(safe.expectedVersion, rowInfo.data['마지막변경버전'], `${roomNo}호 객실`);
+    }
 
     const roommaidNo = String(rowInfo.data['룸메이드사번'] || '').trim();
     const secondaryRoommaidNo = String(rowInfo.data['보조룸메이드사번'] || '').trim();

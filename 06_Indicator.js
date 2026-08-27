@@ -514,6 +514,45 @@ function changeIndicatorRoomOperationalStatusFast_(user, payload, context) { // 
 }
 
 
+
+function assertIndicatorCheckoutExpectedState_(safe, rowData, roomNo) {
+  const expectedVersion = Number(safe && safe.expectedVersion || 0);
+  const actualVersion = Number(rowData && rowData['마지막변경버전'] || 0);
+  if (expectedVersion <= 0 || expectedVersion === actualVersion) return;
+
+  const expected = safe && safe.expectedState && typeof safe.expectedState === 'object'
+    ? safe.expectedState
+    : null;
+  if (expected) {
+    const upper = value => String(value ?? '').trim().toUpperCase();
+    const actual = {
+      roomStatus: upper(rowData['객실상태']),
+      cleaningStatus: upper(rowData['청소상태']),
+      cleaningType: upper(rowData['정비유형'] || NOVA.CLEANING_TYPES.NORMAL),
+      assignmentType: upper(rowData['배정유형'] || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO),
+      roommaidEmployeeNo: String(rowData['룸메이드사번'] || '').trim(),
+      secondaryRoommaidEmployeeNo: String(rowData['보조룸메이드사번'] || '').trim(),
+      qmEmployeeNo: String(rowData['QM사번'] || '').trim()
+    };
+    const expectedNormalized = {
+      roomStatus: upper(expected.roomStatus),
+      cleaningStatus: upper(expected.cleaningStatus),
+      cleaningType: upper(expected.cleaningType || NOVA.CLEANING_TYPES.NORMAL),
+      assignmentType: upper(expected.assignmentType || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO),
+      roommaidEmployeeNo: String(expected.roommaidEmployeeNo || '').trim(),
+      secondaryRoommaidEmployeeNo: String(expected.secondaryRoommaidEmployeeNo || '').trim(),
+      qmEmployeeNo: String(expected.qmEmployeeNo || '').trim()
+    };
+    const keys = [
+      'roomStatus', 'cleaningStatus', 'cleaningType', 'assignmentType',
+      'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo'
+    ];
+    if (keys.every(key => actual[key] === expectedNormalized[key])) return;
+  }
+
+  assertExpectedVersion_(expectedVersion, actualVersion, `${roomNo}호 객실`);
+}
+
 function changeIndicatorRoomCheckoutFast_(user, payload, context) { // (퇴실 상태변경 핵심저장 고속경로)
   const safe = payload || {};
   const info = context || {};
@@ -582,7 +621,7 @@ function changeIndicatorRoomCheckoutFast_(user, payload, context) { // (퇴실 �
       };
     }
 
-    assertExpectedVersion_(safe.expectedVersion, rowInfo.data['마지막변경버전'], `${roomNo}호 객실`);
+    assertIndicatorCheckoutExpectedState_(safe, rowInfo.data, roomNo);
 
     const updatedAt = nowText_();
     const updates = { '수정일시': updatedAt };
