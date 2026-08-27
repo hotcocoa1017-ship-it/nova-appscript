@@ -1,0 +1,1 @@
+NOVA Cloud Run deploy trigger: CLEAR_ASSIGNMENT compatibility fallback v55
