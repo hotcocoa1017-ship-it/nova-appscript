@@ -36,10 +36,27 @@ jobs:
           set -euo pipefail
           PROJECT_ID="$(gcloud projects describe 479836905263 --format='value(projectId)')"
           echo "PROJECT_ID=$PROJECT_ID"
+          URL="$(gcloud run services describe nova-realtime-api --region asia-southeast1 --project "$PROJECT_ID" --format='value(status.url)')"
+          echo "SERVICE_URL=$URL"
           gcloud run services describe nova-realtime-api \
             --region asia-southeast1 \
             --project "$PROJECT_ID" \
             --format='yaml(status.url,status.latestReadyRevisionName,status.latestCreatedRevisionName,status.traffic)'
+          echo '--- latest revisions ---'
+          gcloud run revisions list \
+            --service nova-realtime-api \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --limit=6 \
+            --sort-by='~metadata.creationTimestamp' \
+            --format='table(metadata.name,status.conditions[0].status,metadata.creationTimestamp,status.imageDigest)'
+          echo '--- health endpoints ---'
+          curl -sS -o /tmp/health.out -w 'health HTTP %{http_code}\n' --max-time 20 "$URL/health" || true
+          cat /tmp/health.out || true
+          echo
+          curl -sS -o /tmp/healthz.out -w 'healthz HTTP %{http_code}\n' --max-time 20 "$URL/healthz" || true
+          cat /tmp/healthz.out || true
+          echo
           echo '--- recent ERROR logs ---'
           gcloud logging read \
             'resource.type="cloud_run_revision" AND resource.labels.service_name="nova-realtime-api" AND severity>=ERROR' \
