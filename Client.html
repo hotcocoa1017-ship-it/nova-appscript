@@ -5181,7 +5181,9 @@
         renderRoomUploadPreview_(result);
         const totalMs = Math.round(performance.now() - previewStartedAt);
         const serverMs = Number(result.performance?.elapsedMs || 0);
-        setSyncStatus(`객실현황 검증 완료 · 총 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}`);
+        const previewStatusText = `객실현황 검증 완료 · 총 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}`;
+        if ($('uploadPerformanceStatus')) $('uploadPerformanceStatus').textContent = previewStatusText;
+        setSyncStatus(previewStatusText);
       })
       .withFailureHandler(error => {
         setUploadBusy_(false);
@@ -5212,6 +5214,7 @@
         ${errors.length ? `<div class="upload-error-list">${errors.map(text => `<div>${escapeHtml(text)}</div>`).join('')}</div>` : ''}
         ${(result.warnings || []).length ? `<div class="upload-warning-list">${result.warnings.map(text => `<div>${escapeHtml(text)}</div>`).join('')}</div>` : ''}
         <p class="upload-message">${escapeHtml(result.message || '')}</p>
+        <div id="uploadPerformanceStatus" class="upload-processing"></div>
         ${result.canApply ? `<div class="modal-actions">
           <button id="uploadResetApplyButton" class="action-button danger" type="button">초기화 후 반영</button>
           <button id="uploadApplyButton" class="action-button primary" type="button">기존 상태 유지 반영</button>
@@ -5247,6 +5250,11 @@
       button.textContent = resetMode ? '초기화 후 반영 중…' : '반영 중…';
     }
     if (otherButton) otherButton.disabled = true;
+    if ($('uploadPerformanceStatus')) {
+      $('uploadPerformanceStatus').textContent = resetMode
+        ? '객실현황 초기화 후 반영 중…'
+        : '객실현황 반영 중…';
+    }
     try {
       const result = await callServer('applyRoomStatusUpload', state.token, previewId, {
         resetExisting: resetMode
@@ -5263,16 +5271,16 @@
         renderRoomFilters();
         renderRoomGrid();
       }
-      showToast(result.message || '객실현황을 반영했습니다.');
       const totalMs = Math.round(performance.now() - clickedAt);
       const serverMs = Number(result.performance?.elapsedMs || result.timing?.totalMs || 0);
       const writeMs = Number(result.timing?.currentWriteMs || 0);
       const lockMs = Number(result.timing?.lockWaitMs || 0);
       const flushMs = Number(result.timing?.flushMs || 0);
-      setSyncStatus(
+      const applyStatusText =
         `객실현황 반영 완료 · 총 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}`
-        + `${writeMs ? ` · 저장 ${writeMs}ms` : ''}${lockMs ? ` · 잠금 ${lockMs}ms` : ''}${flushMs ? ` · flush ${flushMs}ms` : ''}`
-      );
+        + `${writeMs ? ` · 저장 ${writeMs}ms` : ''}${lockMs ? ` · 잠금 ${lockMs}ms` : ''}${flushMs ? ` · flush ${flushMs}ms` : ''}`;
+      showToast(applyStatusText);
+      setSyncStatus(applyStatusText);
 
       // 서버가 이미 최신 객실목록을 반환했으므로 완료 응답 직후 동일 자료를 다시 전체조회하지 않습니다.
       // 보조 재조회는 사용자 응답 경로 밖에서 수행해 업로드 완료 체감을 지연시키지 않습니다.
@@ -5287,6 +5295,9 @@
         button.textContent = originalText;
       }
       if (otherButton) otherButton.disabled = false;
+      if ($('uploadPerformanceStatus')) {
+        $('uploadPerformanceStatus').textContent = `객실현황 반영 오류 · ${error?.message || '서버 처리 오류'}`;
+      }
       showToast(error?.message || '객실현황 반영 오류');
     }
   }
