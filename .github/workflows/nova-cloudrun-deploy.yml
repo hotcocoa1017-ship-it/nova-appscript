@@ -1,0 +1,101 @@
+name: NOVA Cloud Run Deploy
+
+on:
+  push:
+    branches:
+      - perf/room-actions-v16
+    paths:
+      - 'cloudrun/**'
+      - '.github/workflows/nova-cloudrun-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-cloudrun-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: perf/room-actions-v16
+
+      - name: Validate Cloud Run source
+        run: node --check cloudrun/index.js
+
+      - name: Check Cloud Run deployment credential
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$GCP_SA_KEY" ]] || { echo 'Missing GitHub secret: GCP_SA_KEY' >&2; exit 1; }
+          python - <<'PY'
+          import json, os
+          data = json.loads(os.environ['GCP_SA_KEY'])
+          if not data.get('project_id') or not data.get('client_email'):
+              raise SystemExit('GCP_SA_KEY does not contain project_id/client_email')
+          print('Cloud Run deployment credential: configured')
+          PY
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve Google Cloud project
+        id: project
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_ID="$(python - <<'PY'
+          import json, os
+          print(json.loads(os.environ['GCP_SA_KEY'])['project_id'])
+          PY
+          )"
+          echo "id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
+          echo "Google Cloud project resolved."
+
+      - name: Deploy nova-realtime-api
+        env:
+          PROJECT_ID: ${{ steps.project.outputs.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run deploy nova-realtime-api \
+            --source ./cloudrun \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --quiet
+
+      - name: Verify Cloud Run revision
+        env:
+          PROJECT_ID: ${{ steps.project.outputs.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="$(gcloud run services describe nova-realtime-api --region asia-southeast1 --project "$PROJECT_ID" --format='value(status.url)')"
+          [[ -n "$URL" ]] || { echo 'Cloud Run service URL not found.' >&2; exit 1; }
+          curl -fsSL --max-time 30 "$URL/healthz" > /tmp/nova-cloudrun-health.json
+          cat /tmp/nova-cloudrun-health.json
+          grep -F 'phase1-v3.9-houseman-manual-assign' /tmp/nova-cloudrun-health.json >/dev/null
+          echo 'Cloud Run production smoke check: PASS'
+
+      - name: Deployment summary
+        run: |
+          echo '### NOVA Cloud Run deployment' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Service: nova-realtime-api' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Region: asia-southeast1' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Source validation: PASS' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Production health check: PASS' >> "$GITHUB_STEP_SUMMARY"
