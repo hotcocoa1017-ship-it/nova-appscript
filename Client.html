@@ -694,6 +694,30 @@
     novaRealtime_.supabase = null;
   }
 
+  async function mirrorRealtimeClearAssignmentToSheet_(payload) { // (DB 배정초기화 성공 후 이력/Sheet 보조 미러)
+    const safe = Object.assign({}, payload || {}, {
+      action: 'CLEAR_ASSIGNMENT',
+      expectedVersion: 0
+    });
+    delete safe.sheetExpectedVersion;
+    const delays = [0, 700, 1800, 4000];
+    let lastError = null;
+    for (let index = 0; index < delays.length; index += 1) {
+      if (delays[index]) await novaRealtimeSleep_(delays[index]);
+      try {
+        const mirrored = await callServer('updateRoomOperation', state.token, safe);
+        if (!mirrored?.ok) throw new Error(mirrored?.message || '배정초기화 이력 동기화 실패');
+        setSyncStatus(`${safe.roomNo}호 배정초기화 · 기존 이력 동기화 완료`);
+        return mirrored;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    console.error('[NOVA Realtime] 배정초기화 Sheet 미러 실패:', lastError);
+    setSyncStatus(`${safe.roomNo}호 배정초기화 DB 완료 · 기존 이력 동기화 재확인 필요`);
+    return null;
+  }
+
   async function saveRoomActionRealtimeOrLegacy_(legacyMethod, payload) {
     const safe = Object.assign({}, payload || {});
     const rawAction = String(safe.action || '').trim().toUpperCase();
@@ -775,6 +799,11 @@
       result = await send();
     }
     result.version = Number(result.version || result.room?.version || 0);
+    if (mappedAction === 'CLEAR_ASSIGNMENT' && result.eventDeferred === true) {
+      // DB 초기화는 이미 확정되었습니다. DB 이벤트 스키마가 구버전인 경우에만
+      // 기존 Sheet/업무이력을 사용자 응답 경로 밖에서 안전하게 보완합니다.
+      void mirrorRealtimeClearAssignmentToSheet_(legacySafe);
+    }
     if (mappedAction === 'CHANGE_ROOM_STATUS') {
       const protectedStatus = String(result.room?.roomStatus || safe.roomStatus || '').trim().toUpperCase();
       const protectionKey = `${String(safe.site || '').trim()}|${String(safe.roomNo || '').trim()}`;

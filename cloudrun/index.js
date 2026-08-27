@@ -2122,24 +2122,40 @@ app.post(
         );
         const nextRoom = updated.rows[0];
 
-        await client.query(
-          `insert into public.nova_room_events(
-            request_id,business_date,site,room_no,action,before_status,after_status,
-            employee_no,room_version,detail
-          ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
-          [
-            requestId,
-            businessDate,
-            site,
-            roomNo,
-            action,
-            previousCleaningStatus,
-            'WAITING',
-            user.employee_no,
-            nextRoom.version,
-            JSON.stringify(detail)
-          ]
-        );
+        let eventDeferred = false;
+        // 일부 기존 DB에는 nova_room_events.action 허용값이 구버전으로 남아 있을 수 있습니다.
+        // 객실 배정초기화 자체는 먼저 확정하고, CLEAR_ASSIGNMENT 이벤트 값만 거절되는 경우에는
+        // SAVEPOINT로 이벤트 INSERT만 되돌린 뒤 Client가 기존 Sheet/업무이력을 보조 미러합니다.
+        await client.query('savepoint nova_clear_assignment_event');
+        try {
+          await client.query(
+            `insert into public.nova_room_events(
+              request_id,business_date,site,room_no,action,before_status,after_status,
+              employee_no,room_version,detail
+            ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+            [
+              requestId,
+              businessDate,
+              site,
+              roomNo,
+              action,
+              previousCleaningStatus,
+              'WAITING',
+              user.employee_no,
+              nextRoom.version,
+              JSON.stringify(detail)
+            ]
+          );
+        } catch (eventError) {
+          const pgCode = String(eventError?.code || '');
+          await client.query('rollback to savepoint nova_clear_assignment_event');
+          if (!['23514', '22P02'].includes(pgCode)) throw eventError;
+          eventDeferred = true;
+          console.warn('[NOVA Realtime] CLEAR_ASSIGNMENT event deferred', {
+            code: pgCode,
+            constraint: String(eventError?.constraint || '')
+          });
+        }
 
         const responseRoom = {
           ...roomDto(nextRoom),
@@ -2278,6 +2294,7 @@ app.post(
           requestId,
           room: responseRoom,
           version: Number(nextRoom.version || 0),
+          eventDeferred,
           timing: { totalMs: Date.now() - startedAt }
         };
         await client.query(
