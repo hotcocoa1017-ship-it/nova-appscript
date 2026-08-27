@@ -776,6 +776,8 @@ app.post(
       verifyMigrationSignature(req);
 
       const body = req.body || {};
+      const forceSheetCleaning =
+        body.forceSheetCleaning === true;
       const businessDate =
         cleanText_(body.businessDate, 20);
 
