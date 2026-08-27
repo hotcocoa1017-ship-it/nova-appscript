@@ -816,6 +816,21 @@
         });
       }
     }
+    if (mappedAction === 'QM_ASSIGN') {
+      // QM 점검 시작/제출은 아직 Sheet 업무흐름을 사용한다.
+      // DB 배정 이벤트가 Sheet까지 반영된 것을 확인한 뒤에만 배정 완료로 처리한다.
+      const qmMirror = await callServer('syncNovaRealtimeQmAssignmentMirror', state.token, {
+        businessDate: safe.businessDate,
+        site: safe.site,
+        roomNo: safe.roomNo,
+        employeeNo: safe.employeeNo
+      });
+      if (!qmMirror?.ok) throw new Error('QM 배정정보를 업무시트에 동기화하지 못했습니다.');
+      if (result.room) {
+        result.room.qmEmployeeNo = String(qmMirror.qmEmployeeNo || result.room.qmEmployeeNo || '');
+        result.room.cleaningStatus = String(qmMirror.cleaningStatus || result.room.cleaningStatus || 'QM_WAITING');
+      }
+    }
     result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : mappedAction === 'ASSIGN_ROOMMAID' ? '룸메이드 배정을 저장했습니다.' : mappedAction === 'QM_ASSIGN' ? 'QM 배정을 저장했습니다.' : mappedAction === 'CHANGE_ROOM_STATUS' ? '객실상태를 저장했습니다.' : mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' ? '객실 조치상태를 저장했습니다.' : mappedAction === 'UPDATE_OPERATION_FLAGS' ? '운영표시를 저장했습니다.' : mappedAction === 'CLEAR_ASSIGNMENT' ? '배정을 초기화했습니다.' : mappedAction === 'CLEANING_RESET' ? '청소완료 실적 초기화를 저장했습니다.' : '청소완료 처리했습니다.');
     return result;
   }

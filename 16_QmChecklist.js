@@ -177,6 +177,24 @@ function startQmInspection(token, payload) { // (QM 점검 시작·실시간 초
     const site = String(safe.site || user.defaultSite || '').trim();
     const roomNo = String(safe.roomNo || '').trim();
     if (!roomNo) throw new Error('객실번호가 없습니다.');
+
+    // v57 이전/전환 직후 DB에는 QM 배정이 있으나 Sheet QM사번이 아직 미러되지 않은
+    // 짧은 구간을 자동 복구한다. 잠금 내부에서 mirror를 호출하면 이중 잠금이 되므로
+    // 반드시 사전조회 단계에서만 1회 실행하고, 아래 잠금에서 다시 원본을 검증한다.
+    const preflightSheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
+    const preflightRowInfo = findCurrentRoomRow_(preflightSheet, businessDate, site, roomNo);
+    if (preflightRowInfo
+        && String(preflightRowInfo.data['QM사번'] || '').trim() !== user.employeeNo
+        && typeof novaRealtimeFinalEnabled_ === 'function'
+        && novaRealtimeFinalEnabled_()
+        && typeof mirrorNovaRealtimeEventsToSheets_ === 'function') {
+      try {
+        mirrorNovaRealtimeEventsToSheets_();
+      } catch (syncError) {
+        console.warn('[NOVA QM] 점검시작 전 Realtime 배정 미러 실패:', syncError);
+      }
+    }
+
     const writeLock = acquireWriteLock_();
     try {
     const currentSheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);

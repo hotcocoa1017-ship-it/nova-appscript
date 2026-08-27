@@ -60,6 +60,40 @@ function syncNovaRealtimeRoomForAction(token, payload) { // (룸메이드 작업
   });
 }
 
+
+function syncNovaRealtimeQmAssignmentMirror(token, payload) { // (QM 배정 DB 이벤트 즉시 Sheet 반영·검증)
+  const user = requireRole_(token, ['ADMIN', 'ORDER']);
+  const safe = payload || {};
+  const businessDate = novaRealtimeFinalBusinessDate_(safe.businessDate);
+  const site = String(safe.site || user.defaultSite || '').trim();
+  const roomNo = String(safe.roomNo || '').trim();
+  const expectedQmEmployeeNo = String(safe.employeeNo || '').trim();
+  if (!site || !roomNo || !expectedQmEmployeeNo) {
+    throw new Error('QM 배정 즉시동기화에 사업장·객실번호·QM 사번이 필요합니다.');
+  }
+
+  const mirror = mirrorNovaRealtimeEventsToSheets_();
+  const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
+  const rowInfo = findCurrentRoomRow_(sheet, businessDate, site, roomNo);
+  if (!rowInfo) throw new Error(`${roomNo}호를 현재객실현황에서 찾을 수 없습니다.`);
+
+  const currentQmEmployeeNo = String(rowInfo.data['QM사번'] || '').trim();
+  if (currentQmEmployeeNo !== expectedQmEmployeeNo) {
+    throw new Error('QM 배정정보 동기화 중 다른 배정이 반영되었습니다. 다시 불러온 뒤 확인하세요.');
+  }
+
+  return {
+    ok: true,
+    mirror,
+    businessDate,
+    site: String(rowInfo.data['사업장'] || site).trim(),
+    roomNo,
+    qmEmployeeNo: currentQmEmployeeNo,
+    cleaningStatus: String(rowInfo.data['청소상태'] || '').trim().toUpperCase(),
+    version: Number(rowInfo.data['마지막변경버전'] || 0)
+  };
+}
+
 function novaRealtimeScheduledFinalSync() { // (1분 최종 통합: 이벤트 미러 + 5분 간격 정방향)
   if (!novaRealtimeFinalEnabled_()) return { ok: true, skipped: true, reason: 'REALTIME_DISABLED' };
   const mirror = mirrorNovaRealtimeEventsToSheets_();
