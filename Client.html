@@ -4234,7 +4234,9 @@
     }
     const actionStartedAt = performance.now();
     try {
-      const result = await callServer('updateHousemanOrder', state.token, payload);
+      const result = action === 'ASSIGN'
+        ? await callServer('assignHousemanOrderFast', state.token, payload)
+        : await callServer('updateHousemanOrder', state.token, payload);
       if (!result?.ok) throw new Error(result?.message || '오더를 변경하지 못했습니다.');
       upsertOrderLocal_(result.order, result.version);
       closeModal();
@@ -4245,7 +4247,25 @@
         const telegram = result.telegram || {};
         showToast(`${result.order.roomNo}호 배정 완료 · ${elapsed}ms${serverElapsed ? ` · 서버 ${serverElapsed}ms` : ''}`);
         setSyncStatus(`하우스맨 배정 완료 · ${elapsed}ms${serverElapsed ? ` · 서버 ${serverElapsed}ms` : ''}`);
-        if (telegram.queued && telegram.queueRecordId) {
+        if (telegram.deferred) {
+          void callServer('finalizeHousemanAssignmentAux', state.token, {
+            orderId: result.order.orderId,
+            employeeNo: result.order.assignedEmployeeNo,
+            rowNumber: Number(result.order.rowNumber || 0),
+            version: Number(result.version || result.order.version || 0)
+          }).then(aux => {
+            const queued = aux?.telegram || {};
+            if (queued.queued && queued.queueRecordId) {
+              return callServer('dispatchHousemanOrderTelegramFast', state.token, {
+                recordId: queued.queueRecordId,
+                rowNumber: Number(queued.queueRowNumber || 0)
+              });
+            }
+            return null;
+          }).catch(error => {
+            console.warn('하우스맨 배정 감사·텔레그램 후속처리는 큐 재확인이 필요합니다.', error?.message || error);
+          });
+        } else if (telegram.queued && telegram.queueRecordId) {
           void callServer('dispatchHousemanOrderTelegramFast', state.token, {
             recordId: telegram.queueRecordId,
             rowNumber: Number(telegram.queueRowNumber || 0)
