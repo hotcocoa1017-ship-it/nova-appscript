@@ -59,6 +59,8 @@ jobs:
             --source ./cloudrun \
             --region asia-southeast1 \
             --project "$PROJECT_ID" \
+            --no-traffic \
+            --tag nova-candidate \
             --quiet
 
       - name: Verify Cloud Run revision
@@ -67,12 +69,60 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          SERVICE_JSON="$RUNNER_TEMP/nova-cloudrun-service.json"
+          gcloud run services describe nova-realtime-api \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --format=json > "$SERVICE_JSON"
+
+          CANDIDATE_URL="$(node -e "const s=require(process.argv[1]);const t=(s?.status?.traffic||[]).find(x=>x.tag==='nova-candidate');process.stdout.write(String(t?.url||''));" "$SERVICE_JSON")"
+          CANDIDATE_REVISION="$(node -e "const s=require(process.argv[1]);const t=(s?.status?.traffic||[]).find(x=>x.tag==='nova-candidate');process.stdout.write(String(t?.revisionName||''));" "$SERVICE_JSON")"
+          [[ -n "$CANDIDATE_URL" && -n "$CANDIDATE_REVISION" ]] || {
+            echo 'Cloud Run candidate route was not found.' >&2
+            exit 1
+          }
+
+          curl -fsSL \
+            --max-time 30 \
+            --retry 12 \
+            --retry-delay 3 \
+            --retry-all-errors \
+            "$CANDIDATE_URL/healthz" > "$RUNNER_TEMP/nova-cloudrun-candidate-health.json"
+          cat "$RUNNER_TEMP/nova-cloudrun-candidate-health.json"
+          node - "$RUNNER_TEMP/nova-cloudrun-candidate-health.json" <<'NODE'
+          const fs = require('fs');
+          const health = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if (health?.build !== 'phase1-v3.9-houseman-manual-assign') {
+            throw new Error('Unexpected NOVA build.');
+          }
+          if (health?.eventTimeReady !== true) {
+            throw new Error('event_time schema is not ready.');
+          }
+          NODE
+
+          gcloud run services update-traffic nova-realtime-api \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --to-revisions "$CANDIDATE_REVISION=100" \
+            --quiet
+
           URL="$(gcloud run services describe nova-realtime-api --region asia-southeast1 --project "$PROJECT_ID" --format='value(status.url)')"
           [[ -n "$URL" ]] || { echo 'Cloud Run service URL not found.' >&2; exit 1; }
-          curl -fsSL --max-time 30 "$URL/healthz" > /tmp/nova-cloudrun-health.json
-          cat /tmp/nova-cloudrun-health.json
-          grep -F 'phase1-v3.9-houseman-manual-assign' /tmp/nova-cloudrun-health.json >/dev/null
-          echo 'Cloud Run production smoke check: PASS'
+          curl -fsSL \
+            --max-time 30 \
+            --retry 12 \
+            --retry-delay 3 \
+            --retry-all-errors \
+            "$URL/healthz" > "$RUNNER_TEMP/nova-cloudrun-health.json"
+          cat "$RUNNER_TEMP/nova-cloudrun-health.json"
+          node - "$RUNNER_TEMP/nova-cloudrun-health.json" <<'NODE'
+          const fs = require('fs');
+          const health = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if (health?.build !== 'phase1-v3.9-houseman-manual-assign' || health?.eventTimeReady !== true) {
+            throw new Error('Cloud Run production smoke check failed.');
+          }
+          NODE
+          echo "Cloud Run production smoke check: PASS ($CANDIDATE_REVISION)"
 
       - name: Deployment summary
         run: |

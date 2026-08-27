@@ -51,6 +51,80 @@ if (HAS_PG_PARTS) {
 }
 
 const pool = new Pool(poolConfig);
+let ROOM_EVENTS_CURSOR_SCHEMA_READY = false;
+
+async function ensureRoomEventsCursorSchema_() {
+  const client = await pool.connect();
+
+  try {
+    const columnsResult = await client.query(
+      `select column_name
+         from information_schema.columns
+        where table_schema='public'
+          and table_name='nova_room_events'`
+    );
+    const columns = new Set(
+      columnsResult.rows.map(row => String(row.column_name || ''))
+    );
+
+    if (!columns.size) {
+      throw new Error('public.nova_room_events table was not found.');
+    }
+
+    const sourceColumn = columns.has('created_at')
+      ? 'created_at'
+      : (columns.has('updated_at') ? 'updated_at' : '');
+
+    await client.query('begin');
+    await client.query(
+      'alter table public.nova_room_events add column if not exists event_time timestamptz'
+    );
+
+    if (sourceColumn) {
+      await client.query(
+        `update public.nova_room_events
+            set event_time = ${sourceColumn}::timestamptz
+          where event_time is null`
+      );
+    } else {
+      await client.query(
+        'update public.nova_room_events set event_time=now() where event_time is null'
+      );
+    }
+
+    await client.query(
+      'alter table public.nova_room_events alter column event_time set default now()'
+    );
+    await client.query(
+      'alter table public.nova_room_events alter column event_time set not null'
+    );
+    await client.query('commit');
+
+    await client.query(
+      'create index if not exists idx_nova_room_events_cursor on public.nova_room_events(event_time, request_id)'
+    );
+
+    const verification = await client.query(
+      `select
+          count(*) filter (where event_time is null)::bigint as null_rows
+         from public.nova_room_events`
+    );
+
+    if (Number(verification.rows[0]?.null_rows || 0) !== 0) {
+      throw new Error('nova_room_events.event_time verification failed.');
+    }
+
+    ROOM_EVENTS_CURSOR_SCHEMA_READY = true;
+    console.log('[NOVA Realtime] event_time schema ready');
+  } catch (error) {
+    try {
+      await client.query('rollback');
+    } catch {}
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 function httpError(status, code, message, extra = {}) {
   const e = new Error(message);
@@ -466,7 +540,9 @@ app.get('/health', async (_req, res, next) => {
       build: NOVA_REALTIME_BUILD,
       dbTime: rows[0].now,
       dbConfigMode:
-        HAS_PG_PARTS ? 'PG_PARTS' : 'DATABASE_URL'
+        HAS_PG_PARTS ? 'PG_PARTS' : 'DATABASE_URL',
+      eventTimeReady:
+        ROOM_EVENTS_CURSOR_SCHEMA_READY
     });
   } catch (e) {
     next(e);
@@ -482,7 +558,9 @@ app.get('/healthz', async (_req, res, next) => {
       build: NOVA_REALTIME_BUILD,
       dbTime: rows[0].now,
       dbConfigMode:
-        HAS_PG_PARTS ? 'PG_PARTS' : 'DATABASE_URL'
+        HAS_PG_PARTS ? 'PG_PARTS' : 'DATABASE_URL',
+      eventTimeReady:
+        ROOM_EVENTS_CURSOR_SCHEMA_READY
     });
   } catch (e) {
     next(e);
@@ -4034,6 +4112,8 @@ app.use(
       .json(body);
   }
 );
+
+await ensureRoomEventsCursorSchema_();
 
 app.listen(
   PORT,
