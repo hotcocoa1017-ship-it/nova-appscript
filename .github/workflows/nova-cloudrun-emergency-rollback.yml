@@ -1,0 +1,69 @@
+name: NOVA Cloud Run Emergency Rollback
+
+on:
+  push:
+    branches:
+      - perf/room-actions-v16
+    paths:
+      - '.github/workflows/nova-cloudrun-emergency-rollback.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: perf/room-actions-v16
+
+      - name: Authenticate to Google Cloud with WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/nova-github-pool/providers/nova-github
+          service_account: 479836905263-compute@developer.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Roll back traffic to revision 00026
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_ID="$(gcloud projects describe 479836905263 --format='value(projectId)')"
+          TARGET_REVISION='nova-realtime-api-00026-lzk'
+          gcloud run services update-traffic nova-realtime-api \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --to-revisions="$TARGET_REVISION=100" \
+            --quiet
+
+          CURRENT="$(gcloud run services describe nova-realtime-api \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --format='value(status.traffic[0].revisionName,status.traffic[0].percent)')"
+          echo "Traffic: $CURRENT"
+          echo "$CURRENT" | grep -F "$TARGET_REVISION" >/dev/null
+          echo "$CURRENT" | grep -F '100' >/dev/null
+
+          URL="$(gcloud run services describe nova-realtime-api \
+            --region asia-southeast1 \
+            --project "$PROJECT_ID" \
+            --format='value(status.url)')"
+          STATUS="$(curl -sS -o /tmp/nova-health.json -w '%{http_code}' --max-time 30 "$URL/health")"
+          cat /tmp/nova-health.json
+          echo "Health HTTP $STATUS"
+          [[ "$STATUS" = '200' ]] || { echo "Rollback health check failed: HTTP $STATUS" >&2; exit 1; }
+
+      - name: Rollback summary
+        run: |
+          echo '### NOVA Cloud Run emergency rollback' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Service: nova-realtime-api' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Target revision: nova-realtime-api-00026-lzk' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Traffic: 100%' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Health endpoint: /health PASS' >> "$GITHUB_STEP_SUMMARY"
