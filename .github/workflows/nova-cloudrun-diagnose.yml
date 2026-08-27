@@ -75,3 +75,5 @@ jobs:
             --format=json \
             | grep -Ei 'CLEANING_COMPLETE|duplicate key|constraint|Postgres|error|nova_room_events|nova_request_dedup' \
             | tail -n 160 || true
+
+# diagnostic trigger 2026-08-27T21:50+09:00
