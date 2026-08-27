@@ -87,7 +87,7 @@ jobs:
             --retry 12 \
             --retry-delay 3 \
             --retry-all-errors \
-            "$CANDIDATE_URL/healthz" > "$RUNNER_TEMP/nova-cloudrun-candidate-health.json"
+            "$CANDIDATE_URL/health" > "$RUNNER_TEMP/nova-cloudrun-candidate-health.json"
           cat "$RUNNER_TEMP/nova-cloudrun-candidate-health.json"
           node - "$RUNNER_TEMP/nova-cloudrun-candidate-health.json" <<'NODE'
           const fs = require('fs');
@@ -113,7 +113,7 @@ jobs:
             --retry 12 \
             --retry-delay 3 \
             --retry-all-errors \
-            "$URL/healthz" > "$RUNNER_TEMP/nova-cloudrun-health.json"
+            "$URL/health" > "$RUNNER_TEMP/nova-cloudrun-health.json"
           cat "$RUNNER_TEMP/nova-cloudrun-health.json"
           node - "$RUNNER_TEMP/nova-cloudrun-health.json" <<'NODE'
           const fs = require('fs');
