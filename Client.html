@@ -543,7 +543,6 @@
       unableReason: String(row.unable_reason ?? row.unableReason ?? ''),
       updatedAt: novaRealtimeOrderDateTimeText_(row.updated_at ?? row.updatedAt),
       version: Number(row.version || 0),
-      __sheetMirrorPending: true,
       __localProtectUntil: Date.now() + 30000
     };
   }
@@ -556,6 +555,32 @@
     if (!order?.orderId || !order.roomNo || !order.site) return;
     if (String(order.businessDate) !== String(state.indicator.businessDate || '')) return;
     if (state.indicator.site && String(order.site) !== String(state.indicator.site)) return;
+
+    // Realtime DB version과 Sheet 변경버전은 서로 다른 버전 도메인입니다.
+    // 이미 Sheet 이력이 확인된 오더는 rowNumber/Sheet version을 유지해야
+    // 접수·처리·완료 및 재배정 시 기존 이력 동기화 대기 상태로 되돌아가지 않습니다.
+    const existing = (state.indicator.data.orders || [])
+      .find(item => String(item?.orderId || '') === String(order.orderId || ''));
+    const existingRowNumber = Number(existing?.rowNumber || 0);
+
+    if (existingRowNumber > 0) {
+      order.rowNumber = existingRowNumber;
+      order.version = Number(existing?.version || 0);
+      delete order.__sheetMirrorPending;
+      delete order.__sheetMirrorStartedAt;
+    } else if (existing?.__sheetMirrorPending) {
+      // 이 브라우저가 방금 Realtime 선저장을 시작한 경우에는
+      // 실제 Sheet 미러 완료 전까지만 pending을 유지합니다.
+      order.rowNumber = existingRowNumber;
+      order.version = Number(existing?.version || order.version || 0);
+      order.__sheetMirrorPending = true;
+      order.__sheetMirrorStartedAt = Number(existing?.__sheetMirrorStartedAt || Date.now());
+    } else {
+      // 다른 브라우저에서 방금 생성/배정된 오더는 Sheet 행이 확인될 때까지만 보호합니다.
+      order.__sheetMirrorPending = true;
+      order.__sheetMirrorStartedAt = Date.now();
+    }
+
     upsertOrderLocal_(order, state.indicator.version);
     setSyncStatus(`${order.roomNo}호 하우스맨 오더 실시간 반영`);
   }
