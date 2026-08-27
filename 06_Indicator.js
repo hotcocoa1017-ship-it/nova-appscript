@@ -2038,10 +2038,15 @@ function compareRooms_(a, b) { // (객실번호 정렬)
   return String(a.roomNo).localeCompare(String(b.roomNo), 'ko');
 }
 
-function findCurrentRoomRow_(sheet, businessDate, site, roomNo) { // (현재 객실 행 찾기)
+function findCurrentRoomRow_(sheet, businessDate, site, roomNo) { // (현재 객실 행 찾기·중복 시 최신행 선택)
   const selection = getCurrentRowsForSelection_(businessDate, site);
-  const found = selection.items.find(item => String(item.data['객실번호'] || '').trim() === roomNo);
-  return found ? { rowNumber: found.rowNumber, data: found.data } : null;
+  const roomNoText = String(roomNo || '').trim();
+  const candidates = selection.items.filter(item => String(item.data['객실번호'] || '').trim() === roomNoText);
+  if (!candidates.length) return null;
+  const found = candidates.reduce((latest, item) =>
+    !latest || compareCurrentRoomRowsForDisplay_(item, latest) > 0 ? item : latest
+  , null);
+  return { rowNumber: found.rowNumber, data: found.data };
 }
 
 function findCurrentRoomRowFast_(sheet, businessDate, site, roomNo, preferredRowNumber) { // (객실카드 행번호 우선 단건 조회)

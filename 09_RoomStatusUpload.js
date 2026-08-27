@@ -126,8 +126,10 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
       const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
       const headerMap = getHeaderMap_(sheet);
       const lastColumn = sheet.getLastColumn();
+      // 업무일자는 실제 셀값(Date)이 아니라 yyyy-MM-dd 표시값으로 읽어야
+      // 동일 업무일자·사업장 기존행을 정확히 찾아 교체할 수 있다.
       const existingRows = sheet.getLastRow() > 1
-        ? sheet.getRange(2, 1, sheet.getLastRow() - 1, lastColumn).getValues()
+        ? sheet.getRange(2, 1, sheet.getLastRow() - 1, lastColumn).getDisplayValues()
         : [];
       const existingForTarget = {};
       const keptRows = [];

@@ -816,8 +816,14 @@ function novaRealtimeFinalCurrentRoomIndex_(sheet) { // (현재객실현황을 �
     const site = String(data['사업장'] || '').trim();
     const roomNo = String(data['객실번호'] || '').trim();
     if (!businessDate || !site || !roomNo) return;
-    // 아래쪽 행을 최신행으로 간주한다.
-    result.set(`${businessDate}|${site}|${roomNo}`, { rowNumber: offset + 2, data });
+    const key = `${businessDate}|${site}|${roomNo}`;
+    const candidate = { rowNumber: offset + 2, data };
+    const current = result.get(key);
+    // Indicator/QM 단건조회와 동일하게 version -> 수정일시 -> 행번호 순으로
+    // 최신 원본을 선택해 Realtime 미러와 legacy 경로가 같은 행을 보게 한다.
+    if (!current || compareCurrentRoomRowsForDisplay_(candidate, current) > 0) {
+      result.set(key, candidate);
+    }
   });
   return result;
 }
