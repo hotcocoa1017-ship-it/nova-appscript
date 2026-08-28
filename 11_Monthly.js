@@ -37,6 +37,29 @@ function getMonthlyHistory(token, filters) { // (월별 이력 페이지 조회)
   });
 }
 
+function getMonthlyHousemanOrderOptions(token) { // (월별조회 하우스맨 등록창 코드옵션 직접 조회)
+  return measureResponse_('getMonthlyHousemanOrderOptions', () => {
+    requireRole_(token, ['ADMIN', 'ORDER']);
+    let codeIndex = getCodeIndex_();
+    let orderParts = Array.isArray(codeIndex['하우스맨파트']) ? codeIndex['하우스맨파트'] : [];
+    let orderItems = Array.isArray(codeIndex['하우스맨품목']) ? codeIndex['하우스맨품목'] : [];
+
+    if (!orderParts.length || !orderItems.length) {
+      CacheService.getScriptCache().remove('NOVA_CODE_INDEX_V2');
+      codeIndex = getCodeIndex_();
+      orderParts = Array.isArray(codeIndex['하우스맨파트']) ? codeIndex['하우스맨파트'] : [];
+      orderItems = Array.isArray(codeIndex['하우스맨품목']) ? codeIndex['하우스맨품목'] : [];
+    }
+
+    return {
+      ok: true,
+      orderParts,
+      orderItems,
+      sites: getMonthlyConfiguredSites_()
+    };
+  });
+}
+
 function getMonthlyHistoryExport(token, filters) { // (월별 이력 엑셀용 전체 조회)
   return measureResponse_('getMonthlyHistoryExport', () => {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);

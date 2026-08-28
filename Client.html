@@ -2712,7 +2712,7 @@
     $('dailyCloseCancelButton').addEventListener('click', cancelDailyCloseFromMonthly_);
   }
 
-  function openMonthlyHousemanOrderModal_() { // (일별 하우스맨 이력에서 오더 등록)
+  async function openMonthlyHousemanOrderModal_() { // (일별 하우스맨 이력에서 오더 등록)
     if (state.monthly.period !== 'DAILY' || String(state.monthly.type || '').toUpperCase() !== 'HOUSEMAN') {
       showToast('하우스맨 일별조회에서 오더를 등록할 수 있습니다.');
       return;
@@ -2720,9 +2720,37 @@
     const businessDate = String($('monthlyDate')?.value || state.monthly.date || formatClientDate_(new Date())).trim();
     const site = String($('monthlySite')?.value || state.monthly.site || '').trim();
     const options = state.monthly.data?.options || {};
-    const sites = Array.isArray(options.sites) ? options.sites : [];
-    const parts = Array.isArray(options.orderParts) ? options.orderParts : [];
-    const items = Array.isArray(options.orderItems) ? options.orderItems : [];
+    let sites = Array.isArray(options.sites) ? options.sites.slice() : [];
+    let parts = Array.isArray(options.orderParts) ? options.orderParts.slice() : [];
+    let items = Array.isArray(options.orderItems) ? options.orderItems.slice() : [];
+
+    if (!parts.length || !items.length) {
+      try {
+        const fallback = await callServer('getMonthlyHousemanOrderOptions', state.token);
+        if (fallback?.ok) {
+          if (Array.isArray(fallback.orderParts) && fallback.orderParts.length) parts = fallback.orderParts;
+          if (Array.isArray(fallback.orderItems) && fallback.orderItems.length) items = fallback.orderItems;
+          if (Array.isArray(fallback.sites)) {
+            sites = Array.from(new Set([...sites, ...fallback.sites].map(value => String(value || '').trim()).filter(Boolean)));
+          }
+          if (state.monthly.data) {
+            state.monthly.data.options = Object.assign({}, options, {
+              sites,
+              orderParts: parts,
+              orderItems: items
+            });
+          }
+        }
+      } catch (error) {
+        console.warn('월별조회 하우스맨 코드옵션 직접조회 실패:', error?.message || error);
+      }
+    }
+
+    if (!parts.length) {
+      showToast('하우스맨 파트 목록을 불러오지 못했습니다. 잠시 후 다시 시도하세요.');
+      return;
+    }
+
     const itemDatalist = `<datalist id="monthlyHousemanItemSuggestions">${items.map(item => `<option value="${escapeAttr(item.label || item.code || '')}"></option>`).join('')}</datalist>`;
     openModal(`
       <div class="modal-card">
