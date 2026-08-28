@@ -175,6 +175,10 @@ function buildMonthlyHistoryBundle_(request) { // (월별 이력 조회·필터�
     .filter(item => !request.search || monthlyItemSearchText_(item).includes(request.search));
 
   const options = buildMonthlyOptions_(typedItems, users);
+  if (request.type === 'HOUSEMAN') {
+    options.orderParts = getCodes_('하우스맨파트');
+    options.orderItems = getCodes_('하우스맨품목');
+  }
   const scopedItems = typedItems
     .filter(item => !request.site || item.site === request.site)
     .filter(item => !request.employeeNo || item.employeeNos.includes(request.employeeNo));
