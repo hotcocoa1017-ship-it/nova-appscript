@@ -5244,7 +5244,7 @@
       });
       payload.realtimeRoomPatch = realtimeRoomPatch;
     }
-    const fastAction = Boolean(optimisticPatch);
+    const fastAction = Boolean(optimisticPatch) && action !== 'QM_ASSIGN'; // QM배정은 DB+Sheet 확정 후에만 화면반영
     const originalButtonText = sourceButton?.textContent || '';
     const actionLabel = {
       CHANGE_ROOM_STATUS: payload.roomStatus === 'CHECKED_OUT' ? '퇴실 전환' : '객실상태 변경',
