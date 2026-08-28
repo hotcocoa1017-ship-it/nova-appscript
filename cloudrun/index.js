@@ -76,10 +76,22 @@ async function ensureAppNotificationsSchema_() {
       create index if not exists idx_nova_app_notifications_employee_created
       on public.nova_app_notifications(employee_no, created_at desc, notification_id desc)
     `);
+    await client.query(`
+      create table if not exists public.nova_app_notification_backfill_state(
+        employee_no text not null,
+        business_date date not null,
+        completed_at timestamptz not null default now(),
+        primary key(employee_no, business_date)
+      )
+    `);
     // 개인 참고용 알림은 장기 업무이력이 아니므로 오래된 레코드는 자동 정리한다.
     await client.query(`
       delete from public.nova_app_notifications
       where created_at < now() - interval '90 days'
+    `);
+    await client.query(`
+      delete from public.nova_app_notification_backfill_state
+      where business_date < (now() at time zone 'Asia/Seoul')::date - 30
     `);
     APP_NOTIFICATIONS_SCHEMA_READY = true;
     console.log('[NOVA Realtime] app notification schema ready');
@@ -170,6 +182,27 @@ async function ensureCurrentAppNotificationBackfill_(client, user) {
 
   let inserted = 0;
   const kstTodaySql = `(now() at time zone 'Asia/Seoul')::date`;
+
+  // 알림뱃지는 5초마다 조회되므로 현재배정 백필을 매번 반복하면 대량 중복 INSERT가 발생한다.
+  // 직원별·KST 업무일자별 최초 1회만 백필하고, 이후 신규 배정은 Realtime 이벤트 알림이 담당한다.
+  const backfillDone = await client.query(
+    `select 1
+       from public.nova_app_notification_backfill_state
+      where employee_no=$1
+        and business_date=${kstTodaySql}
+      limit 1`,
+    [employeeNo]
+  );
+  if (backfillDone.rowCount) return 0;
+
+  const backfillClaim = await client.query(
+    `insert into public.nova_app_notification_backfill_state(employee_no,business_date,completed_at)
+     values($1,${kstTodaySql},now())
+     on conflict(employee_no,business_date) do nothing
+     returning employee_no`,
+    [employeeNo]
+  );
+  if (!backfillClaim.rowCount) return 0;
 
   if (role === 'HOUSEMAN') {
     const { rows } = await client.query(
