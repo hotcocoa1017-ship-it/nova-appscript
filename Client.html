@@ -5670,7 +5670,7 @@
     openModal(`<div class="modal-card qm-checklist-modal rc3">
       <div class="modal-header"><div><small>QM 실시간 점검</small><h2>${escapeHtml(active.roomNo)} 장소별 체크리스트</h2><p>${escapeHtml(draft.startedAt || '')} 시작</p></div><button class="modal-close" data-close-modal>×</button></div>
       <div class="modal-body">
-        <div class="qm-checklist-guide"><b>실시간 저장</b> · 장소별로 양호/불량을 선택하고, 하자는 사진과 함께 등록할 수 있습니다. 최종 저장 시 지적이 있으면 재정비로 전환됩니다.<span id="qmDraftSaveStatus">${escapeHtml(draft.savedAt ? `마지막 저장 ${draft.savedAt}` : '저장 대기')}</span></div>
+        <div class="qm-checklist-guide"><b>점검</b> · 양호/불량을 선택하세요. 불량은 내용을 입력하고, 사진 필수 항목만 사진을 등록하세요.<span id="qmDraftSaveStatus">${escapeHtml(draft.savedAt ? `마지막 저장 ${draft.savedAt}` : '저장 대기')}</span></div>
         <div id="qmChecklistInspectionItems" class="qm-checklist-place-list">
           ${(checklist.groups || []).map(group => {
             const placeDefects = defects.filter(defect => defect.placeCode === group.place.code);
@@ -5776,7 +5776,7 @@
     const status = $('qmDraftSaveStatus');
     if (status) status.textContent = '저장 중…';
     try {
-      const result = await callServer('saveQmInspectionDraft', state.token, { draftId: draft.draftId, answers: draft.answers, defects: draft.defects });
+      const result = await callServer('saveQmInspectionDraft', state.token, { draftId: draft.draftId, draftRowNumber: Number(draft.rowNumber || 0), answers: draft.answers, defects: draft.defects });
       if (!result?.ok) throw new Error(result?.message || '임시 저장하지 못했습니다.');
       active.draft = Object.assign({}, active.draft, result.draft || {}, { answers: draft.answers, defects: draft.defects });
       if (status) status.textContent = `실시간 저장 ${result.savedAt || ''}`;
@@ -5891,10 +5891,12 @@
     if (invalidDefect) { showToast('추가 하자는 내용과 사진을 모두 등록하세요.'); button.disabled = false; return; }
     try {
       // 최종제출 payload 자체에 현재 answers/defects가 모두 포함되므로
-      // 완료 직전 별도 임시저장 RPC를 반복하지 않는다.
+      // 완료 직전 별도 임시저장 RPC를 반복하지 않는다. 대기 중 자동저장도 취소한다.
+      if (state.qmChecklist.autosaveTimer) window.clearTimeout(state.qmChecklist.autosaveTimer);
+      state.qmChecklist.autosaveTimer = null;
       const result = await callServer('submitQmChecklistInspection', state.token, {
         businessDate: state.mobile.businessDate, site: state.mobile.site, roomNo: active.roomNo,
-        draftId: active.draft.draftId, revision: active.checklist.revision,
+        draftId: active.draft.draftId, draftRowNumber: Number(active.draft.rowNumber || 0), revision: active.checklist.revision,
         answers: active.draft.answers, defects: active.draft.defects, expectedVersion: Number(active.roomVersion || 0)
       });
       if (!result?.ok) throw new Error(result?.message || '점검결과를 저장하지 못했습니다.');

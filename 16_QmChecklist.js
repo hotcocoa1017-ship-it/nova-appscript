@@ -254,13 +254,13 @@ function saveQmInspectionDraft(token, payload) { // (QM 점검 실시간 자동�
   return measureResponse_('saveQmInspectionDraft', () => {
     const user = requireRole_(token, ['QM']);
     const safe = payload || {};
+    const checklist = getQmChecklistForSubmit_();
     const writeLock = acquireWriteLock_();
     try {
-      const draftInfo = getQmInspectionRecordById_(String(safe.draftId || '').trim());
+      const draftInfo = getQmInspectionRecordById_(String(safe.draftId || '').trim(), safe.draftRowNumber);
       validateQmDraftOwnership_(draftInfo, user);
       if (String(draftInfo.data['처리상태'] || '').trim().toUpperCase() !== 'IN_PROGRESS') throw new Error('이미 완료된 점검입니다.');
       const detail = parseQmHistoryDetail_(draftInfo.data);
-      const checklist = getQmChecklistForMobile_();
       const normalized = normalizeQmDraftPayload_(safe, checklist, detail);
       const savedAt = nowText_();
       const nextDetail = Object.assign({}, detail, normalized, { revision: checklist.revision, savedAt });
@@ -391,7 +391,7 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
 
     let draftInfo = null;
     if (safe.draftId) {
-      draftInfo = getQmInspectionRecordById_(String(safe.draftId).trim());
+      draftInfo = getQmInspectionRecordById_(String(safe.draftId).trim(), safe.draftRowNumber);
       validateQmDraftOwnership_(draftInfo, user);
     }
     if (!draftInfo) {
@@ -770,13 +770,32 @@ function findActiveQmInspectionDraft_(businessDate, site, roomNo, employeeNo) { 
   return null;
 }
 
-function getQmInspectionRecordById_(recordId) { // (점검기록 ID 조회)
+function getQmInspectionRecordById_(recordId, preferredRowNumber) { // (점검기록 ID 고속조회·직접행 검증)
   if (!recordId) throw new Error('점검기록 ID가 없습니다.');
   const sheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
   const headerMap = getHeaderMap_(sheet);
   const idColumn = headerMap['기록ID'];
   if (!idColumn) throw new Error('업무이력 기록ID 열이 없습니다.');
-  const match = sheet.getRange(2, idColumn, Math.max(0, sheet.getLastRow() - 1), 1).createTextFinder(recordId).matchEntireCell(true).findNext();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) throw new Error('QM 점검기록을 찾을 수 없습니다.');
+
+  const preferred = Number(preferredRowNumber || 0);
+  if (preferred >= 2 && preferred <= lastRow) {
+    const preferredId = String(sheet.getRange(preferred, idColumn).getDisplayValue() || '').trim();
+    if (preferredId === recordId) {
+      const row = sheet.getRange(preferred, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
+      return { rowNumber: preferred, data: rowObjectFromValues_(row, headerMap) };
+    }
+  }
+
+  const recentCount = Math.min(NOVA_QM_CHECKLIST.HISTORY_SCAN_ROWS, lastRow - 1);
+  const recentStart = lastRow - recentCount + 1;
+  let match = sheet.getRange(recentStart, idColumn, recentCount, 1)
+    .createTextFinder(recordId).matchEntireCell(true).findNext();
+  if (!match && recentStart > 2) {
+    match = sheet.getRange(2, idColumn, recentStart - 2, 1)
+      .createTextFinder(recordId).matchEntireCell(true).findNext();
+  }
   if (!match) throw new Error('QM 점검기록을 찾을 수 없습니다.');
   const rowNumber = match.getRow();
   const row = sheet.getRange(rowNumber, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
@@ -795,6 +814,7 @@ function parseQmHistoryDetail_(data) { // (QM 이력 JSON 해석)
 function buildQmDraftResponse_(draftInfo, detail) { // (클라이언트용 점검 초안)
   return {
     draftId: String(draftInfo.data['기록ID'] || '').trim(),
+    rowNumber: Number(draftInfo.rowNumber || 0),
     businessDate: String(draftInfo.data['업무일자'] || '').trim(),
     site: String(draftInfo.data['사업장'] || '').trim(),
     roomNo: String(draftInfo.data['객실번호'] || '').trim(),
