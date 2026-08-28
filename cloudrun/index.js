@@ -52,6 +52,110 @@ if (HAS_PG_PARTS) {
 
 const pool = new Pool(poolConfig);
 let ROOM_EVENTS_CURSOR_SCHEMA_READY = false;
+let APP_NOTIFICATIONS_SCHEMA_READY = false;
+
+async function ensureAppNotificationsSchema_() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      create table if not exists public.nova_app_notifications(
+        notification_id bigserial primary key,
+        employee_no text not null,
+        event_key text not null,
+        notification_type text not null,
+        title text not null,
+        message text not null default '',
+        business_date date,
+        site text,
+        room_no text,
+        created_at timestamptz not null default now(),
+        unique(employee_no, event_key)
+      )
+    `);
+    await client.query(`
+      create index if not exists idx_nova_app_notifications_employee_created
+      on public.nova_app_notifications(employee_no, created_at desc, notification_id desc)
+    `);
+    // 개인 참고용 알림은 장기 업무이력이 아니므로 오래된 레코드는 자동 정리한다.
+    await client.query(`
+      delete from public.nova_app_notifications
+      where created_at < now() - interval '90 days'
+    `);
+    APP_NOTIFICATIONS_SCHEMA_READY = true;
+    console.log('[NOVA Realtime] app notification schema ready');
+  } finally {
+    client.release();
+  }
+}
+
+function appNotificationRoleAllowed_(role) {
+  return ['HOUSEMAN', 'ROOMMAID', 'QM'].includes(String(role || '').trim().toUpperCase());
+}
+
+function roommaidCleaningTypeAppLabel_(value) {
+  const code = String(value || '').trim().toUpperCase();
+  const labels = {
+    NORMAL: '일반정비',
+    DS: 'D/S',
+    '5S': '5S',
+    EVALUATION: '평가원',
+    STAFF_DORM: '직원숙소',
+    DEEP_CLEANING: '딥크리닝'
+  };
+  return labels[code] || code || '정비';
+}
+
+async function addAppNotification_(client, payload) {
+  const safe = payload || {};
+  const employeeNo = cleanText_(safe.employeeNo, 80);
+  const role = cleanText_(safe.role, 20).toUpperCase();
+  const eventKey = cleanText_(safe.eventKey, 240);
+  const notificationType = cleanText_(safe.notificationType, 80);
+  const title = cleanText_(safe.title, 160);
+  const message = String(safe.message || '').trim().slice(0, 2000);
+  const businessDate = cleanText_(safe.businessDate, 20);
+  const site = cleanText_(safe.site, 80);
+  const roomNo = cleanText_(safe.roomNo, 40);
+
+  if (!employeeNo || !eventKey || !notificationType || !title || !appNotificationRoleAllowed_(role)) {
+    return false;
+  }
+
+  const result = await client.query(
+    `insert into public.nova_app_notifications(
+       employee_no,event_key,notification_type,title,message,business_date,site,room_no
+     ) values($1,$2,$3,$4,$5,nullif($6,'')::date,nullif($7,''),nullif($8,''))
+     on conflict(employee_no,event_key) do nothing`,
+    [employeeNo, eventKey, notificationType, title, message, businessDate, site, roomNo]
+  );
+  return Number(result.rowCount || 0) > 0;
+}
+
+async function addAppNotifications_(client, employeeNos, payload) {
+  const unique = Array.from(new Set(
+    (Array.isArray(employeeNos) ? employeeNos : [employeeNos])
+      .map(value => cleanText_(value, 80))
+      .filter(Boolean)
+  ));
+  let inserted = 0;
+  for (const employeeNo of unique) {
+    if (await addAppNotification_(client, { ...(payload || {}), employeeNo })) inserted += 1;
+  }
+  return inserted;
+}
+
+function appNotificationDto_(row) {
+  return {
+    id: Number(row?.notification_id || 0),
+    type: String(row?.notification_type || ''),
+    title: String(row?.title || ''),
+    message: String(row?.message || ''),
+    businessDate: dateOnlyText_(row?.business_date),
+    site: String(row?.site || ''),
+    roomNo: String(row?.room_no || ''),
+    createdAt: koreaDateTimeText_(row?.created_at)
+  };
+}
 
 async function ensureRoomEventsCursorSchema_() {
   const client = await pool.connect();
@@ -618,7 +722,9 @@ app.get('/health', async (_req, res, next) => {
       dbConfigMode:
         HAS_PG_PARTS ? 'PG_PARTS' : 'DATABASE_URL',
       eventTimeReady:
-        ROOM_EVENTS_CURSOR_SCHEMA_READY
+        ROOM_EVENTS_CURSOR_SCHEMA_READY,
+      appNotificationsReady:
+        APP_NOTIFICATIONS_SCHEMA_READY
     });
   } catch (e) {
     next(e);
@@ -636,7 +742,9 @@ app.get('/healthz', async (_req, res, next) => {
       dbConfigMode:
         HAS_PG_PARTS ? 'PG_PARTS' : 'DATABASE_URL',
       eventTimeReady:
-        ROOM_EVENTS_CURSOR_SCHEMA_READY
+        ROOM_EVENTS_CURSOR_SCHEMA_READY,
+      appNotificationsReady:
+        APP_NOTIFICATIONS_SCHEMA_READY
     });
   } catch (e) {
     next(e);
@@ -1502,6 +1610,78 @@ app.post(
   }
 );
 
+/**
+ * HOUSEMAN / ROOMMAID / QM 개인 참고용 앱 알림.
+ * 업무이력과 완전히 분리하며, 본인 알림만 조회/전체삭제할 수 있다.
+ */
+app.get(
+  '/v1/notifications',
+  async (req, res, next) => {
+    let client;
+    try {
+      client = await pool.connect();
+      const auth = authBearer(req);
+      const user = await loadUser(client, auth.employeeNo);
+      if (!appNotificationRoleAllowed_(user.role)) {
+        throw httpError(403, 'FORBIDDEN', '앱 알림 조회 대상 계정이 아닙니다.');
+      }
+      const limit = Math.max(1, Math.min(200, Number(req.query.limit || 100)));
+      const employeeNo = String(user.employee_no || '');
+      const [listResult, countResult] = await Promise.all([
+        client.query(
+          `select * from public.nova_app_notifications
+           where employee_no=$1
+           order by created_at desc, notification_id desc
+           limit $2`,
+          [employeeNo, limit]
+        ),
+        client.query(
+          `select count(*)::int as count from public.nova_app_notifications where employee_no=$1`,
+          [employeeNo]
+        )
+      ]);
+      res.json({
+        ok: true,
+        count: Number(countResult.rows[0]?.count || 0),
+        notifications: listResult.rows.map(appNotificationDto_),
+        serverTime: new Date().toISOString()
+      });
+    } catch (e) {
+      next(e);
+    } finally {
+      if (client) client.release();
+    }
+  }
+);
+
+app.post(
+  '/v1/notifications/clear',
+  async (req, res, next) => {
+    let client;
+    try {
+      client = await pool.connect();
+      const auth = authBearer(req);
+      const user = await loadUser(client, auth.employeeNo);
+      if (!appNotificationRoleAllowed_(user.role)) {
+        throw httpError(403, 'FORBIDDEN', '앱 알림 삭제 대상 계정이 아닙니다.');
+      }
+      const deleted = await client.query(
+        `delete from public.nova_app_notifications where employee_no=$1`,
+        [String(user.employee_no || '')]
+      );
+      res.json({
+        ok: true,
+        cleared: Number(deleted.rowCount || 0),
+        serverTime: new Date().toISOString()
+      });
+    } catch (e) {
+      next(e);
+    } finally {
+      if (client) client.release();
+    }
+  }
+);
+
 app.get(
   '/v1/rooms',
   async (req, res, next) => {
@@ -2195,6 +2375,18 @@ app.post(
           ]
         );
 
+        const cleaningTypeLabel = roommaidCleaningTypeAppLabel_(cleaningType);
+        await addAppNotifications_(client, employeeNos, {
+          role: 'ROOMMAID',
+          eventKey: `ROOMMAID_ASSIGN:${requestId}`,
+          notificationType: cleaningType === 'DS' ? 'ROOMMAID_DS_ASSIGNMENT' : 'ROOMMAID_ASSIGNMENT',
+          title: cleaningType === 'DS' ? 'D/S 객실 배정' : '객실 배정',
+          message: `${site} / ${roomNo}호 · ${cleaningTypeLabel}`,
+          businessDate,
+          site,
+          roomNo
+        });
+
         const response = {
           ok: true,
           action,
@@ -2837,6 +3029,18 @@ app.post(
           ]
         );
 
+        await addAppNotification_(client, {
+          employeeNo: qmEmployeeNo,
+          role: 'QM',
+          eventKey: `QM_ASSIGN:${requestId}`,
+          notificationType: 'QM_ASSIGNMENT',
+          title: 'QM 점검객실 배정',
+          message: `${site} / ${roomNo}호`,
+          businessDate,
+          site,
+          roomNo
+        });
+
         const response = {
           ok: true,
           action,
@@ -2940,6 +3144,19 @@ app.post(
             JSON.stringify(detail)
           ]
         );
+
+        if (action === 'QM_REWORK') {
+          await addAppNotifications_(client, [room.roommaid_employee_no, room.secondary_roommaid_employee_no], {
+            role: 'ROOMMAID',
+            eventKey: `ROOMMAID_REWORK:${requestId}`,
+            notificationType: 'ROOMMAID_REWORK',
+            title: '재정비 요청',
+            message: `${site} / ${roomNo}호 · QM 재정비 요청`,
+            businessDate,
+            site,
+            roomNo
+          });
+        }
 
         const response = {
           ok: true,
@@ -3170,6 +3387,20 @@ app.post(
           })
         ]
       );
+
+      if (action === 'CLEANING_COMPLETE' && String(nextRoom.qm_employee_no || '')) {
+        await addAppNotification_(client, {
+          employeeNo: String(nextRoom.qm_employee_no || ''),
+          role: 'QM',
+          eventKey: `QM_READY:${requestId}`,
+          notificationType: 'QM_READY',
+          title: 'QM 점검대기',
+          message: `${site} / ${roomNo}호 · 룸메이드 정비완료`,
+          businessDate,
+          site,
+          roomNo
+        });
+      }
 
       const response = {
         ok: true,
@@ -3968,6 +4199,22 @@ app.post(
         idempotent = true;
       }
 
+      if (!idempotent) {
+        const housemanTargets = orderRow.route_locked === false
+          ? (Array.isArray(orderRow.route_candidate_employee_nos) ? orderRow.route_candidate_employee_nos : [])
+          : [String(orderRow.assigned_employee_no || '')];
+        await addAppNotifications_(client, housemanTargets, {
+          role: 'HOUSEMAN',
+          eventKey: `HOUSEMAN_ASSIGN:${orderId}:v${Number(orderRow.version || 0)}`,
+          notificationType: 'HOUSEMAN_ORDER',
+          title: '하우스맨 오더 배정',
+          message: `${site} / ${roomNo}호 · ${part} · ${itemSummary}`,
+          businessDate,
+          site,
+          roomNo
+        });
+      }
+
       const response = {
         ok: true,
         action:
@@ -4306,6 +4553,17 @@ app.post(
       );
 
       const nextOrder = updated.rows[0];
+      await addAppNotification_(client, {
+        employeeNo,
+        role: 'HOUSEMAN',
+        eventKey: `HOUSEMAN_ASSIGN:${orderId}:v${Number(nextOrder.version || 0)}`,
+        notificationType: 'HOUSEMAN_ORDER',
+        title: '하우스맨 오더 배정',
+        message: `${String(nextOrder.site || '')} / ${String(nextOrder.room_no || '')}호 · ${String(nextOrder.part || '')} · ${String(nextOrder.item_summary || '')}`,
+        businessDate: dateOnlyText_(nextOrder.business_date),
+        site: String(nextOrder.site || ''),
+        roomNo: String(nextOrder.room_no || '')
+      });
       const response = {
         ok: true,
         action: 'HOUSEMAN_ASSIGN',
@@ -4486,6 +4744,7 @@ app.use(
   }
 );
 
+await ensureAppNotificationsSchema_();
 await ensureRoomEventsCursorSchema_();
 
 app.listen(
