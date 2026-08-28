@@ -1,0 +1,2 @@
+Trigger Cloud Run deployment for HOUSEMAN mobile PostgreSQL read endpoint v74.
+Source commit: 6b3665ece61f2e4348427df4e5c94804131aaf2b
