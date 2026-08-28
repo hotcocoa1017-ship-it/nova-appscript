@@ -1,0 +1,2 @@
+Deploy trigger for HOUSEMAN edited-content DB sync v94.
+Content sync updates only display/edit fields after Apps Script EDIT success; it never changes processing status, assignment, processor, or processing timestamps.
