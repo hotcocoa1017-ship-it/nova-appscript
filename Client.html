@@ -493,10 +493,38 @@
         novaRealtimeLoadRoomsForSite_(state.mobile.businessDate || state.bootstrap.app.businessDate, site)
           .catch(error => { console.error('[NOVA Realtime] 모바일 객실 조회 실패', site, error); return []; })
       ));
-      const realtimeMap = new Map(lists.flat().map(room => [`${room.site}|${room.roomNo}`, room]));
-      state.mobile.data.rooms = (state.mobile.data.rooms || []).map(room =>
-        novaRealtimeMergeRoom_(room, realtimeMap.get(`${room.site}|${room.roomNo}`))
-      );
+      const realtimeRows = lists.flat();
+
+      if (role === 'ROOMMAID' && state.activeMenu === 'cleaning') {
+        // /v1/rooms는 ROOMMAID 토큰이면 DB에서 본인 배정객실만 반환한다.
+        // 기존 모바일 배열을 map()만 하면 신규 배정객실을 추가할 수 없으므로,
+        // DB의 현재 배정목록 자체를 기준으로 목록을 재구성한다.
+        const employeeNo = String(state.bootstrap.user?.employeeNo || '').trim();
+        const employeeName = String(state.bootstrap.user?.name || '').trim();
+        const legacyMap = new Map((state.mobile.data.rooms || []).map(room => [`${room.site}|${room.roomNo}`, room]));
+        state.mobile.data.rooms = realtimeRows.map(rawRoom => {
+          const realtimeRoom = novaRealtimeMapPartialRoom_(rawRoom);
+          const key = `${realtimeRoom.site}|${realtimeRoom.roomNo}`;
+          const legacyRoom = legacyMap.get(key);
+          if (legacyRoom) return novaRealtimeMergeRoom_(legacyRoom, realtimeRoom);
+
+          const primaryNo = String(realtimeRoom.roommaidEmployeeNo || '').trim();
+          const secondaryNo = String(realtimeRoom.secondaryRoommaidEmployeeNo || '').trim();
+          return Object.assign({
+            rowNumber: 0,
+            roommaidName: primaryNo === employeeNo ? employeeName : primaryNo,
+            secondaryRoommaidName: secondaryNo === employeeNo ? employeeName : secondaryNo,
+            qmName: String(realtimeRoom.qmEmployeeNo || '').trim(),
+            pendingOrderCount: 0,
+            __sheetVersion: 0
+          }, realtimeRoom);
+        });
+      } else {
+        const realtimeMap = new Map(realtimeRows.map(room => [`${room.site}|${room.roomNo}`, room]));
+        state.mobile.data.rooms = (state.mobile.data.rooms || []).map(room =>
+          novaRealtimeMergeRoom_(room, realtimeMap.get(`${room.site}|${room.roomNo}`))
+        );
+      }
       renderMobileData();
     }
   }
@@ -7139,14 +7167,20 @@
   function scheduleMobileSync_() { // (직원별 요청시점 분산)
     if (document.hidden || !['qm', 'houseman', 'cleaning', 'public'].includes(state.activeMenu) || !state.mobile.loaded) return;
     const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').toUpperCase();
-    const base = novaRealtimeIsEnabled_() && role === 'ROOMMAID'
-      ? 30000
+    const roommaidRealtime = novaRealtimeIsEnabled_() && role === 'ROOMMAID' && state.activeMenu === 'cleaning';
+    const base = roommaidRealtime
+      ? 5000
       : Number(state.bootstrap.app.mobileSyncMs || 16000);
+    // ROOMMAID Realtime 조회는 서버에서 본인 배정객실만 반환하므로 5초 주기로 경량 조회한다.
+    // 0~1.2초 지터로 다수 단말의 동시 요청을 분산한다.
+    const delay = roommaidRealtime
+      ? base + Math.round(Math.random() * 1200)
+      : nextSyncDelay_(base);
     state.mobile.syncTimer = window.setTimeout(async () => {
       state.mobile.syncTimer = null;
       await syncMobileDelta();
       scheduleMobileSync_();
-    }, nextSyncDelay_(base));
+    }, delay);
   }
 
   function stopMobileSync() { // (모바일 동기화 중지)
