@@ -4418,7 +4418,7 @@ app.post(
       if (!/^HO-\d{8}-[A-Z0-9]{8,32}$/.test(orderId) || !requestId) {
         throw httpError(400, 'INVALID_REQUEST', '오더번호와 requestId가 필요합니다.');
       }
-      if (!['ACCEPT', 'ACCEPT_START', 'START', 'COMPLETE', 'UNABLE'].includes(action)) {
+      if (!['ACCEPT', 'ACCEPT_START', 'START', 'COMPLETE', 'UNABLE', 'REOPEN'].includes(action)) {
         throw httpError(400, 'INVALID_ACTION', '지원하지 않는 하우스맨 처리 작업입니다.');
       }
       if (action === 'UNABLE' && !reason) {
@@ -4427,7 +4427,9 @@ app.post(
 
       await db.query('begin');
       const user = await loadUser(db, auth.employeeNo);
-      if (String(user.role || '').toUpperCase() !== 'HOUSEMAN') {
+      const role = String(user.role || '').toUpperCase();
+      const isManager = ['ADMIN', 'ORDER'].includes(role);
+      if (role !== 'HOUSEMAN' && !isManager) {
         throw httpError(403, 'FORBIDDEN', '하우스맨 처리 권한이 없습니다.');
       }
 
@@ -4471,6 +4473,74 @@ app.post(
         && candidates.includes(employeeNo);
       const assignedToMe = assignedEmployeeNo === employeeNo;
       const processingByMe = processorEmployeeNo === employeeNo;
+
+      // ADMIN/ORDER는 기존 NOVA의 관리자 상태변경 자유도를 유지하되 DB를 먼저 확정한다.
+      // 공동전달 오더의 접수만 기존과 동일하게 하우스맨 본인이 하도록 제한한다.
+      if (isManager) {
+        if (action === 'ACCEPT' || action === 'ACCEPT_START') {
+          if (status !== 'ASSIGNED') {
+            throw httpError(409, 'HOUSEMAN_ORDER_STATE_CONFLICT', '배정 상태의 오더만 접수할 수 있습니다.');
+          }
+          if (current.route_locked === false && candidates.length > 1) {
+            throw httpError(409, 'HOUSEMAN_SHARED_ACCEPT_REQUIRED', '공동 전달 오더는 하우스맨이 직접 접수해야 합니다.');
+          }
+        }
+        if (action === 'REOPEN' && !['COMPLETED', 'UNABLE'].includes(status)) {
+          throw httpError(409, 'HOUSEMAN_ORDER_STATE_CONFLICT', '완료 또는 처리불가 오더만 다시 열 수 있습니다.');
+        }
+
+        const managerTarget = action === 'ACCEPT' ? 'ACCEPTED'
+          : (action === 'ACCEPT_START' || action === 'START') ? 'PROCESSING'
+          : action === 'COMPLETE' ? 'COMPLETED'
+          : action === 'UNABLE' ? 'UNABLE'
+          : (assignedEmployeeNo ? 'ASSIGNED' : 'REGISTERED');
+
+        if (status === managerTarget && action !== 'REOPEN') {
+          const response = {
+            ok: true, action, requestId, idempotent: true,
+            order: housemanOrderDto_(current), orderVersion: Number(current.version || 0),
+            timing: { totalMs: Date.now() - startedAt }
+          };
+          await db.query(
+            `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+            [requestId, JSON.stringify(response)]
+          );
+          await db.query('commit');
+          return res.json(response);
+        }
+
+        const managerUpdated = await db.query(
+          `update public.nova_houseman_orders
+              set status_code=$2,
+                  processor_employee_no=case when $3='REOPEN' then processor_employee_no else $4 end,
+                  processor_name=case when $3='REOPEN' then processor_name else $5 end,
+                  accepted_at=case when $3 in ('ACCEPT','ACCEPT_START') then coalesce(accepted_at,now()) else accepted_at end,
+                  started_at=case when $3 in ('ACCEPT_START','START') then now() else started_at end,
+                  completed_at=case when $3 in ('COMPLETE','UNABLE') then now() when $3='REOPEN' then null else completed_at end,
+                  unable_reason=case when $3='UNABLE' then $6 when $3 in ('COMPLETE','REOPEN') then '' else unable_reason end,
+                  version=version+1,
+                  updated_at=now()
+            where order_id=$1
+            returning *`,
+          [orderId, managerTarget, action, employeeNo, String(user.name || employeeNo), reason]
+        );
+        const managerOrder = managerUpdated.rows[0];
+        const response = {
+          ok: true, action, requestId,
+          order: housemanOrderDto_(managerOrder), orderVersion: Number(managerOrder.version || 0),
+          timing: { totalMs: Date.now() - startedAt }
+        };
+        await db.query(
+          `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+          [requestId, JSON.stringify(response)]
+        );
+        await db.query('commit');
+        return res.json(response);
+      }
+
+      if (action === 'REOPEN') {
+        throw httpError(403, 'FORBIDDEN', '오더 다시 열기는 관리자만 가능합니다.');
+      }
 
       if (['ACCEPT', 'ACCEPT_START'].includes(action)) {
         const target = action === 'ACCEPT' ? 'ACCEPTED' : 'PROCESSING';

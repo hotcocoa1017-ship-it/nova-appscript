@@ -946,7 +946,7 @@
     const safe = Object.assign({}, payload || {});
     const orderId = String(safe.orderId || '').trim();
     const action = String(safe.action || '').trim().toUpperCase();
-    if (!orderId || !['ACCEPT', 'ACCEPT_START', 'START', 'COMPLETE', 'UNABLE'].includes(action)) {
+    if (!orderId || !['ACCEPT', 'ACCEPT_START', 'START', 'COMPLETE', 'UNABLE', 'REOPEN'].includes(action)) {
       throw new Error('하우스맨 처리 요청을 확인하세요.');
     }
     const requestId = novaRealtimeRequestId_(`HOUSEMAN_${action}`, orderId);
@@ -5466,6 +5466,28 @@
           return;
         } catch (realtimeError) {
           console.warn('[NOVA Realtime] 미배정 수동배정은 기존 저장경로로 자동 전환합니다.', realtimeError?.message || realtimeError);
+        }
+      }
+
+      const managerRole = String(state.bootstrap?.user?.role || '').trim().toUpperCase();
+      if (
+        action !== 'ASSIGN'
+        && ['ADMIN', 'ORDER'].includes(managerRole)
+        && ['ACCEPT', 'START', 'COMPLETE', 'UNABLE', 'REOPEN'].includes(action)
+        && novaRealtimeIsEnabled_()
+      ) {
+        try {
+          const realtime = await novaRealtimeHousemanWorkerAction_(payload);
+          upsertOrderLocal_(realtime.order, state.indicator.version);
+          closeModal();
+          const elapsed = Math.round(performance.now() - actionStartedAt);
+          showToast(action === 'REOPEN' ? '오더를 다시 열었습니다.' : `${realtime.order?.roomNo || order.roomNo}호 ${housemanActionMessage_(action)}`);
+          setSyncStatus(`하우스맨 관리자 DB 확정 · ${elapsed}ms`);
+          return;
+        } catch (realtimeError) {
+          const code = String(realtimeError?.code || '').trim().toUpperCase();
+          if (Number(realtimeError?.status || 0) !== 404 && code !== 'HOUSEMAN_ORDER_NOT_FOUND') throw realtimeError;
+          console.warn('[NOVA Realtime] DB 미존재 관리자 하우스맨 오더는 기존 저장경로로 처리합니다.', realtimeError?.message || realtimeError);
         }
       }
 
