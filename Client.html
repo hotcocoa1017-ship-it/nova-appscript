@@ -1000,6 +1000,34 @@
     return null;
   }
 
+  async function syncRealtimeHousemanEditedContent_(order, attempt = 0) { // (EDIT 확정내용만 DB 보조동기화)
+    if (!novaRealtimeIsEnabled_() || !order?.orderId) return null;
+    const safe = {
+      part: String(order.part || ''),
+      items: Array.isArray(order.items) ? order.items : [],
+      requester: String(order.requester || ''),
+      note: String(order.note || ''),
+      important: order.important === true,
+      handover: order.handover === true,
+      handoverTargetShift: String(order.handoverTargetShift || '')
+    };
+    try {
+      return await novaRealtimeFetch_(
+        `/v1/houseman-orders/${encodeURIComponent(String(order.orderId))}/content-sync`,
+        { method: 'POST', body: JSON.stringify(safe) }
+      );
+    } catch (error) {
+      const code = String(error?.code || '').trim().toUpperCase();
+      if (Number(error?.status || 0) === 404 || code === 'HOUSEMAN_ORDER_NOT_FOUND') return null;
+      if (attempt >= 2) {
+        console.warn('[NOVA Realtime] 하우스맨 내용 DB 동기화 실패', error?.message || error);
+        return null;
+      }
+      await novaRealtimeSleep_([700, 1800, 4000][attempt] || 1800);
+      return syncRealtimeHousemanEditedContent_(order, attempt + 1);
+    }
+  }
+
   async function mirrorRealtimeClearAssignmentToSheet_(payload) { // (DB 배정초기화 성공 후 이력/Sheet 보조 미러)
     const safe = Object.assign({}, payload || {}, {
       action: 'CLEAR_ASSIGNMENT',
@@ -5595,6 +5623,9 @@
         });
         if (!result?.ok) throw new Error(result?.message || '오더 수정에 실패했습니다.');
         upsertOrderLocal_(result.order, result.version);
+        // Apps Script EDIT가 확정한 동일 내용을 DB 표시자료에만 반영한다.
+        // 상태/배정 필드는 content-sync가 건드리지 않으므로 진행중 오더와 충돌하지 않는다.
+        void syncRealtimeHousemanEditedContent_(result.order);
         closeModal();
         showToast('오더 내용을 수정했습니다.');
       } catch (error) { showToast(error?.message || '오더 수정 오류'); }

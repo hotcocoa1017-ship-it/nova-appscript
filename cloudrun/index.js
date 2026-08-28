@@ -4639,6 +4639,79 @@ app.post(
 );
 
 /**
+ * ADMIN/ORDER 하우스맨 오더 내용 동기화.
+ * 기존 Apps Script EDIT 검증/감사를 원본으로 유지하고, 확정된 표시내용만 DB에 반영한다.
+ * 처리상태·배정·처리자·접수/시작/완료 시각은 절대 변경하지 않는다.
+ */
+app.post(
+  '/v1/houseman-orders/:orderId/content-sync',
+  async (req, res, next) => {
+    const startedAt = Date.now();
+    let db;
+    try {
+      db = await pool.connect();
+      const auth = authBearer(req);
+      const body = req.body || {};
+      const orderId = cleanText_(req.params.orderId, 80).toUpperCase();
+      if (!/^HO-\d{8}-[A-Z0-9]{8,32}$/.test(orderId)) {
+        throw httpError(400, 'INVALID_REQUEST', '오더번호가 올바르지 않습니다.');
+      }
+      const user = await loadUser(db, auth.employeeNo);
+      if (!['ADMIN', 'ORDER'].includes(String(user.role || '').toUpperCase())) {
+        throw httpError(403, 'FORBIDDEN', '오더 내용 동기화 권한이 없습니다.');
+      }
+
+      const part = cleanText_(body.part, 80);
+      const items = normalizeHousemanItems_(body.items);
+      const requester = cleanText_(body.requester, 120);
+      const note = String(body.note || '').trim().slice(0, 4000);
+      const important = body.important === true;
+      const handover = body.handover === true;
+      const handoverRaw = cleanText_(body.handoverTargetShift, 10).toUpperCase();
+      const handoverTargetShift = handover && ['A', 'B', 'C'].includes(handoverRaw) ? handoverRaw : '';
+      if (!part || !items.length) {
+        throw httpError(400, 'INVALID_REQUEST', '파트와 품목을 확인하세요.');
+      }
+      const itemSummary = items.map(item => item.quantity > 1 ? `${item.name}×${item.quantity}` : item.name).join(', ');
+      const quantity = items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+
+      const updated = await db.query(
+        `update public.nova_houseman_orders
+            set part=$2,
+                items=$3::jsonb,
+                item_summary=$4,
+                quantity=$5,
+                note=$6,
+                requester=$7,
+                important=$8,
+                handover=$9,
+                handover_target_shift=$10,
+                version=version+1,
+                updated_at=now()
+          where order_id=$1
+          returning *`,
+        [orderId, part, JSON.stringify(items), itemSummary, quantity, note, requester, important, handover, handoverTargetShift]
+      );
+      if (!updated.rowCount) {
+        throw httpError(404, 'HOUSEMAN_ORDER_NOT_FOUND', 'Realtime 하우스맨 오더를 찾을 수 없습니다.');
+      }
+      const order = updated.rows[0];
+      res.json({
+        ok: true,
+        action: 'HOUSEMAN_CONTENT_SYNC',
+        order: housemanOrderDto_(order),
+        orderVersion: Number(order.version || 0),
+        timing: { totalMs: Date.now() - startedAt }
+      });
+    } catch (e) {
+      next(e);
+    } finally {
+      if (db) db.release();
+    }
+  }
+);
+
+/**
  * 관리자/오더테이커 하우스맨 등록취소 Realtime 확정.
  * 접수/처리 시작 전 REGISTERED/ASSIGNED 오더만 PostgreSQL에서 제거한다.
  * Sheet는 Apps Script의 deleteMonthlyHousemanOrder가 감사이력과 함께 소프트삭제한다.
