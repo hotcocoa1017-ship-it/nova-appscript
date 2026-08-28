@@ -5890,7 +5890,8 @@
     const invalidDefect = (draft.defects || []).find(defect => !defect.note || !(defect.photos || []).length);
     if (invalidDefect) { showToast('추가 하자는 내용과 사진을 모두 등록하세요.'); button.disabled = false; return; }
     try {
-      await saveQmInspectionDraftNow_(false);
+      // 최종제출 payload 자체에 현재 answers/defects가 모두 포함되므로
+      // 완료 직전 별도 임시저장 RPC를 반복하지 않는다.
       const result = await callServer('submitQmChecklistInspection', state.token, {
         businessDate: state.mobile.businessDate, site: state.mobile.site, roomNo: active.roomNo,
         draftId: active.draft.draftId, revision: active.checklist.revision,
@@ -5900,7 +5901,8 @@
       state.qmChecklist.activeInspection = null;
       closeModal();
       showToast(result.message || '점검결과를 저장했습니다.');
-      await loadMobileSnapshot({ silent: true, force: true });
+      // 완료 성공 응답을 먼저 사용자에게 돌려주고, 카드 최신화는 뒤에서 수행한다.
+      loadMobileSnapshot({ silent: true, force: true }).catch(error => console.warn('[NOVA QM] 완료 후 화면갱신 실패:', error));
     } catch (error) { showToast(error?.message || '체크리스트 저장 오류'); button.disabled = false; }
   }
 
@@ -6267,7 +6269,7 @@
     return `<article class="mobile-room-card${roommaidMobileCardClass_(room, role)}${mobileCleaningActive ? ' mobile-card-cleaning' : ''}">
       <div class="mobile-card-top"><strong>${escapeHtml(room.roomNo)}</strong><span>${escapeHtml([room.building, room.floor ? `${room.floor}층` : ''].filter(Boolean).join(' · '))}</span></div>
       ${operationBadges ? `<div class="mobile-operation-badges">${operationBadges}</div>` : ''}
-      <div class="mobile-room-status"><b>${escapeHtml(roomStatus)}</b><span>${escapeHtml(cleaningStatus)}</span></div>
+      <div class="mobile-room-status"><b>${escapeHtml(role === 'QM' ? (assignedNames || '-') : roomStatus)}</b><span>${escapeHtml(cleaningStatus)}</span></div>
       ${role === 'ROOMMAID' ? `<div class="mobile-cleaning-type ${room.cleaningType === 'DS' ? 'ds' : ''}">${escapeHtml(cleaningTypeLabel)} · ${escapeHtml(assignmentTypeLabel)}</div><div class="mobile-assigned-names">${escapeHtml(assignedNames)}</div>` : ''}
       ${role === 'PUBLIC' ? `<div class="mobile-public-result ${room.departureDelayed ? 'delayed' : room.roomStatus === 'CHECKED_OUT' ? 'checked-out' : ''}">${room.departureDelayed ? '퇴실지연' : room.roomStatus === 'CHECKED_OUT' ? '퇴실 확인' : room.roomStatus === 'DUE_OUT' ? '퇴실예정' : escapeHtml(roomStatus)}</div>` : ''}
       ${actions ? `<div class="mobile-actions">${actions}</div>` : ''}

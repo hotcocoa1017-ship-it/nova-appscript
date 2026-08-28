@@ -380,12 +380,14 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
     const site = String(safe.site || user.defaultSite || '').trim();
     const roomNo = String(safe.roomNo || '').trim();
     if (!roomNo) throw new Error('객실번호가 없습니다.');
-    const writeLock = acquireWriteLock_();
-    try {
-
-    const checklist = getQmChecklistForMobile_();
+    // 체크리스트 조회는 읽기 작업이므로 전역 쓰기잠금 밖에서 처리한다.
+    // 점검완료의 잠금 대기시간을 줄이고 다른 객실 작업을 불필요하게 막지 않는다.
+    const checklist = getQmChecklistForSubmit_();
     if (!checklist.items.length) throw new Error('사용 중인 QM 체크리스트가 없습니다. 관리자 또는 오더테이커가 체크리스트를 등록해야 합니다.');
     if (safe.revision && String(safe.revision) !== checklist.revision) throw new Error('체크리스트가 변경되었습니다. 화면을 새로고침한 뒤 다시 작성하세요.');
+
+    const writeLock = acquireWriteLock_();
+    try {
 
     let draftInfo = null;
     if (safe.draftId) {
@@ -536,7 +538,17 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
       checklistRecordId,
       durationMinutes,
       version,
-      room: currentRoomObject_(refreshed, rowInfo.rowNumber, {}, getUserIndex_().byEmployeeNo),
+      room: {
+        businessDate,
+        site: String(rowInfo.data['사업장'] || site).trim(),
+        roomNo,
+        roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+        cleaningStatus: String(updates['청소상태'] || '').trim(),
+        roommaidEmployeeNo: roommaidNo,
+        secondaryRoommaidEmployeeNo: secondaryRoommaidNo,
+        qmEmployeeNo: user.employeeNo,
+        version
+      },
       message: passed ? `QM 점검을 완료했습니다. (${durationMinutes == null ? '-' : durationMinutes}분)` : `하자 ${defects.length}건으로 재정비를 요청했습니다.`
     };
      } finally {
@@ -553,6 +565,28 @@ function getQmInspectionAnalytics(token, filters) { // (QM·룸메이드 점검�
     const analytics = buildQmQualityAnalyticsFromHistoryRows_(rows, getUserIndex_().byEmployeeNo, request);
     return Object.assign({ ok: true, filters: request, serverTime: nowText_() }, analytics);
   });
+}
+
+
+function getQmChecklistForSubmit_() { // (QM 최종제출용 읽기전용 체크리스트 고속조회)
+  const rows = readAllCodeRows_();
+  const places = rows
+    .filter(row => row.group === NOVA_QM_CHECKLIST.PLACE_GROUP && row.enabled === 'Y')
+    .map(row => ({ code: row.code, label: row.label, order: Number(row.order || 9999) }))
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label, 'ko'));
+  const placeMap = {};
+  places.forEach(place => { placeMap[place.code] = place; });
+  const items = rows
+    .filter(row => row.group === NOVA_QM_CHECKLIST.GROUP && row.enabled === 'Y')
+    .map(row => qmChecklistItemFromCodeRow_(row, placeMap))
+    .sort((a, b) => a.placeOrder - b.placeOrder || a.order - b.order || a.label.localeCompare(b.label, 'ko'));
+  return {
+    places,
+    items,
+    groups: places.map(place => ({ place, items: items.filter(item => item.placeCode === place.code) })).filter(group => group.items.length),
+    revision: buildQmChecklistRevision_(items, places),
+    maxPhotosPerTarget: NOVA_QM_CHECKLIST.MAX_PHOTOS_PER_TARGET
+  };
 }
 
 function getQmChecklistForMobile_() { // (QM 모바일 장소별 체크리스트 조회)
