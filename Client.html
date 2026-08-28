@@ -68,6 +68,21 @@
     cursor: pointer;
   }
   .monthly-photo-button:hover { background: #f8fafc; }
+  .monthly-order-cancel {
+    margin-left: 6px;
+    min-height: 28px;
+    padding: 0 8px;
+    border: 1px solid #fecaca;
+    border-radius: 7px;
+    background: #fff;
+    color: #b91c1c;
+    font-size: 11px;
+    font-weight: 800;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .monthly-order-cancel:hover { background: #fff7f7; }
+  .monthly-order-cancel:disabled { opacity: .55; cursor: default; }
   .monthly-photo-viewer { display: grid; gap: 12px; }
   .monthly-photo-viewer-image-wrap {
     display: grid;
@@ -2788,6 +2803,7 @@
       items: [{ name: String($('monthlyOrderItem')?.value || '').trim(), quantity: clampQuantity($('monthlyOrderQty')?.value) }],
       note: String($('monthlyOrderNote')?.value || '').trim(),
       requester: String($('monthlyOrderRequester')?.value || '오더테이커'),
+      requestSource: 'MONTHLY_HISTORY',
       assignmentMode: String($('monthlyOrderAssignmentMode')?.value || 'AUTO'),
       important: Boolean($('monthlyOrderImportant')?.checked),
       handover: Boolean($('monthlyOrderHandover')?.checked)
@@ -2804,11 +2820,8 @@
       const result = await callServer('createHousemanOrder', state.token, payload);
       if (!result?.ok) throw new Error(result?.message || '오더 등록에 실패했습니다.');
       closeModal();
-      state.monthly.site = payload.site;
-      sessionStorage.setItem('novaMonthlySite', payload.site);
-      if ($('monthlySite')) $('monthlySite').value = payload.site;
       showToast(`${payload.roomNo}호 하우스맨 오더 등록 완료`);
-      await loadMonthlyHistory({ page: 1 });
+      await loadMonthlyHistory({ page: 1, preserveTable: true });
     } catch (error) {
       showToast(error?.message || '오더 등록 오류');
       button.disabled = false;
@@ -2895,9 +2908,10 @@
   async function loadMonthlyHistory(overrides = {}) { // (월별·일별 이력 서버 조회)
     if (state.monthly.loading) return;
     state.monthly.loading = true;
+    const preserveTable = Boolean(overrides && overrides.preserveTable);
     const filters = collectMonthlyFilters_(overrides);
     const periodLabel = filters.period === 'DAILY' ? '일별' : '월별';
-    if ($('monthlyTableBody')) $('monthlyTableBody').innerHTML = `<tr><td colspan="11" class="table-empty">${periodLabel} 데이터를 불러오는 중입니다.</td></tr>`;
+    if (!preserveTable && $('monthlyTableBody')) $('monthlyTableBody').innerHTML = `<tr><td colspan="11" class="table-empty">${periodLabel} 데이터를 불러오는 중입니다.</td></tr>`;
     try {
       const result = await callServer('getMonthlyHistory', state.token, filters);
       if (!result?.ok) throw new Error(result?.message || '조회 데이터를 불러오지 못했습니다.');
@@ -3123,7 +3137,7 @@
         <td>${escapeHtml(item.site || '-')}</td>
         <td class="room-cell">${escapeHtml(item.roomNo || '-')}</td>
         <td>${escapeHtml(item.employeeDisplay || '-')}</td>
-        <td><span class="monthly-status">${escapeHtml(item.statusLabel || '-')}</span></td>
+        <td><span class="monthly-status">${escapeHtml(item.statusLabel || '-')}</span>${item.canDelete ? `<button class="monthly-order-cancel" type="button" data-monthly-order-cancel="${escapeAttr(item.recordId)}">등록취소</button>` : ''}</td>
         <td class="monthly-detail" title="${escapeAttr(item.detailText || '')}">${escapeHtml(item.detailText || '-')}</td>
         <td class="monthly-photo-cell">${item.typeCode === 'HOUSEMAN' && Number(item.photoCount || 0) > 0 ? `<button class="monthly-photo-button" type="button" data-monthly-photo-order="${escapeAttr(item.recordId)}">사진보기</button>` : '-'}</td>
         <td>${escapeHtml(item.startedAt || item.acceptedAt || item.registeredAt || '-')}</td>
@@ -3133,6 +3147,33 @@
     $('monthlyTableBody').querySelectorAll('[data-monthly-photo-order]').forEach(button => {
       button.addEventListener('click', () => openMonthlyHousemanPhotoViewer_(button.dataset.monthlyPhotoOrder, 0));
     });
+    $('monthlyTableBody').querySelectorAll('[data-monthly-order-cancel]').forEach(button => {
+      button.addEventListener('click', () => cancelMonthlyHousemanOrder_(button));
+    });
+  }
+
+  async function cancelMonthlyHousemanOrder_(button) { // (월별조회 직접등록 하우스맨 오더 등록취소)
+    const orderId = String(button?.dataset?.monthlyOrderCancel || '').trim();
+    const item = (state.monthly.data?.items || []).find(row => String(row.recordId || '') === orderId);
+    if (!item || !item.canDelete) return showToast('등록취소할 수 없는 오더입니다.');
+    if (!window.confirm(`${item.roomNo || '-'}호 하우스맨 오더를 삭제할까요?\n\n접수·처리 시작 전 오더만 삭제할 수 있습니다.`)) return;
+
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = '취소 중…';
+    try {
+      const result = await callServer('deleteMonthlyHousemanOrder', state.token, {
+        orderId,
+        rowNumber: Number(item.rowNumber || 0)
+      });
+      if (!result?.ok) throw new Error(result?.message || '오더를 삭제하지 못했습니다.');
+      showToast(result.message || `${item.roomNo || ''}호 오더 등록취소 완료`);
+      await loadMonthlyHistory({ page: Number(state.monthly.page || 1), preserveTable: true });
+    } catch (error) {
+      showToast(error?.message || '오더 등록취소 오류');
+      button.disabled = false;
+      button.textContent = original;
+    }
   }
 
   async function openMonthlyHousemanPhotoViewer_(orderId, index = 0) { // (월별조회 사진보기·다운로드)
