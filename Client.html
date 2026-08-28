@@ -938,7 +938,15 @@
   const state = {
     token: localStorage.getItem('novaToken') || '',
     bootstrap: null,
-    activeMenu: sessionStorage.getItem('novaActiveMenu') || '',
+    activeMenu: (() => {
+      const savedMenu = sessionStorage.getItem('novaActiveMenu') || '';
+      try {
+        const resume = JSON.parse(localStorage.getItem('novaHmRequestPhotoResume') || '{}');
+        const savedAt = Number(resume && resume.savedAt || 0);
+        if (resume && resume.roomNo && savedAt && Date.now() - savedAt <= 5 * 60 * 1000) return 'cleaning';
+      } catch (ignore) {}
+      return savedMenu;
+    })(),
     scrollY: Number(sessionStorage.getItem('novaScrollY') || 0),
     toastTimer: null,
     indicator: {
