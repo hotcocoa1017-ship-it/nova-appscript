@@ -907,8 +907,12 @@
   async function saveRoomActionRealtimeOrLegacy_(legacyMethod, payload) {
     const safe = Object.assign({}, payload || {});
     const rawAction = String(safe.action || '').trim().toUpperCase();
-    const mappedAction = rawAction === 'START' ? 'CLEANING_START'
-      : rawAction === 'COMPLETE' ? 'CLEANING_COMPLETE'
+    // START/COMPLETE 명칭은 룸메이드 모바일과 하우스맨 오더가 함께 사용한다.
+    // 객실 Realtime 액션으로의 변환은 룸메이드 모바일 작업에만 적용해야 한다.
+    // 하우스맨 START/COMPLETE를 CLEANING_*으로 바꾸면 /v1/rooms/.../action으로 잘못 전송되어 404가 발생한다.
+    const roommaidMobileOperation = legacyMethod === 'updateMobileRoomOperation';
+    const mappedAction = roommaidMobileOperation && rawAction === 'START' ? 'CLEANING_START'
+      : roommaidMobileOperation && rawAction === 'COMPLETE' ? 'CLEANING_COMPLETE'
       : rawAction;
     const legacySafe = Object.assign({}, safe);
     // Realtime room.version(DB)과 Sheet 마지막변경버전은 서로 다른 버전 도메인이다.
