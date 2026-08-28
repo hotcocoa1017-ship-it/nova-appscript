@@ -3231,6 +3231,68 @@ app.post(
  * 이 API는 PostgreSQL 등록 확정과
  * 관리자간 즉시 전파를 빠르게 처리.
  */
+/**
+ * HOUSEMAN 모바일용 PostgreSQL 직접 조회.
+ * 배정/공동전달 반영을 Sheet 미러와 분리해 5초 미만 자동반영 경로로 사용한다.
+ */
+app.get(
+  '/v1/houseman-orders',
+  async (req, res, next) => {
+    let client;
+    try {
+      client = await pool.connect();
+      const auth = authBearer(req);
+      const user = await loadUser(client, auth.employeeNo);
+
+      if (String(user.role || '').toUpperCase() !== 'HOUSEMAN') {
+        throw httpError(403, 'FORBIDDEN', '하우스맨 오더 조회 권한이 없습니다.');
+      }
+
+      const businessDate = cleanText_(req.query.businessDate, 20);
+      const site = cleanText_(req.query.site || user.default_site, 80);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) {
+        throw httpError(400, 'INVALID_REQUEST', '업무일자가 필요합니다.');
+      }
+      if (!site) {
+        throw httpError(400, 'INVALID_REQUEST', '사업장이 필요합니다.');
+      }
+      if (!allowedForSite(user, site)) {
+        throw httpError(403, 'FORBIDDEN', '해당 사업장 조회 권한이 없습니다.');
+      }
+
+      const employeeNo = String(user.employee_no || '');
+      const { rows } = await client.query(
+        `select *
+           from public.nova_houseman_orders
+          where business_date=$1::date
+            and site=$2
+            and (
+              assigned_employee_no=$3
+              or processor_employee_no=$3
+              or (
+                route_locked is false
+                and $3 = any(coalesce(route_candidate_employee_nos, '{}'::text[]))
+              )
+            )
+          order by updated_at desc, order_id desc`,
+        [businessDate, site, employeeNo]
+      );
+
+      res.json({
+        ok: true,
+        businessDate,
+        site,
+        orders: rows.map(housemanOrderDto_),
+        serverTime: new Date().toISOString()
+      });
+    } catch (e) {
+      next(e);
+    } finally {
+      if (client) client.release();
+    }
+  }
+);
+
 app.post(
   '/v1/houseman-orders',
   async (req, res, next) => {
