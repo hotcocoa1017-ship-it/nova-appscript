@@ -54,6 +54,44 @@
       min-height: 44px;
     }
   }
+
+  .monthly-photo-cell { text-align: center; white-space: nowrap; }
+  .monthly-photo-button {
+    min-height: 32px;
+    padding: 0 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #fff;
+    color: #111827;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  .monthly-photo-button:hover { background: #f8fafc; }
+  .monthly-photo-viewer { display: grid; gap: 12px; }
+  .monthly-photo-viewer-image-wrap {
+    display: grid;
+    place-items: center;
+    min-height: 280px;
+    max-height: 70vh;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: #f8fafc;
+  }
+  .monthly-photo-viewer-image {
+    display: block;
+    max-width: 100%;
+    max-height: 68vh;
+    object-fit: contain;
+  }
+  .monthly-photo-viewer-meta,
+  .monthly-photo-viewer-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
 </style>
 <script>
 (() => {
@@ -2470,8 +2508,8 @@
         <details class="monthly-staff-panel"><summary>직원별 집계 보기</summary><div id="monthlyStaffSummary" class="monthly-staff-summary"></div></details>
         <div class="monthly-table-wrap">
           <table class="monthly-table">
-            <thead><tr><th>업무일자</th><th>구분</th><th>사업장</th><th>객실</th><th>담당자</th><th>상태</th><th>업무내용</th><th>등록/시작</th><th>완료</th><th>소요</th></tr></thead>
-            <tbody id="monthlyTableBody"><tr><td colspan="10" class="table-empty">조회 데이터를 불러오는 중입니다.</td></tr></tbody>
+            <thead><tr><th>업무일자</th><th>구분</th><th>사업장</th><th>객실</th><th>담당자</th><th>상태</th><th>업무내용</th><th>사진</th><th>등록/시작</th><th>완료</th><th>소요</th></tr></thead>
+            <tbody id="monthlyTableBody"><tr><td colspan="11" class="table-empty">조회 데이터를 불러오는 중입니다.</td></tr></tbody>
           </table>
         </div>
         <div id="monthlyPagination" class="monthly-pagination"></div>
@@ -2583,7 +2621,7 @@
     state.monthly.loading = true;
     const filters = collectMonthlyFilters_(overrides);
     const periodLabel = filters.period === 'DAILY' ? '일별' : '월별';
-    if ($('monthlyTableBody')) $('monthlyTableBody').innerHTML = `<tr><td colspan="10" class="table-empty">${periodLabel} 데이터를 불러오는 중입니다.</td></tr>`;
+    if ($('monthlyTableBody')) $('monthlyTableBody').innerHTML = `<tr><td colspan="11" class="table-empty">${periodLabel} 데이터를 불러오는 중입니다.</td></tr>`;
     try {
       const result = await callServer('getMonthlyHistory', state.token, filters);
       if (!result?.ok) throw new Error(result?.message || '조회 데이터를 불러오지 못했습니다.');
@@ -2596,7 +2634,7 @@
         : `${state.monthly.year}-${String(state.monthly.month).padStart(2, '0')}`;
       setSyncStatus(`${periodLabel}조회 ${rangeText} · ${Number(result.pagination?.total || 0).toLocaleString('ko-KR')}건 · ${result.serverTime || ''}`);
     } catch (error) {
-      if ($('monthlyTableBody')) $('monthlyTableBody').innerHTML = `<tr><td colspan="10" class="table-empty error">${escapeHtml(error?.message || '통합조회 오류')}</td></tr>`;
+      if ($('monthlyTableBody')) $('monthlyTableBody').innerHTML = `<tr><td colspan="11" class="table-empty error">${escapeHtml(error?.message || '통합조회 오류')}</td></tr>`;
       showToast(error?.message || '통합조회 오류');
     } finally {
       state.monthly.loading = false;
@@ -2789,9 +2827,9 @@
     $('monthlyStaffSummary').innerHTML = `<table><thead><tr><th>직원</th><th>직무</th><th>기록</th><th>완료</th><th>처리불가</th><th>인정 정비수</th><th>평균</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.employeeNo)}</small></td><td>${escapeHtml(item.job || '-')}</td><td>${Number(item.total || 0).toLocaleString('ko-KR')}</td><td>${Number(item.completed || 0).toLocaleString('ko-KR')}</td><td>${Number(item.unable || 0).toLocaleString('ko-KR')}</td><td>${Number(item.recognizedUnits || 0).toLocaleString('ko-KR')}</td><td>${formatMonthlyMinutes_(item.averageMinutes)}</td></tr>`).join('')}</tbody></table>`;
   }
 
-  function renderMonthlyTable_(items) { // (월별·일별 이력 목록)
+  function renderMonthlyTable_(items) { // (월별·일별 이력 목록·하우스맨 사진보기)
     if (!items.length) {
-      $('monthlyTableBody').innerHTML = '<tr><td colspan="10" class="table-empty">선택한 조건의 이력이 없습니다.</td></tr>';
+      $('monthlyTableBody').innerHTML = '<tr><td colspan="11" class="table-empty">선택한 조건의 이력이 없습니다.</td></tr>';
       return;
     }
     $('monthlyTableBody').innerHTML = items.map(item => `
@@ -2803,10 +2841,79 @@
         <td>${escapeHtml(item.employeeDisplay || '-')}</td>
         <td><span class="monthly-status">${escapeHtml(item.statusLabel || '-')}</span></td>
         <td class="monthly-detail" title="${escapeAttr(item.detailText || '')}">${escapeHtml(item.detailText || '-')}</td>
+        <td class="monthly-photo-cell">${item.typeCode === 'HOUSEMAN' && Number(item.photoCount || 0) > 0 ? `<button class="monthly-photo-button" type="button" data-monthly-photo-order="${escapeAttr(item.recordId)}">사진보기</button>` : '-'}</td>
         <td>${escapeHtml(item.startedAt || item.acceptedAt || item.registeredAt || '-')}</td>
         <td>${escapeHtml(item.completedAt || '-')}</td>
         <td>${formatMonthlyMinutes_(item.durationMinutes)}</td>
       </tr>`).join('');
+    $('monthlyTableBody').querySelectorAll('[data-monthly-photo-order]').forEach(button => {
+      button.addEventListener('click', () => openMonthlyHousemanPhotoViewer_(button.dataset.monthlyPhotoOrder, 0));
+    });
+  }
+
+  async function openMonthlyHousemanPhotoViewer_(orderId, index = 0) { // (월별조회 사진보기·다운로드)
+    const item = (state.monthly.data?.items || []).find(row => String(row.recordId || '') === String(orderId || ''));
+    const photos = Array.isArray(item?.photos) ? item.photos : [];
+    if (!item || !photos.length) return showToast('확인할 요청사진이 없습니다.');
+    const safeIndex = Math.max(0, Math.min(photos.length - 1, Number(index || 0)));
+    openModal(`
+      <div class="modal-card monthly-photo-modal">
+        <div class="modal-header"><h2>${escapeHtml(item.roomNo || '-')} 요청사진</h2><button class="modal-close" type="button" data-close-modal>×</button></div>
+        <div class="modal-body"><div id="monthlyHousemanPhotoViewerBody" class="monthly-photo-viewer"><div class="settings-loading">사진을 불러오는 중입니다.</div></div></div>
+      </div>`);
+    await loadMonthlyHousemanPhotoViewer_(item, safeIndex);
+  }
+
+  async function loadMonthlyHousemanPhotoViewer_(item, index) { // (사진 한 장씩 지연 로드)
+    const root = $('monthlyHousemanPhotoViewerBody');
+    const photos = Array.isArray(item?.photos) ? item.photos : [];
+    if (!root || !photos.length) return;
+    const safeIndex = Math.max(0, Math.min(photos.length - 1, Number(index || 0)));
+    const photo = photos[safeIndex];
+    root.innerHTML = '<div class="settings-loading">사진을 불러오는 중입니다.</div>';
+    try {
+      const result = await callServer('getHousemanRequestPhoto', state.token, {
+        orderId: item.recordId,
+        rowNumber: Number(item.rowNumber || 0),
+        fileId: photo.fileId
+      });
+      if (!result?.ok || !result.base64) throw new Error(result?.message || '사진을 불러오지 못했습니다.');
+      if (!$('monthlyHousemanPhotoViewerBody')) return;
+      const mimeType = String(result.photo?.mimeType || 'image/jpeg');
+      const fileName = String(result.photo?.name || `houseman-photo-${safeIndex + 1}.jpg`);
+      root.innerHTML = `
+        <div class="monthly-photo-viewer-nav">
+          <button id="monthlyPhotoPrev" class="secondary-button" type="button"${safeIndex <= 0 ? ' disabled' : ''}>이전</button>
+          <strong>${safeIndex + 1} / ${photos.length}</strong>
+          <button id="monthlyPhotoNext" class="secondary-button" type="button"${safeIndex >= photos.length - 1 ? ' disabled' : ''}>다음</button>
+        </div>
+        <div class="monthly-photo-viewer-image-wrap"><img class="monthly-photo-viewer-image" src="data:${escapeAttr(mimeType)};base64,${result.base64}" alt="${escapeAttr(fileName)}"></div>
+        <div class="monthly-photo-viewer-meta"><span>${escapeHtml(fileName)}</span><button id="monthlyPhotoDownload" class="action-button primary" type="button">다운로드</button></div>`;
+      $('monthlyPhotoPrev')?.addEventListener('click', () => loadMonthlyHousemanPhotoViewer_(item, safeIndex - 1));
+      $('monthlyPhotoNext')?.addEventListener('click', () => loadMonthlyHousemanPhotoViewer_(item, safeIndex + 1));
+      $('monthlyPhotoDownload')?.addEventListener('click', () => downloadMonthlyHousemanPhoto_(result));
+    } catch (error) {
+      if (root) root.innerHTML = `<div class="settings-loading error">${escapeHtml(error?.message || '사진 조회 오류')}</div>`;
+    }
+  }
+
+  function downloadMonthlyHousemanPhoto_(result) { // (조회한 사진파일 브라우저 다운로드)
+    try {
+      const binary = window.atob(String(result?.base64 || ''));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      const blob = new Blob([bytes], { type: String(result?.photo?.mimeType || 'image/jpeg') });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = String(result?.photo?.name || 'houseman-request.jpg');
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } catch (error) {
+      showToast(error?.message || '사진 다운로드 오류');
+    }
   }
 
   function renderMonthlyPagination_(pagination) { // (월별·일별 목록 페이지 이동)
@@ -6801,6 +6908,66 @@
     });
   }
 
+  async function mirrorRoommaidHousemanRequestToSheet_(mirrorPayload, attempt = 0) { // (Realtime 오더 기존 이력·Telegram 백그라운드 보존)
+    try {
+      const result = await callServer('createMobileHousemanRequest', state.token, mirrorPayload);
+      if (!result?.ok) throw new Error(result?.message || '하우스맨 요청 이력 동기화에 실패했습니다.');
+      return result;
+    } catch (error) {
+      if (attempt < 3) {
+        await novaRealtimeSleep_([600, 1600, 3600, 7000][attempt] || 7000);
+        return mirrorRoommaidHousemanRequestToSheet_(mirrorPayload, attempt + 1);
+      }
+      console.error('[NOVA Realtime] 룸메이드 하우스맨 오더 Sheet 미러 실패:', error);
+      setSyncStatus('하우스맨 요청 DB 등록완료 · 기존 이력 동기화 재확인 필요');
+      throw error;
+    }
+  }
+
+  async function createRoommaidHousemanRequestFast_(payload) { // (룸메이드 오더 PostgreSQL 선확정·Sheet 후행)
+    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
+    if (role !== 'ROOMMAID') {
+      const legacy = await callServer('createMobileHousemanRequest', state.token, payload);
+      return Object.assign({}, legacy || {}, { realtime: false, mirrorPromise: Promise.resolve(legacy) });
+    }
+
+    if (!novaRealtime_.configLoaded) await initNovaRealtime_();
+    if (!novaRealtimeIsEnabled_()) {
+      const legacy = await callServer('createMobileHousemanRequest', state.token, payload);
+      return Object.assign({}, legacy || {}, { realtime: false, mirrorPromise: Promise.resolve(legacy) });
+    }
+
+    const realtimePayload = Object.assign({}, payload || {}, {
+      assignmentMode: 'UNASSIGNED',
+      assignedEmployeeNo: '',
+      requester: state.bootstrap?.user?.name || '',
+      handover: false
+    });
+    const realtime = await novaRealtimeCreateHousemanOrder_(realtimePayload);
+    const mirrorPayload = Object.assign({}, realtime.mirrorPayload || realtimePayload, {
+      realtimeOrderId: realtime.orderId || realtime.order?.orderId || '',
+      requester: state.bootstrap?.user?.name || '',
+      requestSource: 'ROOMMAID',
+      createdFrom: 'MOBILE',
+      assignmentMode: 'UNASSIGNED',
+      handover: false
+    });
+    const mirrorPromise = mirrorRoommaidHousemanRequestToSheet_(mirrorPayload);
+    // 사진이 없는 일반 등록은 Sheet/Telegram 저장을 사용자 응답과 분리한다.
+    void mirrorPromise.catch(() => null);
+    return {
+      ok: true,
+      realtime: true,
+      order: realtime.order,
+      version: Number(realtime.order?.version || realtime.version || 0),
+      timing: realtime.timing || {},
+      mirrorPayload,
+      mirrorPromise,
+      message: '하우스맨 요청을 등록했습니다.'
+    };
+  }
+  window.novaCreateRoommaidHousemanRequestFast_ = createRoommaidHousemanRequestFast_;
+
   function openMobileHousemanRequest_(roomNo) { // (모바일 하우스맨 요청 등록창)
     const parts = state.mobile.data?.codes?.orderParts || [];
     const itemSuggestions = state.mobile.data?.codes?.orderItems || [];
@@ -6815,8 +6982,31 @@
         items: [{ name: item, quantity: clampQuantity($('mobileRequestQty').value) }],
         note: $('mobileRequestNote').value.trim(), requester: state.bootstrap.user.name
       };
-      closeModal();
-      await runMobileAction_('createMobileHousemanRequest', payload, event.currentTarget);
+      const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
+      if (role !== 'ROOMMAID') {
+        closeModal();
+        await runMobileAction_('createMobileHousemanRequest', payload, event.currentTarget);
+        return;
+      }
+
+      const button = event.currentTarget;
+      const clickedAt = performance.now();
+      button.disabled = true;
+      button.textContent = '등록 중…';
+      try {
+        const result = await createRoommaidHousemanRequestFast_(payload);
+        if (!result?.ok) throw new Error(result?.message || '하우스맨 요청을 등록하지 못했습니다.');
+        closeModal();
+        const elapsed = Math.round(performance.now() - clickedAt);
+        showToast(result.message || '하우스맨 요청을 등록했습니다.');
+        setSyncStatus(`룸메이드 오더 ${result.realtime ? 'Realtime' : '기존경로'} ${elapsed}ms`);
+      } catch (error) {
+        showToast(error?.message || '하우스맨 요청 등록 오류');
+        if (button.isConnected) {
+          button.disabled = false;
+          button.textContent = '요청 등록';
+        }
+      }
     });
   }
 

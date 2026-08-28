@@ -395,10 +395,26 @@ function createMobileHousemanRequest(token, payload) { // (룸메이드·QM 객�
     let order;
     let version;
     try {
-    version = reserveDataVersion_({ lockHeld: true });
-    const orderId = `HO-${safe.businessDate.replaceAll('-', '')}-${Utilities.getUuid().slice(0, 8).toUpperCase()}`;
-    const now = nowText_();
     const sheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
+
+    // Realtime 선등록 후 브라우저 재시도에도 같은 오더를 한 번만 Sheet에 미러한다.
+    if (safe.realtimeOrderId) {
+      const existing = findHousemanOrderRow_(sheet, safe.realtimeOrderId, 0);
+      if (existing) {
+        const existingOrder = housemanOrderObject_(existing.data, existing.rowNumber);
+        return {
+          ok: true,
+          version: Number(existingOrder.version || 0),
+          order: existingOrder,
+          mirrorDuplicate: true,
+          message: '하우스맨 요청을 등록했습니다.'
+        };
+      }
+    }
+
+    version = reserveDataVersion_({ lockHeld: true });
+    const orderId = safe.realtimeOrderId || `HO-${safe.businessDate.replaceAll('-', '')}-${Utilities.getUuid().slice(0, 8).toUpperCase()}`;
+    const now = nowText_();
     const itemSummary = safe.items.map(item => item.quantity > 1 ? `${item.name}×${item.quantity}` : item.name).join(', ');
     const totalQuantity = safe.items.reduce((sum, item) => sum + item.quantity, 0);
     const detail = {

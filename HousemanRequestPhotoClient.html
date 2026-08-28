@@ -318,7 +318,7 @@
     }).join('');
   }
 
-  async function submitHousemanRequestWithPhotos_(button) { // (오더 1건 생성 후 반환 orderId에 사진 최대 5장 순차 연결)
+  async function submitHousemanRequestWithPhotos_(button) { // (Realtime 오더 즉시확정 후 사진은 후행 저장)
     if (!activeRoomNo) throw new Error('요청 객실번호를 확인하지 못했습니다. 요청창을 닫고 다시 열어 주세요.');
     const token = String(localStorage.getItem('novaToken') || '').trim();
     if (!token) throw new Error('로그인 정보가 없습니다. 다시 로그인해 주세요.');
@@ -345,37 +345,56 @@
     }
     if (photos.length > maxPhotosAllowed) throw new Error(`사진은 최대 ${maxPhotosAllowed}장까지 등록할 수 있습니다.`);
 
-    setHousemanPhotoSubmitBusy_(button, true, '요청 등록 중…');
-    const createResult = await callCreateMobileHousemanRequestServer_(token, {
+    const createPayload = {
       businessDate,
       site,
       roomNo: activeRoomNo,
       part,
       items: [{ name: item, quantity: clampHousemanPhotoQuantity_(qtyEl && qtyEl.value) }],
       note: String(noteEl && noteEl.value || '').trim()
-    });
+    };
+    setHousemanPhotoSubmitBusy_(button, true, '요청 등록 중…');
+    const fastCreate = typeof window.novaCreateRoommaidHousemanRequestFast_ === 'function'
+      ? window.novaCreateRoommaidHousemanRequestFast_
+      : null;
+    const createResult = fastCreate
+      ? await fastCreate(createPayload)
+      : await callCreateMobileHousemanRequestServer_(token, createPayload);
     if (!createResult || !createResult.ok) {
       throw new Error(createResult && createResult.message ? createResult.message : '하우스맨 요청을 등록하지 못했습니다.');
     }
 
     const order = createResult.order || {};
     const orderId = String(order.orderId || '').trim();
-    if (!orderId) {
-      closeHousemanPhotoModal_();
-      showHousemanPhotoToast_('요청은 등록되었지만 사진 연결용 요청번호를 확인하지 못했습니다.', true);
-      window.setTimeout(() => window.location.reload(), 1800);
+    if (!orderId) throw new Error('사진 연결용 요청번호를 확인하지 못했습니다.');
+
+    // 오더 등록 반응은 DB 확정 시점에서 끝내고, 기존 Sheet/사진 저장은 사용자 대기와 분리한다.
+    closeHousemanPhotoModal_();
+    showHousemanPhotoToast_(`하우스맨 요청 등록 완료 · 사진 ${photos.length}장 저장 중…`, false);
+
+    let mirrorResult = createResult;
+    if (createResult.mirrorPromise && typeof createResult.mirrorPromise.then === 'function') {
+      try {
+        mirrorResult = await createResult.mirrorPromise;
+      } catch (error) {
+        showHousemanPhotoToast_(`요청은 등록되었습니다. 사진 저장 준비 오류 · ${error?.message || '이력 동기화 실패'}`, true);
+        return;
+      }
+    }
+    if (!mirrorResult?.ok) {
+      showHousemanPhotoToast_('요청은 등록되었습니다. 사진 저장 준비에 실패했습니다.', true);
       return;
     }
 
+    const sheetOrder = mirrorResult.order || order;
     let savedCount = 0;
     const failedMessages = [];
     for (let index = 0; index < photos.length; index += 1) {
       const photo = photos[index];
-      setHousemanPhotoSubmitBusy_(button, true, `사진 저장 중… ${index + 1}/${photos.length}`);
       try {
         const uploadResult = await callUploadHousemanRequestPhotoServer_(token, {
           orderId,
-          rowNumber: Number(order.rowNumber || 0),
+          rowNumber: Number(sheetOrder.rowNumber || 0),
           fileName: `${String(index + 1).padStart(2, '0')}_${photo.fileName}`,
           mimeType: photo.mimeType,
           base64: photo.base64
@@ -387,15 +406,11 @@
       }
     }
 
-    closeHousemanPhotoModal_();
     if (savedCount !== photos.length) {
-      showHousemanPhotoToast_(`하우스맨 요청은 등록되었습니다. 사진 ${savedCount}/${photos.length}장 저장${failedMessages.length ? ` · ${failedMessages[0]}` : ''}`, true);
-      window.setTimeout(() => window.location.reload(), 2600);
+      showHousemanPhotoToast_(`하우스맨 요청 등록완료 · 사진 ${savedCount}/${photos.length}장 저장${failedMessages.length ? ` · ${failedMessages[0]}` : ''}`, true);
       return;
     }
-
-    showHousemanPhotoToast_(`하우스맨 요청과 사진 ${savedCount}장을 등록했습니다.`, false);
-    window.setTimeout(() => window.location.reload(), 900);
+    showHousemanPhotoToast_(`하우스맨 요청과 사진 ${savedCount}장을 저장했습니다.`, false);
   }
 
   function callHousemanPhotoCapabilityServer_(token) { // (사진기능 권한 서버 호출)

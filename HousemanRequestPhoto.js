@@ -112,6 +112,55 @@ function uploadMobileHousemanRequestPhoto(token, payload) { // (룸메이드 모
   });
 }
 
+
+function getHousemanRequestPhoto(token, payload) { // (오더테이커 월별조회 요청사진 확인·다운로드)
+  return measureResponse_('getHousemanRequestPhoto', () => {
+    requireRole_(token, ['ADMIN', 'ORDER']);
+    const safe = payload || {};
+    const orderId = String(safe.orderId || '').trim();
+    const fileId = String(safe.fileId || '').trim();
+    const preferredRowNumber = Number(safe.rowNumber || 0);
+    if (!orderId || !fileId) throw new Error('사진을 확인할 오더와 파일정보가 없습니다.');
+
+    const sheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
+    const orderInfo = findHousemanOrderRow_(sheet, orderId, preferredRowNumber);
+    if (!orderInfo || !orderInfo.data) throw new Error('하우스맨 요청을 찾을 수 없습니다.');
+    if (String(orderInfo.data['기록구분'] || '').trim() !== NOVA.RECORD_TYPES.HOUSEMAN_ORDER) {
+      throw new Error('하우스맨 요청 자료가 아닙니다.');
+    }
+    if (String(orderInfo.data['삭제여부'] || 'N').trim().toUpperCase() === 'Y') {
+      throw new Error('삭제된 요청의 사진은 확인할 수 없습니다.');
+    }
+
+    let detail = {};
+    try { detail = JSON.parse(String(orderInfo.data['세부내용JSON'] || '{}')); } catch (error) { detail = {}; }
+    const photos = Array.isArray(detail.photos) ? detail.photos.filter(photo => photo && photo.fileId) : [];
+    const photo = photos.find(item => String(item.fileId || '').trim() === fileId);
+    if (!photo) throw new Error('해당 오더에 연결된 사진을 찾을 수 없습니다.');
+
+    let file;
+    try { file = DriveApp.getFileById(fileId); } catch (error) { throw new Error('사진 파일을 열 수 없습니다.'); }
+    const blob = file.getBlob();
+    const bytes = blob.getBytes();
+    if (!bytes.length) throw new Error('사진 파일이 비어 있습니다.');
+    if (bytes.length > 5 * 1024 * 1024) throw new Error('사진 파일 용량이 너무 큽니다.');
+
+    return {
+      ok: true,
+      orderId,
+      rowNumber: Number(orderInfo.rowNumber || 0),
+      photo: {
+        fileId,
+        name: String(file.getName() || photo.name || 'houseman-request.jpg'),
+        mimeType: String(blob.getContentType() || photo.mimeType || 'image/jpeg'),
+        size: bytes.length,
+        uploadedAt: String(photo.uploadedAt || '')
+      },
+      base64: Utilities.base64Encode(bytes)
+    };
+  });
+}
+
 function validateHousemanRequestPhotoOrder_(orderInfo, user) { // (사진 연결 대상 하우스맨 요청 검증)
   if (!orderInfo || !orderInfo.data) throw new Error('하우스맨 요청을 찾을 수 없습니다.');
   const data = orderInfo.data;
