@@ -31,7 +31,7 @@ function getMonthlyHistory(token, filters) { // (월별 이력 페이지 조회)
         pageCount
       },
       items: pageItems,
-      close: buildDailyCloseOverviewForRequest_(request),
+      close: request.type === 'CLEANING' ? buildDailyCloseOverviewForRequest_(request) : {},
       serverTime: nowText_()
     };
   });
@@ -149,8 +149,21 @@ function normalizeMonthlyDate_(value, fallbackYear, fallbackMonth) { // (일별 
   return `${String(fallbackYear).padStart(4, '0')}-${String(fallbackMonth).padStart(2, '0')}-01`;
 }
 
+function monthlyRecordTypesForType_(type) { // (월별조회 소분류별 실제 조회 기록구분)
+  const normalized = String(type || 'ALL').trim().toUpperCase();
+  if (normalized === 'HOUSEMAN') return [NOVA.RECORD_TYPES.HOUSEMAN_ORDER];
+  if (normalized === 'CLEANING') return [NOVA.RECORD_TYPES.CLEANING];
+  if (normalized === 'QM') return [NOVA.RECORD_TYPES.QM, NOVA.RECORD_TYPES.QM_CHECKLIST];
+  return [
+    NOVA.RECORD_TYPES.CLEANING,
+    NOVA.RECORD_TYPES.QM,
+    NOVA.RECORD_TYPES.QM_CHECKLIST,
+    NOVA.RECORD_TYPES.HOUSEMAN_ORDER
+  ];
+}
+
 function buildMonthlyHistoryBundle_(request) { // (월별 이력 조회·필터·집계)
-  const rawRows = readMonthlyHistoryRows_(request);
+  const rawRows = readMonthlyHistoryRows_(request, monthlyRecordTypesForType_(request.type));
   const users = getUserIndex_().byEmployeeNo;
   const orderStatusMap = {};
   getCodes_('하우스맨상태').forEach(code => { orderStatusMap[code.code] = code.label; });
@@ -173,7 +186,9 @@ function buildMonthlyHistoryBundle_(request) { // (월별 이력 조회·필터�
     items: filtered,
     summary: buildMonthlySummary_(filtered),
     staffSummary: buildMonthlyStaffSummary_(filtered, users),
-    qmQuality: buildQmQualityAnalyticsFromHistoryRows_(rawRows.map(row => row.data), users, request),
+    qmQuality: request.type === 'QM'
+      ? buildQmQualityAnalyticsFromHistoryRows_(rawRows.map(row => row.data), users, request)
+      : {},
     options
   };
 }

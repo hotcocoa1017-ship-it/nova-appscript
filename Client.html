@@ -122,6 +122,41 @@
       font-size: 13px;
     }
   }
+
+  .monthly-subcategory-menu {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin: 0 0 14px;
+    padding: 4px;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    background: #f8fafc;
+  }
+  .monthly-subcategory-menu button {
+    min-height: 42px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: #6b7280;
+    font-size: 14px;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+  .monthly-subcategory-menu button.active {
+    background: #fff;
+    color: #111827;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  .monthly-subcategory-menu button:focus-visible {
+    outline: 2px solid #111827;
+    outline-offset: 1px;
+  }
+  @media (max-width: 760px) {
+    .monthly-subcategory-menu { gap: 4px; margin-bottom: 10px; }
+    .monthly-subcategory-menu button { min-height: 44px; padding: 0 8px; font-size: 13px; }
+  }
 </style>
 <script>
 (() => {
@@ -1037,7 +1072,7 @@
       year: 0,
       month: 0,
       site: '',
-      type: 'ALL',
+      type: 'HOUSEMAN',
       employeeNo: '',
       status: '',
       search: '',
@@ -2520,6 +2555,16 @@
             <button id="monthlyExcelButton" class="primary-button" type="button">엑셀 다운로드</button>
           </div>
         </div>
+        <div id="monthlySubcategoryMenu" class="monthly-subcategory-menu" role="tablist" aria-label="월별조회 소분류">
+          <button type="button" data-monthly-section="HOUSEMAN" role="tab">하우스맨</button>
+          <button type="button" data-monthly-section="CLEANING" role="tab">룸메이드</button>
+          <button type="button" data-monthly-section="QM" role="tab">QM</button>
+        </div>
+        <select id="monthlyType" class="hidden" aria-hidden="true" tabindex="-1">
+          <option value="HOUSEMAN">하우스맨</option>
+          <option value="CLEANING">룸메이드</option>
+          <option value="QM">QM</option>
+        </select>
         <div id="monthlyControls" class="monthly-controls">
           <div class="monthly-period-toggle" id="monthlyPeriodToggle" role="tablist" aria-label="조회 방식">
             <button type="button" data-period="MONTHLY">월별</button>
@@ -2534,7 +2579,6 @@
             <button id="monthlyNextDay" type="button" title="다음 날짜">›</button>
           </div>
           <label><span>사업장</span><select id="monthlySite"><option value="">전체</option></select></label>
-          <label><span>업무구분</span><select id="monthlyType"><option value="ALL">전체</option><option value="CLEANING">룸메이드</option><option value="QM">QM</option><option value="HOUSEMAN">하우스맨</option></select></label>
           <label><span>직원</span><select id="monthlyEmployee"><option value="">전체</option></select></label>
           <label><span>상태</span><select id="monthlyStatus"><option value="">전체</option></select></label>
           <label class="monthly-search"><span>검색</span><input id="monthlySearch" placeholder="객실·직원·품목·내용"></label>
@@ -2562,9 +2606,27 @@
     $('monthlyMonth').innerHTML = Array.from({ length: 12 }, (_, index) => index + 1)
       .map(month => `<option value="${month}"${month === Number(state.monthly.month) ? ' selected' : ''}>${month}월</option>`).join('');
     $('monthlyDate').value = state.monthly.date || formatClientDate_(new Date());
-    $('monthlyType').value = state.monthly.type || 'ALL';
+    $('monthlyType').value = ['HOUSEMAN', 'CLEANING', 'QM'].includes(String(state.monthly.type || '').toUpperCase())
+      ? String(state.monthly.type).toUpperCase()
+      : 'HOUSEMAN';
+    state.monthly.type = $('monthlyType').value;
     $('monthlySearch').value = state.monthly.search || '';
     applyMonthlyPeriodUi_(state.monthly.period);
+    applyMonthlySubcategoryUi_(state.monthly.type);
+
+    $('monthlySubcategoryMenu').addEventListener('click', event => {
+      const button = event.target.closest('[data-monthly-section]');
+      if (!button) return;
+      const nextType = String(button.dataset.monthlySection || '').toUpperCase();
+      if (!['HOUSEMAN', 'CLEANING', 'QM'].includes(nextType) || nextType === state.monthly.type) return;
+      state.monthly.type = nextType;
+      $('monthlyType').value = nextType;
+      state.monthly.employeeNo = '';
+      state.monthly.status = '';
+      state.monthly.page = 1;
+      applyMonthlySubcategoryUi_(nextType);
+      loadMonthlyHistory({ page: 1, resetDetailFilters: true });
+    });
 
     $('monthlyPeriodToggle').addEventListener('click', event => {
       const button = event.target.closest('[data-period]');
@@ -2589,7 +2651,6 @@
       loadMonthlyHistory({ page: 1 });
     });
     $('monthlyNextDay').addEventListener('click', () => moveMonthlyDay_(1));
-    $('monthlyType').addEventListener('change', () => loadMonthlyHistory({ page: 1, resetDetailFilters: true }));
     $('monthlySite').addEventListener('change', () => loadMonthlyHistory({ page: 1 }));
     $('monthlyEmployee').addEventListener('change', () => loadMonthlyHistory({ page: 1 }));
     $('monthlyStatus').addEventListener('change', () => loadMonthlyHistory({ page: 1 }));
@@ -2597,6 +2658,23 @@
     $('monthlySheetButton').addEventListener('click', writeMonthlySheet_);
     $('dailyCloseSaveButton').addEventListener('click', saveDailyCloseFromMonthly_);
     $('dailyCloseCancelButton').addEventListener('click', cancelDailyCloseFromMonthly_);
+  }
+
+  function applyMonthlySubcategoryUi_(type) { // (월별조회 하우스맨·룸메이드·QM 소분류 전환)
+    const normalized = ['HOUSEMAN', 'CLEANING', 'QM'].includes(String(type || '').toUpperCase())
+      ? String(type).toUpperCase()
+      : 'HOUSEMAN';
+    state.monthly.type = normalized;
+    if ($('monthlyType')) $('monthlyType').value = normalized;
+    document.querySelectorAll('#monthlySubcategoryMenu [data-monthly-section]').forEach(button => {
+      const active = button.dataset.monthlySection === normalized;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    const closePanel = $('dailyClosePanel');
+    const qmPanel = $('monthlyQmQualityPanel');
+    if (closePanel) closePanel.classList.toggle('hidden', normalized !== 'CLEANING');
+    if (qmPanel) qmPanel.classList.toggle('hidden', normalized !== 'QM');
   }
 
   function applyMonthlyPeriodUi_(period) { // (월별·일별 입력영역 전환)
@@ -2645,7 +2723,7 @@
       year: Number($('monthlyYear')?.value || state.monthly.year || new Date().getFullYear()),
       month: Number($('monthlyMonth')?.value || state.monthly.month || new Date().getMonth() + 1),
       site: resetDetail ? '' : String($('monthlySite')?.value ?? state.monthly.site ?? ''),
-      type: String($('monthlyType')?.value || state.monthly.type || 'ALL'),
+      type: String($('monthlyType')?.value || state.monthly.type || 'HOUSEMAN'),
       employeeNo: resetDetail ? '' : String($('monthlyEmployee')?.value ?? state.monthly.employeeNo ?? ''),
       status: resetDetail ? '' : String($('monthlyStatus')?.value ?? state.monthly.status ?? ''),
       search: String($('monthlySearch')?.value ?? state.monthly.search ?? '').trim(),
@@ -2685,8 +2763,11 @@
     applyMonthlyPeriodUi_(state.monthly.period);
     renderMonthlyFilterOptions_(data.options || {});
     renderMonthlySummary_(data.summary || {});
-    renderDailyClosePanel_(data.close || {});
-    renderMonthlyQmQuality_(data.qmQuality || {});
+    applyMonthlySubcategoryUi_(state.monthly.type);
+    if (state.monthly.type === 'CLEANING') renderDailyClosePanel_(data.close || {});
+    else if ($('dailyClosePanel')) $('dailyClosePanel').innerHTML = '';
+    if (state.monthly.type === 'QM') renderMonthlyQmQuality_(data.qmQuality || {});
+    else if ($('monthlyQmQualityPanel')) $('monthlyQmQualityPanel').innerHTML = '';
     renderMonthlyStaffSummary_(data.staffSummary || []);
     renderMonthlyTable_(data.items || []);
     renderMonthlyPagination_(data.pagination || {});
@@ -2705,6 +2786,7 @@
     $('monthlyMonth').value = String(state.monthly.month);
     $('monthlyDate').value = state.monthly.date || formatClientDate_(new Date());
     $('monthlyType').value = state.monthly.type;
+    applyMonthlySubcategoryUi_(state.monthly.type);
     $('monthlySearch').value = state.monthly.search || '';
   }
 
