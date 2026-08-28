@@ -1,0 +1,2 @@
+Deploy trigger for HOUSEMAN ADMIN/ORDER realtime state consistency v93.
+Includes manager ACCEPT/START/COMPLETE/UNABLE/REOPEN DB-first path while preserving HOUSEMAN worker semantics and Sheet audit mirror.
