@@ -1027,7 +1027,7 @@
       data: null,
       version: 0,
       businessDate: sessionStorage.getItem('novaIndicatorBusinessDate') || '',
-      site: '',
+      site: sessionStorage.getItem('novaIndicatorSite') || '',
       filter: 'ALL',
       search: '',
       building: '',
@@ -1046,7 +1046,7 @@
       data: null,
       version: 0,
       businessDate: sessionStorage.getItem('novaMobileBusinessDate') || '',
-      site: '',
+      site: sessionStorage.getItem('novaMobileSite') || '',
       filter: 'ACTIVE',
       search: '',
       building: '',
@@ -3340,6 +3340,7 @@
     });
     $('indicatorSite').addEventListener('change', event => {
       state.indicator.site = event.target.value;
+      sessionStorage.setItem('novaIndicatorSite', String(state.indicator.site || ''));
       state.indicator.building = '';
       state.indicator.floor = '';
       state.indicator.version = 0;
@@ -3501,6 +3502,7 @@
     state.indicator.businessDate = result.selection?.businessDate || state.indicator.businessDate;
     if (state.indicator.businessDate) sessionStorage.setItem('novaIndicatorBusinessDate', state.indicator.businessDate);
     state.indicator.site = result.selection?.site ?? state.indicator.site;
+    sessionStorage.setItem('novaIndicatorSite', String(state.indicator.site || ''));
     state.indicator.data = Object.assign({}, previousData || {}, result);
 
     if (deferUiRender) {
@@ -4139,6 +4141,7 @@
     $('orderRoomNo').value = roomNo;
     if (siteChanged) {
       state.indicator.site = room.site;
+      sessionStorage.setItem('novaIndicatorSite', String(state.indicator.site || ''));
       if ($('indicatorSite')) $('indicatorSite').value = room.site;
     }
     renderRoomGrid();
@@ -6433,6 +6436,7 @@
     });
     $('mobileSite').addEventListener('change', event => {
       state.mobile.site = event.target.value;
+      sessionStorage.setItem('novaMobileSite', String(state.mobile.site || ''));
       state.mobile.building = '';
       state.mobile.floor = '';
       state.mobile.version = 0;
@@ -6492,6 +6496,7 @@
     state.mobile.businessDate = result.selection?.businessDate || state.mobile.businessDate || state.bootstrap.app.businessDate;
     if (state.mobile.businessDate) sessionStorage.setItem('novaMobileBusinessDate', state.mobile.businessDate);
     state.mobile.site = result.selection?.site ?? state.mobile.site;
+    sessionStorage.setItem('novaMobileSite', String(state.mobile.site || ''));
     renderMobileData();
     const mobileRole = String(state.bootstrap?.user?.role || '').toUpperCase();
     if (novaRealtimeIsEnabled_() && ['ROOMMAID', 'QM'].includes(mobileRole)) {
@@ -7387,6 +7392,8 @@
     sessionStorage.setItem('novaActiveMenu', state.activeMenu);
     if (state.indicator.businessDate) sessionStorage.setItem('novaIndicatorBusinessDate', state.indicator.businessDate);
     if (state.mobile.businessDate) sessionStorage.setItem('novaMobileBusinessDate', state.mobile.businessDate);
+    sessionStorage.setItem('novaIndicatorSite', String(state.indicator.site || ''));
+    sessionStorage.setItem('novaMobileSite', String(state.mobile.site || ''));
   }
 
   function showView(id) { // (단일 화면 전환)
