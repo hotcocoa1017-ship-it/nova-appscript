@@ -92,7 +92,7 @@ jobs:
           node - "$RUNNER_TEMP/nova-cloudrun-candidate-health.json" <<'NODE'
           const fs = require('fs');
           const health = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-          if (health?.build !== 'phase1-v3.9-houseman-manual-assign') {
+          if (health?.build !== 'phase1-v4.0-qm-realtime') {
             throw new Error('Unexpected NOVA build.');
           }
           if (health?.eventTimeReady !== true) {
@@ -118,7 +118,7 @@ jobs:
           node - "$RUNNER_TEMP/nova-cloudrun-health.json" <<'NODE'
           const fs = require('fs');
           const health = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-          if (health?.build !== 'phase1-v3.9-houseman-manual-assign' || health?.eventTimeReady !== true) {
+          if (health?.build !== 'phase1-v4.0-qm-realtime' || health?.eventTimeReady !== true) {
             throw new Error('Cloud Run production smoke check failed.');
           }
           NODE
