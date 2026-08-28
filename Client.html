@@ -7188,11 +7188,9 @@
     const qmRealtime = novaRealtimeIsEnabled_() && role === 'QM' && state.activeMenu === 'qm';
     const housemanRealtime = novaRealtimeIsEnabled_() && role === 'HOUSEMAN' && state.activeMenu === 'houseman';
     let delay;
-    if (roommaidRealtime) {
-      // 검증 완료된 ROOMMAID는 기존 5.0~6.2초를 유지한다.
-      delay = 5000 + Math.round(Math.random() * 1200);
-    } else if (qmRealtime || housemanRealtime) {
-      // QM/HOUSEMAN은 본인 배정목록만 경량조회하므로 3.0~3.7초로 분산한다.
+    if (roommaidRealtime || qmRealtime || housemanRealtime) {
+      // ROOMMAID/QM/HOUSEMAN 모두 본인 배정목록만 경량조회하므로
+      // 3.0~3.7초로 분산해 정상 네트워크 기준 5초 미만 반영을 목표로 한다.
       delay = 3000 + Math.round(Math.random() * 700);
     } else {
       delay = nextSyncDelay_(Number(state.bootstrap.app.mobileSyncMs || 16000));
