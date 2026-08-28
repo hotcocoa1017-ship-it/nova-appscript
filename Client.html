@@ -253,6 +253,17 @@
     return mapped;
   }
 
+  function novaRealtimeUpdatedAtMs_(value) { // (Sheet/DB 수정시각 비교용)
+    const text = String(value || '').trim();
+    if (!text) return 0;
+    const local = text.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2}):(\d{2})$/);
+    const normalized = local
+      ? `${local[1]}T${String(local[2]).padStart(2, '0')}:${local[3]}:${local[4]}+09:00`
+      : text;
+    const ms = Date.parse(normalized);
+    return Number.isFinite(ms) ? ms : 0;
+  }
+
   function novaRealtimeMergeRoom_(legacyRoom, realtimeRoom) {
     if (!legacyRoom) return realtimeRoom ? Object.assign({}, realtimeRoom) : legacyRoom;
     if (!realtimeRoom) return legacyRoom;
@@ -266,6 +277,20 @@
       if (Object.prototype.hasOwnProperty.call(realtimeRoom, key)) merged[key] = realtimeRoom[key];
     });
     if (realtimeRoom.building) merged.building = realtimeRoom.building;
+
+    // QM을 Realtime으로 전환하기 전 생성된 과거행은 Sheet의 완료/재정비가 DB의
+    // QM대기/점검중보다 최신일 수 있다. 이 경우에만 최신 Sheet 상태를 보존한다.
+    const legacyCleaningStatus = String(legacyRoom?.cleaningStatus || '').trim().toUpperCase();
+    const realtimeCleaningStatus = String(realtimeRoom?.cleaningStatus || '').trim().toUpperCase();
+    const legacyQmTerminal = ['QM_COMPLETED', 'REWORK'].includes(legacyCleaningStatus);
+    const realtimeQmPreTerminal = ['QM_WAITING', 'QM_CHECKING'].includes(realtimeCleaningStatus);
+    if (legacyQmTerminal && realtimeQmPreTerminal) {
+      const sheetUpdatedMs = novaRealtimeUpdatedAtMs_(legacyRoom?.updatedAt);
+      const dbUpdatedMs = novaRealtimeUpdatedAtMs_(realtimeRoom?.updatedAt);
+      if (sheetUpdatedMs && (!dbUpdatedMs || sheetUpdatedMs >= dbUpdatedMs)) {
+        merged.cleaningStatus = legacyCleaningStatus;
+      }
+    }
 
     // 일반 객실상태 Realtime 저장 직후 Sheet 미러가 따라올 때까지만 상태를 보호한다.
     // CHECKED_OUT은 이 보호맵을 사용하지 않으므로 기존 Apps Script 퇴실 결과가 stale DB에 의해 되돌아가지 않는다.
@@ -318,9 +343,10 @@
       if (selected) return [selected];
       return [...new Set((state.indicator.data?.sites || []).map(String).map(v => v.trim()).filter(Boolean))];
     }
-    // 무료모드: ROOMMAID는 Realtime 상시 연결을 만들지 않습니다.
-    // 다만 현재 배정객실의 DB 상태를 화면 진입/30초 저빈도 조회로 hydrate 합니다.
-    if (state.activeMenu === 'cleaning' && role === 'ROOMMAID') {
+    // 직원 모바일은 상시 Realtime 채널을 만들지 않고 현재 화면 진입/저빈도 조회로 hydrate 합니다.
+    const mobileRealtimeRole = (state.activeMenu === 'cleaning' && role === 'ROOMMAID')
+      || (state.activeMenu === 'qm' && role === 'QM');
+    if (mobileRealtimeRole) {
       const selected = String(state.mobile.site || '').trim();
       if (selected) return [selected];
       return [...new Set([
@@ -356,7 +382,9 @@
       return;
     }
 
-    if (state.activeMenu === 'cleaning' && role === 'ROOMMAID' && state.mobile.data) {
+    const mobileRealtimeRole = (state.activeMenu === 'cleaning' && role === 'ROOMMAID')
+      || (state.activeMenu === 'qm' && role === 'QM');
+    if (mobileRealtimeRole && state.mobile.data) {
       const sites = novaRealtimeRelevantSites_();
       const lists = await Promise.all(sites.map(site =>
         novaRealtimeLoadRoomsForSite_(state.mobile.businessDate || state.bootstrap.app.businessDate, site)
@@ -464,6 +492,9 @@
       mobileRooms[mobileIndex] = novaRealtimeMergeRoom_(mobileRooms[mobileIndex], room);
       if (state.activeMenu === 'cleaning' && state.mobile.data?.role === 'ROOMMAID') {
         refreshRoommaidMobileSummaryLocal_();
+        renderMobileSummary();
+        renderMobileList();
+      } else if (state.activeMenu === 'qm' && state.mobile.data?.role === 'QM') {
         renderMobileSummary();
         renderMobileList();
       }
@@ -731,7 +762,7 @@
       legacySafe.expectedVersion = Number(safe.sheetExpectedVersion || 0);
     }
     delete legacySafe.sheetExpectedVersion;
-    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
+    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
       || (mappedAction === 'CHANGE_ROOM_STATUS'
         && String(safe.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT');
 
@@ -831,7 +862,7 @@
         result.room.cleaningStatus = String(qmMirror.cleaningStatus || result.room.cleaningStatus || 'QM_WAITING');
       }
     }
-    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : mappedAction === 'ASSIGN_ROOMMAID' ? '룸메이드 배정을 저장했습니다.' : mappedAction === 'QM_ASSIGN' ? 'QM 배정을 저장했습니다.' : mappedAction === 'CHANGE_ROOM_STATUS' ? '객실상태를 저장했습니다.' : mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' ? '객실 조치상태를 저장했습니다.' : mappedAction === 'UPDATE_OPERATION_FLAGS' ? '운영표시를 저장했습니다.' : mappedAction === 'CLEAR_ASSIGNMENT' ? '배정을 초기화했습니다.' : mappedAction === 'CLEANING_RESET' ? '청소완료 실적 초기화를 저장했습니다.' : '청소완료 처리했습니다.');
+    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : mappedAction === 'ASSIGN_ROOMMAID' ? '룸메이드 배정을 저장했습니다.' : mappedAction === 'QM_ASSIGN' ? 'QM 배정을 저장했습니다.' : mappedAction === 'QM_START' ? 'QM 점검을 시작했습니다.' : mappedAction === 'QM_COMPLETE' ? 'QM 점검을 완료했습니다.' : mappedAction === 'QM_REWORK' ? '재정비를 요청했습니다.' : mappedAction === 'CHANGE_ROOM_STATUS' ? '객실상태를 저장했습니다.' : mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' ? '객실 조치상태를 저장했습니다.' : mappedAction === 'UPDATE_OPERATION_FLAGS' ? '운영표시를 저장했습니다.' : mappedAction === 'CLEAR_ASSIGNMENT' ? '배정을 초기화했습니다.' : mappedAction === 'CLEANING_RESET' ? '청소완료 실적 초기화를 저장했습니다.' : '청소완료 처리했습니다.');
     return result;
   }
 
@@ -5636,23 +5667,134 @@
     $('qmQualityContent').querySelectorAll('[data-qm-photo-view]').forEach(button => button.addEventListener('click', () => openQmPhotoViewer_(button.dataset.qmPhotoView)));
   }
 
-  async function startQmInspection_(roomNo, button) { // (점검 시작 즉시 장소별 체크리스트 팝업)
+  function applyQmRealtimeRoomLocal_(roomNo, realtimeRoom) { // (QM Realtime 응답 즉시 모바일 반영)
+    const rooms = state.mobile.data?.rooms || [];
+    const index = rooms.findIndex(item => String(item.roomNo || '') === String(roomNo || ''));
+    if (index < 0 || !realtimeRoom) return null;
+    const mapped = novaRealtimeMapRow_(realtimeRoom);
+    rooms[index] = novaRealtimeMergeRoom_(rooms[index], mapped);
+    if (state.activeMenu === 'qm') {
+      renderMobileSummary();
+      renderMobileList();
+    }
+    return rooms[index];
+  }
+
+  function beginQmInspectionDraftInit_(active) { // (상태변경 후 체크리스트 초안은 background 준비)
+    if (!active) return Promise.reject(new Error('점검정보가 없습니다.'));
+    if (active.draft?.draftId) return Promise.resolve(active);
+    if (active.initPromise) return active.initPromise;
+    const payload = {
+      businessDate: state.mobile.businessDate,
+      site: state.mobile.site,
+      roomNo: active.roomNo,
+      expectedVersion: Number(active.sheetExpectedVersion || 0),
+      realtimeStarted: true,
+      realtimeVersion: Number(active.roomVersion || 0)
+    };
+    const promise = callServer('startQmInspection', state.token, payload).then(result => {
+      if (!result?.ok) throw new Error(result?.message || '체크리스트 저장준비에 실패했습니다.');
+      const serverDraft = result.draft || {};
+      const currentDraft = active.draft || { answers: [], defects: [] };
+      active.checklist = result.checklist || active.checklist;
+      active.draft = active.localDirty
+        ? Object.assign({}, serverDraft, currentDraft, {
+            draftId: serverDraft.draftId,
+            rowNumber: Number(serverDraft.rowNumber || 0),
+            startedAt: serverDraft.startedAt || currentDraft.startedAt || '',
+            savedAt: serverDraft.savedAt || currentDraft.savedAt || ''
+          })
+        : serverDraft;
+      if (state.qmChecklist.activeInspection === active) {
+        const modalOpen = Boolean(document.querySelector('.qm-checklist-modal'));
+        if (modalOpen && !active.localDirty) openQmInspectionModal_();
+        const status = $('qmDraftSaveStatus');
+        if (status) status.textContent = active.localDirty ? '저장 준비 완료 · 변경사항 저장 대기…' : `저장 준비 완료 ${active.draft?.savedAt || ''}`;
+        if (modalOpen && active.localDirty) scheduleQmInspectionAutosave_();
+      }
+      return active;
+    });
+    active.initPromise = promise.finally(() => {
+      if (active.initPromise === promise) active.initPromise = null;
+    });
+    return active.initPromise;
+  }
+
+  async function ensureQmInspectionDraftReady_(active) { // (사진/저장 시 background 초안 준비 완료 보장)
+    const target = active || state.qmChecklist.activeInspection;
+    if (!target) throw new Error('진행 중인 점검이 없습니다.');
+    if (!target.draft?.draftId) await beginQmInspectionDraftInit_(target);
+    if (!target.draft?.draftId) throw new Error('체크리스트 저장준비가 완료되지 않았습니다. 다시 시도하세요.');
+    return target;
+  }
+
+  async function startQmInspection_(roomNo, button) { // (QM Realtime 시작 후 체크리스트 즉시 노출)
     const local = state.qmChecklist.activeInspection;
-    if (local?.roomNo === roomNo && local?.draft?.draftId) {
+    if (local?.roomNo === roomNo) {
       openQmInspectionModal_();
       return;
     }
     if (button) button.disabled = true;
     try {
-      const room = (state.mobile.data?.rooms || []).find(item => item.roomNo === roomNo);
-      const result = await callServer('startQmInspection', state.token, { businessDate: state.mobile.businessDate, site: state.mobile.site, roomNo, expectedVersion: Number(room?.version || 0) });
-      if (!result?.ok) throw new Error(result?.message || '점검을 시작하지 못했습니다.');
-      state.mobile.version = Number(result.version || state.mobile.version);
-      state.mobile.data.qmChecklist = result.checklist || state.mobile.data.qmChecklist;
-      state.qmChecklist.activeInspection = { roomNo, checklist: result.checklist, draft: result.draft, roomVersion: Number(result.room?.version || result.version || 0) };
+      const room = (state.mobile.data?.rooms || []).find(item => String(item.roomNo || '') === String(roomNo || ''));
+      if (!room) throw new Error('점검할 객실을 찾을 수 없습니다.');
+
+      if (!novaRealtime_.configLoaded) await initNovaRealtime_();
+      if (!novaRealtimeIsEnabled_()) {
+        const result = await callServer('startQmInspection', state.token, {
+          businessDate: state.mobile.businessDate, site: state.mobile.site, roomNo,
+          expectedVersion: Number(room?.__sheetVersion || room?.version || 0)
+        });
+        if (!result?.ok) throw new Error(result?.message || '점검을 시작하지 못했습니다.');
+        state.mobile.version = Number(result.version || state.mobile.version);
+        state.mobile.data.qmChecklist = result.checklist || state.mobile.data.qmChecklist;
+        state.qmChecklist.activeInspection = { roomNo, checklist: result.checklist, draft: result.draft, roomVersion: Number(result.room?.version || result.version || 0), localDirty: false };
+        openQmInspectionModal_();
+        loadMobileSnapshot({ silent: true, force: true }).catch(error => console.warn('[NOVA QM] 시작 후 화면갱신 실패:', error));
+        return;
+      }
+
+      const realtime = await saveRoomActionRealtimeOrLegacy_('updateMobileRoomOperation', {
+        businessDate: state.mobile.businessDate,
+        site: state.mobile.site,
+        roomNo,
+        action: 'QM_START',
+        expectedVersion: Number(room?.version || 0),
+        expectedState: {
+          cleaningStatus: String(room?.cleaningStatus || ''),
+          qmEmployeeNo: String(room?.qmEmployeeNo || '')
+        }
+      });
+      const localRoom = applyQmRealtimeRoomLocal_(roomNo, realtime.room) || room;
+      const checklist = state.mobile.data?.qmChecklist || {};
+      if (!(checklist.items || []).length) {
+        throw new Error('QM 체크리스트를 불러오지 못했습니다. 화면을 새로고침한 뒤 다시 시도하세요.');
+      }
+      const active = {
+        roomNo,
+        checklist,
+        draft: { answers: [], defects: [], startedAt: '', savedAt: '' },
+        roomVersion: Number(realtime.version || realtime.room?.version || localRoom?.version || 0),
+        sheetExpectedVersion: Number(room?.__sheetVersion || 0),
+        localDirty: false,
+        realtime: true,
+        initPromise: null
+      };
+      state.qmChecklist.activeInspection = active;
       openQmInspectionModal_();
-      await loadMobileSnapshot({ silent: true, force: true });
-    } catch (error) { showToast(error?.message || '점검 시작 오류'); if (button) button.disabled = false; }
+      if (button) button.disabled = false;
+      void beginQmInspectionDraftInit_(active).catch(error => {
+        console.error('[NOVA QM] 체크리스트 background 준비 실패:', error);
+        if (state.qmChecklist.activeInspection === active) {
+          const status = $('qmDraftSaveStatus');
+          if (status) status.textContent = `저장 준비 오류 · ${error?.message || ''}`;
+          showToast('점검은 시작됐지만 체크리스트 저장준비가 지연되고 있습니다. 저장 시 자동 재시도합니다.');
+        }
+      });
+    } catch (error) {
+      showToast(error?.message || '점검 시작 오류');
+      if (button) button.disabled = false;
+    }
   }
 
   function openQmChecklistModal_(roomNo, button) { // (진행중 점검 다시 열기 호환)
@@ -5760,6 +5902,8 @@
   }
 
   function scheduleQmInspectionAutosave_() { // (입력 후 0.8초 자동저장)
+    const active = state.qmChecklist.activeInspection;
+    if (active) active.localDirty = true;
     collectQmInspectionForm_();
     const status = $('qmDraftSaveStatus');
     if (status) status.textContent = '변경사항 저장 대기…';
@@ -5769,7 +5913,13 @@
 
   async function saveQmInspectionDraftNow_(showMessage) { // (점검 초안 서버 저장)
     const active = state.qmChecklist.activeInspection;
-    if (!active?.draft?.draftId) return null;
+    if (!active) return null;
+    if (!active?.draft?.draftId) {
+      const status = $('qmDraftSaveStatus');
+      if (status) status.textContent = '저장 준비 중…';
+      try { await ensureQmInspectionDraftReady_(active); }
+      catch (error) { if (status) status.textContent = `저장 준비 오류 · ${error?.message || ''}`; if (showMessage) showToast(error?.message || '임시 저장 준비 오류'); return null; }
+    }
     if (state.qmChecklist.autosaveTimer) clearTimeout(state.qmChecklist.autosaveTimer);
     state.qmChecklist.autosaveTimer = null;
     const draft = collectQmInspectionForm_() || active.draft;
@@ -5875,10 +6025,11 @@
     }
   }
 
-  async function submitQmInspectionFinal_(event) { // (QM 최종완료·재정비 저장)
+  async function submitQmInspectionFinal_(event) { // (QM Realtime 최종상태 즉시반영·상세이력 background 저장)
     const button = event.currentTarget;
     button.disabled = true;
     const active = state.qmChecklist.activeInspection;
+    if (!active) { button.disabled = false; return; }
     const draft = collectQmInspectionForm_();
     const items = active.checklist?.items || [];
     const answerMap = {};
@@ -5887,26 +6038,86 @@
     if (missing) { showToast(`${missing.placeLabel} · ${missing.label} 점검결과를 선택하세요.`); button.disabled = false; return; }
     const failNoNote = items.find(item => answerMap[item.code]?.result === 'FAIL' && !answerMap[item.code]?.note);
     if (failNoNote) { showToast(`${failNoNote.placeLabel} 불량 내용을 입력하세요.`); button.disabled = false; return; }
+    const photoMissing = items.find(item => item.photoRequired && !(answerMap[item.code]?.photos || []).length);
+    if (photoMissing) { showToast(`${photoMissing.placeLabel} · ${photoMissing.label} 항목의 사진을 등록하세요.`); button.disabled = false; return; }
     const invalidDefect = (draft.defects || []).find(defect => !defect.note || !(defect.photos || []).length);
     if (invalidDefect) { showToast('추가 하자는 내용과 사진을 모두 등록하세요.'); button.disabled = false; return; }
+
+    if (state.qmChecklist.autosaveTimer) window.clearTimeout(state.qmChecklist.autosaveTimer);
+    state.qmChecklist.autosaveTimer = null;
+    const passed = !items.some(item => answerMap[item.code]?.result === 'FAIL') && !(draft.defects || []).length;
+    const realtimeAction = passed ? 'QM_COMPLETE' : 'QM_REWORK';
+    const targetStatus = passed ? 'QM_COMPLETED' : 'REWORK';
+    const requestId = novaRealtimeRequestId_(realtimeAction, active.roomNo);
+    const room = (state.mobile.data?.rooms || []).find(item => String(item.roomNo || '') === String(active.roomNo || ''));
+
     try {
-      // 최종제출 payload 자체에 현재 answers/defects가 모두 포함되므로
-      // 완료 직전 별도 임시저장 RPC를 반복하지 않는다. 대기 중 자동저장도 취소한다.
-      if (state.qmChecklist.autosaveTimer) window.clearTimeout(state.qmChecklist.autosaveTimer);
-      state.qmChecklist.autosaveTimer = null;
-      const result = await callServer('submitQmChecklistInspection', state.token, {
-        businessDate: state.mobile.businessDate, site: state.mobile.site, roomNo: active.roomNo,
-        draftId: active.draft.draftId, draftRowNumber: Number(active.draft.rowNumber || 0), revision: active.checklist.revision,
-        answers: active.draft.answers, defects: active.draft.defects, expectedVersion: Number(active.roomVersion || 0)
+      if (!novaRealtime_.configLoaded) await initNovaRealtime_();
+      if (!novaRealtimeIsEnabled_()) {
+        await ensureQmInspectionDraftReady_(active);
+        const result = await callServer('submitQmChecklistInspection', state.token, {
+          businessDate: state.mobile.businessDate, site: state.mobile.site, roomNo: active.roomNo,
+          draftId: active.draft.draftId, draftRowNumber: Number(active.draft.rowNumber || 0), revision: active.checklist.revision,
+          answers: draft.answers, defects: draft.defects, expectedVersion: Number(active.roomVersion || 0)
+        });
+        if (!result?.ok) throw new Error(result?.message || '점검결과를 저장하지 못했습니다.');
+        state.qmChecklist.activeInspection = null;
+        closeModal();
+        showToast(result.message || '점검결과를 저장했습니다.');
+        loadMobileSnapshot({ silent: true, force: true }).catch(error => console.warn('[NOVA QM] 완료 후 화면갱신 실패:', error));
+        return;
+      }
+
+      const realtime = await saveRoomActionRealtimeOrLegacy_('updateMobileRoomOperation', {
+        businessDate: state.mobile.businessDate,
+        site: state.mobile.site,
+        roomNo: active.roomNo,
+        action: realtimeAction,
+        requestId,
+        expectedVersion: Number(active.roomVersion || room?.version || 0),
+        expectedState: {
+          cleaningStatus: String(room?.cleaningStatus || 'QM_CHECKING'),
+          qmEmployeeNo: String(room?.qmEmployeeNo || state.bootstrap?.user?.employeeNo || '')
+        }
       });
-      if (!result?.ok) throw new Error(result?.message || '점검결과를 저장하지 못했습니다.');
+      applyQmRealtimeRoomLocal_(active.roomNo, realtime.room);
+      active.roomVersion = Number(realtime.version || realtime.room?.version || active.roomVersion || 0);
       state.qmChecklist.activeInspection = null;
       closeModal();
-      showToast(result.message || '점검결과를 저장했습니다.');
-      // 완료 성공 응답을 먼저 사용자에게 돌려주고, 카드 최신화는 뒤에서 수행한다.
-      loadMobileSnapshot({ silent: true, force: true }).catch(error => console.warn('[NOVA QM] 완료 후 화면갱신 실패:', error));
-    } catch (error) { showToast(error?.message || '체크리스트 저장 오류'); button.disabled = false; }
+      showToast(passed ? 'QM 점검완료를 반영했습니다.' : `하자 ${(draft.defects || []).length + items.filter(item => answerMap[item.code]?.result === 'FAIL').length}건 · 재정비를 반영했습니다.`);
+
+      // 무거운 Sheet 체크리스트/품질이력 저장은 사용자 응답 경로 밖에서 이어서 처리한다.
+      const persistDetail = async () => {
+        await ensureQmInspectionDraftReady_(active);
+        return callServer('submitQmChecklistInspection', state.token, {
+          businessDate: state.mobile.businessDate,
+          site: state.mobile.site,
+          roomNo: active.roomNo,
+          draftId: active.draft.draftId,
+          draftRowNumber: Number(active.draft.rowNumber || 0),
+          revision: active.checklist.revision,
+          answers: draft.answers,
+          defects: draft.defects,
+          expectedVersion: Number(active.sheetExpectedVersion || 0),
+          realtimeCommitted: true,
+          realtimeTargetStatus: targetStatus,
+          realtimeRequestId: requestId,
+          realtimeVersion: Number(realtime.version || 0)
+        });
+      };
+      void persistDetail().then(result => {
+        if (!result?.ok) throw new Error(result?.message || 'QM 상세이력 저장 실패');
+        loadMobileSnapshot({ silent: true, force: true }).catch(error => console.warn('[NOVA QM] 상세이력 저장 후 갱신 실패:', error));
+      }).catch(error => {
+        console.error('[NOVA QM] 상태 반영 후 상세이력 저장 실패:', error);
+        showToast(`QM 상태는 반영됐지만 상세이력 저장을 확인해야 합니다. · ${error?.message || ''}`);
+      });
+    } catch (error) {
+      showToast(error?.message || '체크리스트 저장 오류');
+      button.disabled = false;
+    }
   }
+
 
 
   function renderMobileShell(menuId) { // (직원 스마트폰 전용 화면 골격)

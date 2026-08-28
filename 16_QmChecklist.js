@@ -169,82 +169,89 @@ function deleteQmChecklistItem(token, payload) { // (체크리스트 항목 삭�
   });
 }
 
-function startQmInspection(token, payload) { // (QM 점검 시작·실시간 초안 생성)
+function startQmInspection(token, payload) { // (QM 점검 시작·Realtime 상태확정 후 초안 준비)
   return measureResponse_('startQmInspection', () => {
     const user = requireRole_(token, ['QM']);
     const safe = payload || {};
+    const realtimeStarted = safe.realtimeStarted === true;
     const businessDate = normalizeBusinessDate_(safe.businessDate);
     const site = String(safe.site || user.defaultSite || '').trim();
     const roomNo = String(safe.roomNo || '').trim();
     if (!roomNo) throw new Error('객실번호가 없습니다.');
 
-    // v57 이전/전환 직후 DB에는 QM 배정이 있으나 Sheet QM사번이 아직 미러되지 않은
-    // 짧은 구간을 자동 복구한다. 잠금 내부에서 mirror를 호출하면 이중 잠금이 되므로
-    // 반드시 사전조회 단계에서만 1회 실행하고, 아래 잠금에서 다시 원본을 검증한다.
-    const preflightSheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
-    const preflightRowInfo = findCurrentRoomRow_(preflightSheet, businessDate, site, roomNo);
-    if (preflightRowInfo
-        && String(preflightRowInfo.data['QM사번'] || '').trim() !== user.employeeNo
-        && typeof novaRealtimeFinalEnabled_ === 'function'
-        && novaRealtimeFinalEnabled_()
-        && typeof mirrorNovaRealtimeEventsToSheets_ === 'function') {
-      try {
-        mirrorNovaRealtimeEventsToSheets_();
-      } catch (syncError) {
-        console.warn('[NOVA QM] 점검시작 전 Realtime 배정 미러 실패:', syncError);
+    if (!realtimeStarted) {
+      const preflightSheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
+      const preflightRowInfo = findCurrentRoomRow_(preflightSheet, businessDate, site, roomNo);
+      if (preflightRowInfo
+          && String(preflightRowInfo.data['QM사번'] || '').trim() !== user.employeeNo
+          && typeof novaRealtimeFinalEnabled_ === 'function'
+          && novaRealtimeFinalEnabled_()
+          && typeof mirrorNovaRealtimeEventsToSheets_ === 'function') {
+        try { mirrorNovaRealtimeEventsToSheets_(); }
+        catch (syncError) { console.warn('[NOVA QM] 점검시작 전 Realtime 배정 미러 실패:', syncError); }
       }
     }
 
     const writeLock = acquireWriteLock_();
     try {
-    const currentSheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
-    const rowInfo = findCurrentRoomRow_(currentSheet, businessDate, site, roomNo);
-    if (!rowInfo) throw new Error('현재객실현황에서 해당 객실을 찾을 수 없습니다.');
-    // QM은 본인 배정 여부와 청소상태를 잠금 안에서 다시 검증하므로, DB 미러 등 독립 변경의
-    // Sheet 전체버전 증가만으로 정상 점검을 거절하지 않는다. 실제 흐름 변경은 아래 상태검증이 차단한다.
-    if (String(rowInfo.data['QM사번'] || '').trim() !== user.employeeNo) throw new Error('본인에게 배정된 객실만 점검할 수 있습니다.');
-    const currentStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
-    if (!['QM_WAITING', 'COMPLETED', 'QM_CHECKING'].includes(currentStatus)) throw new Error('QM 점검대기 또는 점검중 객실만 시작할 수 있습니다.');
+      const currentSheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
+      const rowInfo = findCurrentRoomRow_(currentSheet, businessDate, site, roomNo);
+      if (!rowInfo) throw new Error('현재객실현황에서 해당 객실을 찾을 수 없습니다.');
+      if (String(rowInfo.data['QM사번'] || '').trim() !== user.employeeNo) throw new Error('본인에게 배정된 객실만 점검할 수 있습니다.');
+      const currentStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
+      if (!['QM_WAITING', 'COMPLETED', 'QM_CHECKING'].includes(currentStatus)) throw new Error('QM 점검대기 또는 점검중 객실만 시작할 수 있습니다.');
 
-    let version = Number(rowInfo.data['마지막변경버전'] || getMobileSyncVersion_('QM', { businessDate, site }));
-    if (currentStatus !== 'QM_CHECKING') {
-      version = reserveDataVersion_({ lockHeld: true });
-      updateRowByHeaders_(currentSheet, rowInfo.rowNumber, {
-        '청소상태': 'QM_CHECKING',
-        '마지막변경버전': version,
-        '수정일시': nowText_()
-      });
-      SpreadsheetApp.flush();
-      publishDataVersion_(version, { domains: ['ROOM'], businessDate, site: String(rowInfo.data['사업장'] || site).trim(), lockHeld: true });
-      appendUnifiedHistory_({
-        recordType: NOVA.RECORD_TYPES.QM,
-        businessDate,
-        site: String(rowInfo.data['사업장'] || site).trim(),
-        roomNo,
-        targetEmployeeNo: user.employeeNo,
-        status: 'QM_START',
-        registeredBy: user.employeeNo,
-        startedAt: nowText_(),
+      let version = realtimeStarted
+        ? Number(safe.realtimeVersion || rowInfo.data['마지막변경버전'] || 0)
+        : Number(rowInfo.data['마지막변경버전'] || getMobileSyncVersion_('QM', { businessDate, site }));
+      if (!realtimeStarted && currentStatus !== 'QM_CHECKING') {
+        version = reserveDataVersion_({ lockHeld: true });
+        updateRowByHeaders_(currentSheet, rowInfo.rowNumber, {
+          '청소상태': 'QM_CHECKING',
+          '마지막변경버전': version,
+          '수정일시': nowText_()
+        });
+        SpreadsheetApp.flush();
+        publishDataVersion_(version, { domains: ['ROOM'], businessDate, site: String(rowInfo.data['사업장'] || site).trim(), lockHeld: true });
+        appendUnifiedHistory_({
+          recordType: NOVA.RECORD_TYPES.QM,
+          businessDate,
+          site: String(rowInfo.data['사업장'] || site).trim(),
+          roomNo,
+          targetEmployeeNo: user.employeeNo,
+          status: 'QM_START',
+          registeredBy: user.employeeNo,
+          startedAt: nowText_(),
+          version,
+          detail: {
+            action: 'START', role: 'QM', beforeCleaningStatus: currentStatus,
+            cleaningStatus: 'QM_CHECKING', primaryEmployeeNo: String(rowInfo.data['룸메이드사번'] || '').trim(),
+            secondaryEmployeeNo: String(rowInfo.data['보조룸메이드사번'] || '').trim()
+          }
+        });
+      }
+      const checklist = realtimeStarted ? getQmChecklistForSubmit_() : getQmChecklistForMobile_();
+      const draft = ensureQmInspectionDraft_(user, businessDate, String(rowInfo.data['사업장'] || site).trim(), roomNo, rowInfo.data, checklist);
+      const refreshed = Object.assign({}, rowInfo.data, { '청소상태': 'QM_CHECKING', '마지막변경버전': version });
+      return {
+        ok: true,
         version,
-        detail: {
-          action: 'START', role: 'QM', beforeCleaningStatus: currentStatus,
-          cleaningStatus: 'QM_CHECKING', primaryEmployeeNo: String(rowInfo.data['룸메이드사번'] || '').trim(),
-          secondaryEmployeeNo: String(rowInfo.data['보조룸메이드사번'] || '').trim()
-        }
-      });
-    }
-    const checklist = getQmChecklistForMobile_();
-    const draft = ensureQmInspectionDraft_(user, businessDate, String(rowInfo.data['사업장'] || site).trim(), roomNo, rowInfo.data, checklist);
-    const refreshed = Object.assign({}, rowInfo.data, { '청소상태': 'QM_CHECKING', '마지막변경버전': version });
-    return {
-      ok: true,
-      version,
-      checklist,
-      draft,
-      room: currentRoomObject_(refreshed, rowInfo.rowNumber, {}, getUserIndex_().byEmployeeNo),
-      message: currentStatus === 'QM_CHECKING' ? '진행 중인 점검을 불러왔습니다.' : 'QM 점검을 시작했습니다.'
-    };
-     } finally {
+        checklist,
+        draft,
+        room: realtimeStarted ? {
+          businessDate,
+          site: String(rowInfo.data['사업장'] || site).trim(),
+          roomNo,
+          roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+          cleaningStatus: 'QM_CHECKING',
+          roommaidEmployeeNo: String(rowInfo.data['룸메이드사번'] || '').trim(),
+          secondaryRoommaidEmployeeNo: String(rowInfo.data['보조룸메이드사번'] || '').trim(),
+          qmEmployeeNo: user.employeeNo,
+          version
+        } : currentRoomObject_(refreshed, rowInfo.rowNumber, {}, getUserIndex_().byEmployeeNo),
+        message: currentStatus === 'QM_CHECKING' ? '진행 중인 점검을 불러왔습니다.' : 'QM 점검을 시작했습니다.'
+      };
+    } finally {
       writeLock.releaseLock();
     }
   });
@@ -413,7 +420,12 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
     // Sheet 전체버전 증가만으로 정상 점검을 거절하지 않는다. 실제 흐름 변경은 아래 상태검증이 차단한다.
     const qmNo = String(rowInfo.data['QM사번'] || '').trim();
     if (qmNo !== user.employeeNo) throw new Error('본인에게 배정된 객실만 점검할 수 있습니다.');
-    if (String(rowInfo.data['청소상태'] || '').trim().toUpperCase() !== 'QM_CHECKING') throw new Error('점검중 상태의 객실에서만 체크리스트를 제출할 수 있습니다.');
+    const sheetCleaningStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
+    const realtimeCommitted = safe.realtimeCommitted === true;
+    const allowedSubmitStatuses = realtimeCommitted
+      ? ['QM_WAITING', 'COMPLETED', 'QM_CHECKING', 'QM_COMPLETED', 'REWORK']
+      : ['QM_CHECKING'];
+    if (!allowedSubmitStatuses.includes(sheetCleaningStatus)) throw new Error('점검중 상태의 객실에서만 체크리스트를 제출할 수 있습니다.');
 
     const itemDefects = normalizedAnswers.filter(item => item.result === 'FAIL').map(item => ({
       id: item.code,
@@ -434,14 +446,18 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
     const completedAt = nowText_();
     const startedAt = String(priorDetail.startedAt || draftInfo.data['등록일시'] || completedAt).trim();
     const durationMinutes = minutesBetween_(startedAt, completedAt);
-    const updates = { '청소상태': passed ? 'QM_COMPLETED' : 'REWORK', '수정일시': completedAt };
-    // QM 점검완료 시에도 원래 객실상태를 유지한다.
-    // 공실(VACANT_CLEAN)은 최초 객실현황 업로드에서 누락된 객실에만 적용한다.
-    const version = reserveDataVersion_({ lockHeld: true });
-    updates['마지막변경버전'] = version;
-    updateRowByHeaders_(sheet, rowInfo.rowNumber, updates);
-    SpreadsheetApp.flush();
-    publishDataVersion_(version, { domains: ['ROOM'], businessDate, site: String(rowInfo.data['사업장'] || site).trim(), lockHeld: true });
+    const targetCleaningStatus = passed ? 'QM_COMPLETED' : 'REWORK';
+    const updates = { '청소상태': targetCleaningStatus, '수정일시': completedAt };
+    // Realtime이 이미 같은 최종상태를 Sheet에 미러했다면 상태행을 다시 쓰지 않는다.
+    // 아직 미러 전이면 기존과 동일하게 Sheet도 즉시 최종상태로 맞춘다.
+    let version = Number(rowInfo.data['마지막변경버전'] || 0);
+    if (sheetCleaningStatus !== targetCleaningStatus) {
+      version = reserveDataVersion_({ lockHeld: true });
+      updates['마지막변경버전'] = version;
+      updateRowByHeaders_(sheet, rowInfo.rowNumber, updates);
+      SpreadsheetApp.flush();
+      publishDataVersion_(version, { domains: ['ROOM'], businessDate, site: String(rowInfo.data['사업장'] || site).trim(), lockHeld: true });
+    }
 
     const failSummary = defects.map(item => `${item.placeLabel || '기타'} · ${item.itemLabel || '하자'}${item.note ? `: ${item.note}` : ''}`).join(' / ');
     const locationSummary = buildQmDefectLocationSummary_(defects);
@@ -461,7 +477,9 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
       secondaryRoommaidEmployeeNo: secondaryRoommaidNo,
       qmEmployeeNo: user.employeeNo,
       cleaningType,
-      assignmentType
+      assignmentType,
+      realtimeRequestId: String(safe.realtimeRequestId || '').trim(),
+      realtimeVersion: Number(safe.realtimeVersion || 0)
     });
     let checklistRecordId = String(draftInfo.data['기록ID'] || '').trim();
     if (draftInfo.rowNumber) {

@@ -709,6 +709,46 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
         continue;
       }
 
+      if (['QM_START', 'QM_COMPLETE', 'QM_REWORK'].includes(action)) {
+        roomUpdates.push({
+          rowNumber: rowInfo.rowNumber,
+          cleaningStatus: afterStatus,
+          version,
+          updatedAt: nowText_()
+        });
+        rowInfo.data['청소상태'] = afterStatus;
+        rowInfo.data['마지막변경버전'] = version;
+        if (action === 'QM_START') {
+          historyPayloads.push({
+            recordType: NOVA.RECORD_TYPES.QM,
+            businessDate: recordBusinessDate,
+            site: String(rowInfo.data['사업장'] || site).trim(),
+            roomNo,
+            targetEmployeeNo: employeeNo,
+            status: 'QM_START',
+            registeredBy: employeeNo,
+            startedAt: eventTime || nowText_(),
+            version,
+            detail: {
+              requestId,
+              realtime: true,
+              action: 'START',
+              role: 'QM',
+              beforeCleaningStatus: beforeStatus,
+              cleaningStatus: afterStatus,
+              primaryEmployeeNo: String(rowInfo.data['룸메이드사번'] || '').trim(),
+              secondaryEmployeeNo: String(rowInfo.data['보조룸메이드사번'] || '').trim(),
+              qmEmployeeNo: employeeNo,
+              dbRoomVersion,
+              dbEventTime: eventTime || ''
+            }
+          });
+        }
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
       roomUpdates.push({
         rowNumber: rowInfo.rowNumber,
         cleaningStatus: afterStatus,
