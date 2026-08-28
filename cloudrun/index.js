@@ -3274,7 +3274,7 @@ app.post(
           80
         );
 
-      const requester =
+      let requester =
         cleanText_(
           body.requester
           || '오더테이커',
@@ -3389,12 +3389,18 @@ app.post(
           auth.employeeNo
         );
 
+      const requestRole =
+        String(user.role || '')
+          .trim()
+          .toUpperCase();
+
       if (
         ![
           'ADMIN',
-          'ORDER'
+          'ORDER',
+          'ROOMMAID'
         ].includes(
-          user.role
+          requestRole
         )
       ) {
 
@@ -3417,6 +3423,44 @@ app.post(
           'FORBIDDEN',
           '해당 사업장 처리 권한이 없습니다.'
         );
+      }
+
+      // 룸메이드 모바일 오더는 기존과 동일하게 본인 배정객실에서만 허용한다.
+      // DB에서 권한을 검증하고 오더 자체는 미배정으로 즉시 확정한다.
+      if (requestRole === 'ROOMMAID') {
+        if (assignmentMode !== 'UNASSIGNED') {
+          throw httpError(
+            400,
+            'ROOMMAID_ORDER_MUST_BE_UNASSIGNED',
+            '룸메이드 요청은 미배정 오더로 등록해야 합니다.'
+          );
+        }
+
+        const roomAccess = await client.query(
+          `select roommaid_employee_no, secondary_roommaid_employee_no
+             from public.nova_rooms_current
+            where business_date=$1::date
+              and site=$2
+              and room_no=$3
+            limit 1`,
+          [businessDate, site, roomNo]
+        );
+        const currentRoom = roomAccess.rows[0] || null;
+        if (!currentRoom) {
+          throw httpError(404, 'ROOM_NOT_FOUND', '객실을 찾을 수 없습니다.');
+        }
+        const assignedRoommaids = [
+          String(currentRoom.roommaid_employee_no || ''),
+          String(currentRoom.secondary_roommaid_employee_no || '')
+        ].filter(Boolean);
+        if (!assignedRoommaids.includes(String(user.employee_no || ''))) {
+          throw httpError(
+            403,
+            'FORBIDDEN',
+            '본인에게 배정된 객실에서만 요청할 수 있습니다.'
+          );
+        }
+        requester = String(user.name || requester || user.employee_no || '').trim();
       }
 
       const insertedRequest =
