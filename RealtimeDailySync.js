@@ -782,13 +782,13 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
         if (action === 'QM_START') {
           historyPayloads.push({
             recordType: NOVA.RECORD_TYPES.QM,
-            businessDate: recordBusinessDate,
-            site: String(rowInfo.data['사업장'] || site).trim(),
-            roomNo,
+            businessDate: eventBusinessDate,
+            site: eventSite,
+            roomNo: eventRoomNo,
             targetEmployeeNo: employeeNo,
             status: 'QM_START',
             registeredBy: employeeNo,
-            startedAt: eventTime || nowText_(),
+            startedAt: String(event.eventTime || '').trim() || nowText_(),
             version,
             detail: {
               requestId,
@@ -800,8 +800,8 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
               primaryEmployeeNo: String(rowInfo.data['룸메이드사번'] || '').trim(),
               secondaryEmployeeNo: String(rowInfo.data['보조룸메이드사번'] || '').trim(),
               qmEmployeeNo: employeeNo,
-              dbRoomVersion,
-              dbEventTime: eventTime || ''
+              dbRoomVersion: Number(event.roomVersion || 0),
+              dbEventTime: String(event.eventTime || '')
             }
           });
         }
