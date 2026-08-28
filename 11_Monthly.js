@@ -112,6 +112,28 @@ function deleteMonthlyHousemanOrder(token, payload) { // (월별조회 직접등
   });
 }
 
+
+function getMonthlyHousemanAutoAssignment(token, payload) { // (월별조회 자동배정 후보 사전확정)
+  return measureResponse_('getMonthlyHousemanAutoAssignment', () => {
+    requireRole_(token, ['ADMIN', 'ORDER']);
+    const safe = payload || {};
+    const businessDate = normalizeBusinessDate_(safe.businessDate);
+    const site = String(safe.site || '').trim();
+    const roomNo = String(safe.roomNo || '').trim();
+    if (!businessDate || !site || !roomNo) {
+      throw new Error('자동배정 확인에 필요한 업무일자·사업장·객실번호가 없습니다.');
+    }
+    const assignment = resolveHousemanAutoAssignee_(businessDate, site, roomNo);
+    return {
+      ok: true,
+      businessDate,
+      site,
+      roomNo,
+      assignment
+    };
+  });
+}
+
 function getMonthlyHousemanOrderOptions(token) { // (월별조회 하우스맨 등록창 코드옵션 직접 조회)
   return measureResponse_('getMonthlyHousemanOrderOptions', () => {
     requireRole_(token, ['ADMIN', 'ORDER']);
