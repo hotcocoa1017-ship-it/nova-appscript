@@ -4,6 +4,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 CLIENT = ROOT / 'Client.html'
 QM = ROOT / '16_QmChecklist.js'
+STYLES = ROOT / 'Styles.html'
 
 
 def fail(message):
@@ -127,7 +128,7 @@ if "role === 'QM' ? (assignedNames || '-') : roomStatus" not in client_text:
     fail('QM cleaner-name display regression')
 
 # 4) Existing scoped large-text UI plus simplified guide must remain.
-styles_text = STYLES.read_text(encoding='utf-8') if (ROOT / 'Styles.html').exists() else ''
+styles_text = STYLES.read_text(encoding='utf-8') if STYLES.exists() else ''
 if 'NOVA v60 — QM 모바일 점검 가독성·미니멀 UI' not in styles_text or 'font-size:17px' not in styles_text:
     fail('QM large-text scoped UI regression')
 if '양호/불량을 선택하세요. 불량은 내용을 입력하고' not in client_text:
