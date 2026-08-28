@@ -1,0 +1,3 @@
+NOVA QM realtime Cloud Run deploy trigger
+Source includes QM_START / QM_COMPLETE / QM_REWORK.
+Created 2026-08-28.
