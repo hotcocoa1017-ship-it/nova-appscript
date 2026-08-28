@@ -600,7 +600,10 @@
       const topic = `nova:site:${site}:rooms`;
       const channel = novaRealtime_.supabase
         .channel(topic, { config: { private: true } })
-        .on('broadcast', { event: 'UPDATE' }, payload => novaRealtimeHandleBroadcast_(payload))
+        .on('broadcast', { event: 'UPDATE' }, payload => {
+          novaRealtimeHandleBroadcast_(payload);
+          novaRealtimeHandleHousemanOrderBroadcast_(payload);
+        })
         .on('broadcast', { event: 'INSERT' }, payload => {
           novaRealtimeHandleBroadcast_(payload);
           novaRealtimeHandleHousemanOrderBroadcast_(payload);
@@ -776,6 +779,60 @@
     return JSON.stringify(NOVA_REALTIME_ROOM_FIELDS_.map(key => room[key] ?? ''));
   }
 
+  async function novaRealtimeHydrateIndicatorHousemanOrders_() { // (ADMIN/ORDER 하우스맨 DB 상태 직접 보정)
+    if (!novaRealtimeIsEnabled_() || document.hidden || state.activeMenu !== 'indicator' || !state.indicator.data) return 0;
+    const role = String(state.bootstrap?.user?.role || '').trim().toUpperCase();
+    if (!['ADMIN', 'ORDER'].includes(role)) return 0;
+    const businessDate = String(state.indicator.businessDate || state.bootstrap?.app?.businessDate || '').trim();
+    const sites = novaRealtimeRelevantSites_();
+    if (!businessDate || !sites.length) return 0;
+
+    const lists = await Promise.all(sites.map(site => novaRealtimeLoadHousemanOrders_(businessDate, site)
+      .catch(error => { console.warn('[NOVA Realtime] 하우스맨 관리자 DB 조회 실패', site, error); return []; })));
+    const orders = state.indicator.data.orders || (state.indicator.data.orders = []);
+    let changed = 0;
+    lists.flat().forEach(raw => {
+      const mapped = novaRealtimeMapHousemanOrder_(raw);
+      if (!mapped?.orderId) return;
+      const index = orders.findIndex(item => String(item?.orderId || '') === mapped.orderId);
+      if (index < 0) {
+        mapped.__dbVersion = Number(mapped.version || 0);
+        mapped.version = 0;
+        mapped.rowNumber = 0;
+        mapped.__sheetMirrorPending = true;
+        mapped.__sheetMirrorStartedAt = Date.now();
+        orders.unshift(mapped);
+        changed += 1;
+        return;
+      }
+      const previous = orders[index];
+      const dbUpdatedMs = novaRealtimeUpdatedAtMs_(mapped.updatedAt);
+      const previousUpdatedMs = novaRealtimeUpdatedAtMs_(previous.updatedAt);
+      if (previousUpdatedMs && dbUpdatedMs && previousUpdatedMs > dbUpdatedMs) return;
+      const next = Object.assign({}, previous, mapped, {
+        rowNumber: Number(previous.rowNumber || 0),
+        version: Number(previous.version || 0),
+        __dbVersion: Number(mapped.version || 0)
+      });
+      if (Number(previous.rowNumber || 0) > 0) {
+        delete next.__sheetMirrorPending;
+        delete next.__sheetMirrorStartedAt;
+      }
+      const beforeSig = JSON.stringify([previous.statusCode, previous.assignedEmployeeNo, previous.processorEmployeeNo, previous.acceptedAt, previous.startedAt, previous.completedAt, previous.unableReason, previous.updatedAt]);
+      const afterSig = JSON.stringify([next.statusCode, next.assignedEmployeeNo, next.processorEmployeeNo, next.acceptedAt, next.startedAt, next.completedAt, next.unableReason, next.updatedAt]);
+      if (beforeSig !== afterSig) {
+        orders[index] = next;
+        changed += 1;
+      }
+    });
+    if (changed) {
+      orders.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')) || String(b.registeredAt || '').localeCompare(String(a.registeredAt || '')));
+      renderOrderList();
+      renderIndicatorSummary();
+    }
+    return changed;
+  }
+
   async function novaRealtimeHydrateIndicatorFallback_() {
     if (!novaRealtimeIsEnabled_() || document.hidden || state.activeMenu !== 'indicator' || !state.indicator.loaded || !state.indicator.data) return;
     if (novaRealtime_.indicatorDbBusy) return;
@@ -831,9 +888,12 @@
         if (!result?.hasMore || page >= 3) break;
       } while (true);
 
+      const housemanChanged = await novaRealtimeHydrateIndicatorHousemanOrders_();
       if (changedCount) {
         renderIndicatorSummary();
-        setSyncStatus(`DB 변경확인 · ${changedCount}실 반영`);
+        setSyncStatus(`DB 변경확인 · ${changedCount}실 반영${housemanChanged ? ` · 오더 ${housemanChanged}건` : ''}`);
+      } else if (housemanChanged) {
+        setSyncStatus(`DB 변경확인 · 하우스맨 오더 ${housemanChanged}건 반영`);
       }
     } finally {
       novaRealtime_.indicatorDbBusy = false;
@@ -880,6 +940,66 @@
     novaRealtime_.supabase = null;
   }
 
+  const novaRealtimeHousemanMirrorChains_ = new Map();
+
+  async function novaRealtimeHousemanWorkerAction_(payload) { // (하우스맨 접수/처리 Cloud Run 전용)
+    const safe = Object.assign({}, payload || {});
+    const orderId = String(safe.orderId || '').trim();
+    const action = String(safe.action || '').trim().toUpperCase();
+    if (!orderId || !['ACCEPT', 'ACCEPT_START', 'START', 'COMPLETE', 'UNABLE'].includes(action)) {
+      throw new Error('하우스맨 처리 요청을 확인하세요.');
+    }
+    const requestId = novaRealtimeRequestId_(`HOUSEMAN_${action}`, orderId);
+    const result = await novaRealtimeFetch_(
+      `/v1/houseman-orders/${encodeURIComponent(orderId)}/action`,
+      {
+        method: 'POST',
+        headers: { 'X-Request-Id': requestId },
+        body: JSON.stringify({ action, reason: String(safe.reason || ''), requestId })
+      }
+    );
+    const mapped = novaRealtimeMapHousemanOrder_(result.order) || result.order || {};
+    mapped.rowNumber = Number(safe.rowNumber || 0);
+    mapped.__dbVersion = Number(result.orderVersion || result.order?.version || mapped.version || 0);
+    mapped.version = Number(safe.expectedVersion || 0);
+    mapped.__dbAssignmentTracked = true;
+    mapped.__localProtectUntil = Date.now() + 30000;
+    queueRealtimeHousemanWorkerMirror_(safe);
+    return { ok: true, realtime: true, order: mapped, version: Number(safe.expectedVersion || 0), timing: result.timing || {}, requestId };
+  }
+
+  function queueRealtimeHousemanWorkerMirror_(payload) { // (동일 오더 Sheet 미러 순서 보장)
+    const safe = Object.assign({}, payload || {});
+    const orderId = String(safe.orderId || '').trim();
+    if (!orderId) return;
+    const previous = novaRealtimeHousemanMirrorChains_.get(orderId) || Promise.resolve();
+    const next = previous.catch(() => null).then(() => mirrorRealtimeHousemanWorkerActionToSheet_(safe));
+    novaRealtimeHousemanMirrorChains_.set(orderId, next);
+    void next.finally(() => {
+      if (novaRealtimeHousemanMirrorChains_.get(orderId) === next) novaRealtimeHousemanMirrorChains_.delete(orderId);
+    });
+  }
+
+  async function mirrorRealtimeHousemanWorkerActionToSheet_(payload) { // (업무이력/감사 비동기 보완)
+    const safe = Object.assign({}, payload || {}, { expectedVersion: 0 });
+    const delays = [0, 650, 1600, 3600, 7000];
+    let lastError = null;
+    for (const delay of delays) {
+      if (delay) await novaRealtimeSleep_(delay);
+      try {
+        const mirrored = await callServer('updateHousemanOrder', state.token, safe);
+        if (!mirrored?.ok) throw new Error(mirrored?.message || '하우스맨 이력 동기화 실패');
+        setSyncStatus(`${mirrored.order?.roomNo || ''}호 하우스맨 이력 동기화 완료`);
+        return mirrored;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    console.error('[NOVA Realtime] 하우스맨 상태 Sheet 미러 실패:', lastError);
+    setSyncStatus(`${safe.orderId || ''} Realtime 처리 완료 · 기존 이력 동기화 재확인 필요`);
+    return null;
+  }
+
   async function mirrorRealtimeClearAssignmentToSheet_(payload) { // (DB 배정초기화 성공 후 이력/Sheet 보조 미러)
     const safe = Object.assign({}, payload || {}, {
       action: 'CLEAR_ASSIGNMENT',
@@ -921,6 +1041,25 @@
       legacySafe.expectedVersion = Number(safe.sheetExpectedVersion || 0);
     }
     delete legacySafe.sheetExpectedVersion;
+
+    const currentRole = String(state.bootstrap?.user?.role || '').trim().toUpperCase();
+    const housemanWorkerAction = legacyMethod === 'updateHousemanOrder'
+      && currentRole === 'HOUSEMAN'
+      && ['ACCEPT', 'ACCEPT_START', 'START', 'COMPLETE', 'UNABLE'].includes(rawAction);
+    if (housemanWorkerAction) {
+      if (!novaRealtime_.configLoaded) await initNovaRealtime_();
+      if (novaRealtimeIsEnabled_()) {
+        try {
+          return await novaRealtimeHousemanWorkerAction_(legacySafe);
+        } catch (error) {
+          const code = String(error?.code || '').trim().toUpperCase();
+          if (Number(error?.status || 0) !== 404 && code !== 'HOUSEMAN_ORDER_NOT_FOUND') throw error;
+          console.warn('[NOVA Realtime] DB 미존재 하우스맨 오더는 기존 경로로 처리합니다.', error?.message || error);
+        }
+      }
+      return callServer(legacyMethod, state.token, legacySafe);
+    }
+
     const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
       || (mappedAction === 'CHANGE_ROOM_STATUS'
         && String(safe.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT');
