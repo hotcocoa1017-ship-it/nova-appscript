@@ -1,0 +1,2 @@
+Deploy trigger for HOUSEMAN worker realtime action API and HOUSEMAN mobile site-permission fix v92.
+Source includes v91 worker realtime restoration and v92 employee-scoped site lookup correction.
