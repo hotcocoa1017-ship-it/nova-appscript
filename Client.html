@@ -3048,6 +3048,93 @@
     });
   }
 
+  const novaMonthlyHousemanOptionPreload_ = { promise: null };
+
+  function monthlyHousemanOptionSnapshot_() { // (월별조회 하우스맨 등록창 옵션 메모리 스냅샷)
+    const options = state.monthly.data?.options || {};
+    return {
+      sites: Array.isArray(options.sites) ? options.sites.slice() : [],
+      parts: Array.isArray(options.orderParts) ? options.orderParts.slice() : [],
+      items: Array.isArray(options.orderItems) ? options.orderItems.slice() : []
+    };
+  }
+
+  function mergeMonthlyHousemanOrderOptions_(fallback) { // (서버 코드옵션을 현재 월별조회 상태에 병합)
+    const current = monthlyHousemanOptionSnapshot_();
+    const sites = Array.from(new Set([
+      ...current.sites,
+      ...(Array.isArray(fallback?.sites) ? fallback.sites : [])
+    ].map(value => String(value || '').trim()).filter(Boolean)));
+    const parts = Array.isArray(fallback?.orderParts) && fallback.orderParts.length
+      ? fallback.orderParts.slice()
+      : current.parts;
+    const items = Array.isArray(fallback?.orderItems) && fallback.orderItems.length
+      ? fallback.orderItems.slice()
+      : current.items;
+    if (state.monthly.data) {
+      state.monthly.data.options = Object.assign({}, state.monthly.data.options || {}, {
+        sites,
+        orderParts: parts,
+        orderItems: items
+      });
+    }
+    return { sites, parts, items };
+  }
+
+  function preloadMonthlyHousemanOrderOptions_() { // (하우스맨 화면 진입 즉시 파트·품목 백그라운드 사전조회)
+    const current = monthlyHousemanOptionSnapshot_();
+    if (current.parts.length && current.items.length && current.sites.length) {
+      return Promise.resolve(current);
+    }
+    if (novaMonthlyHousemanOptionPreload_.promise) return novaMonthlyHousemanOptionPreload_.promise;
+    const promise = callServer('getMonthlyHousemanOrderOptions', state.token)
+      .then(result => {
+        if (!result?.ok) throw new Error(result?.message || '하우스맨 등록 옵션을 불러오지 못했습니다.');
+        return mergeMonthlyHousemanOrderOptions_(result);
+      })
+      .finally(() => {
+        if (novaMonthlyHousemanOptionPreload_.promise === promise) {
+          novaMonthlyHousemanOptionPreload_.promise = null;
+        }
+      });
+    novaMonthlyHousemanOptionPreload_.promise = promise;
+    return promise;
+  }
+
+  function applyMonthlyHousemanOptionsToOpenModal_(resolved) { // (이미 열린 등록창에 옵션만 비동기 채움)
+    if (!$('monthlyOrderPart') || !$('monthlyOrderItem')) return;
+    const parts = Array.isArray(resolved?.parts) ? resolved.parts : [];
+    const items = Array.isArray(resolved?.items) ? resolved.items : [];
+    const sites = Array.isArray(resolved?.sites) ? resolved.sites : [];
+
+    const partSelect = $('monthlyOrderPart');
+    const selectedPart = String(partSelect.value || '');
+    partSelect.innerHTML = `<option value="">선택</option>${parts.map(part => {
+      const value = String(part?.label || part?.code || '').trim();
+      return `<option value="${escapeAttr(value)}">${escapeHtml(value)}</option>`;
+    }).join('')}`;
+    if (selectedPart && parts.some(part => String(part?.label || part?.code || '').trim() === selectedPart)) {
+      partSelect.value = selectedPart;
+    }
+    partSelect.disabled = false;
+
+    const datalist = document.getElementById('monthlyHousemanItemSuggestions');
+    if (datalist) {
+      datalist.innerHTML = items.map(item => {
+        const value = String(item?.label || item?.code || '').trim();
+        return `<option value="${escapeAttr(value)}"></option>`;
+      }).join('');
+    }
+
+    const siteSelect = $('monthlyOrderSite');
+    if (siteSelect) {
+      const selectedSite = String(siteSelect.value || state.monthly.site || '');
+      siteSelect.innerHTML = `<option value="">사업장 선택</option>${sites.map(site => `<option value="${escapeAttr(site)}">${escapeHtml(site)}</option>`).join('')}`;
+      if (selectedSite && sites.includes(selectedSite)) siteSelect.value = selectedSite;
+      siteSelect.disabled = false;
+    }
+  }
+
   async function openMonthlyHousemanOrderModal_() { // (일별 하우스맨 이력에서 오더 등록)
     if (state.monthly.period !== 'DAILY' || String(state.monthly.type || '').toUpperCase() !== 'HOUSEMAN') {
       showToast('하우스맨 일별조회에서 오더를 등록할 수 있습니다.');
@@ -3056,36 +3143,10 @@
     const businessDate = String($('monthlyDate')?.value || state.monthly.date || formatClientDate_(new Date())).trim();
     const site = String($('monthlySite')?.value || state.monthly.site || '').trim();
     const options = state.monthly.data?.options || {};
-    let sites = Array.isArray(options.sites) ? options.sites.slice() : [];
-    let parts = Array.isArray(options.orderParts) ? options.orderParts.slice() : [];
-    let items = Array.isArray(options.orderItems) ? options.orderItems.slice() : [];
-
-    if (!parts.length || !items.length) {
-      try {
-        const fallback = await callServer('getMonthlyHousemanOrderOptions', state.token);
-        if (fallback?.ok) {
-          if (Array.isArray(fallback.orderParts) && fallback.orderParts.length) parts = fallback.orderParts;
-          if (Array.isArray(fallback.orderItems) && fallback.orderItems.length) items = fallback.orderItems;
-          if (Array.isArray(fallback.sites)) {
-            sites = Array.from(new Set([...sites, ...fallback.sites].map(value => String(value || '').trim()).filter(Boolean)));
-          }
-          if (state.monthly.data) {
-            state.monthly.data.options = Object.assign({}, options, {
-              sites,
-              orderParts: parts,
-              orderItems: items
-            });
-          }
-        }
-      } catch (error) {
-        console.warn('월별조회 하우스맨 코드옵션 직접조회 실패:', error?.message || error);
-      }
-    }
-
-    if (!parts.length) {
-      showToast('하우스맨 파트 목록을 불러오지 못했습니다. 잠시 후 다시 시도하세요.');
-      return;
-    }
+    const sites = Array.isArray(options.sites) ? options.sites.slice() : [];
+    const parts = Array.isArray(options.orderParts) ? options.orderParts.slice() : [];
+    const items = Array.isArray(options.orderItems) ? options.orderItems.slice() : [];
+    const optionsPromise = preloadMonthlyHousemanOrderOptions_();
 
     const itemDatalist = `<datalist id="monthlyHousemanItemSuggestions">${items.map(item => `<option value="${escapeAttr(item.label || item.code || '')}"></option>`).join('')}</datalist>`;
     openModal(`
@@ -3095,9 +3156,9 @@
           ${itemDatalist}
           <div class="modal-grid">
             <label class="modal-field"><span>업무일자</span><input id="monthlyOrderDate" value="${escapeAttr(businessDate)}" readonly></label>
-            <label class="modal-field"><span>사업장</span><select id="monthlyOrderSite"><option value="">사업장 선택</option>${sites.map(optionSite => `<option value="${escapeAttr(optionSite)}"${optionSite === site ? ' selected' : ''}>${escapeHtml(optionSite)}</option>`).join('')}</select></label>
+            <label class="modal-field"><span>사업장</span><select id="monthlyOrderSite"${sites.length ? '' : ' disabled'}><option value="">${sites.length ? '사업장 선택' : '불러오는 중…'}</option>${sites.map(optionSite => `<option value="${escapeAttr(optionSite)}"${optionSite === site ? ' selected' : ''}>${escapeHtml(optionSite)}</option>`).join('')}</select></label>
             <label class="modal-field"><span>객실번호</span><input id="monthlyOrderRoomNo" maxlength="12" inputmode="numeric" placeholder="예: 9557"></label>
-            <label class="modal-field"><span>파트</span><select id="monthlyOrderPart"><option value="">선택</option>${parts.map(part => `<option value="${escapeAttr(part.label || part.code || '')}">${escapeHtml(part.label || part.code || '')}</option>`).join('')}</select></label>
+            <label class="modal-field"><span>파트</span><select id="monthlyOrderPart"${parts.length ? '' : ' disabled'}>${parts.length ? `<option value="">선택</option>${parts.map(part => `<option value="${escapeAttr(part.label || part.code || '')}">${escapeHtml(part.label || part.code || '')}</option>`).join('')}` : '<option value="">불러오는 중…</option>'}</select></label>
             <label class="modal-field full"><span>품목</span><input id="monthlyOrderItem" lang="ko" autocomplete="off" autocapitalize="none" list="monthlyHousemanItemSuggestions" placeholder="품목을 한글로 입력하세요. (영문키도 한글 자동변환)"></label>
             <label class="modal-field"><span>수량</span><input id="monthlyOrderQty" type="number" min="1" max="99" value="1"></label>
             <label class="modal-field"><span>배정</span><select id="monthlyOrderAssignmentMode"><option value="AUTO" selected>근무자 자동배정</option><option value="UNASSIGNED">미배정</option></select></label>
@@ -3111,6 +3172,10 @@
       </div>`);
     const monthlyItemInput = $('monthlyOrderItem');
     bindMonthlyKoreanItemInput_(monthlyItemInput);
+    void optionsPromise.then(applyMonthlyHousemanOptionsToOpenModal_).catch(error => {
+      console.warn('월별조회 하우스맨 등록 옵션 비동기 조회 실패:', error?.message || error);
+      showToast('파트·품목 목록을 불러오지 못했습니다. 다시 시도하세요.');
+    });
     $('monthlyOrderRoomNo')?.addEventListener('input', queueMonthlyHousemanAssignmentPreload_);
     $('monthlyOrderSite')?.addEventListener('change', queueMonthlyHousemanAssignmentPreload_);
     $('monthlyOrderAssignmentMode')?.addEventListener('change', queueMonthlyHousemanAssignmentPreload_);
@@ -3208,6 +3273,11 @@
       ? String(type).toUpperCase()
       : 'HOUSEMAN';
     state.monthly.type = normalized;
+    if (normalized === 'HOUSEMAN') {
+      void preloadMonthlyHousemanOrderOptions_().catch(error => {
+        console.warn('월별조회 하우스맨 등록 옵션 사전조회 실패:', error?.message || error);
+      });
+    }
     if ($('monthlyType')) $('monthlyType').value = normalized;
     document.querySelectorAll('#monthlySubcategoryMenu [data-monthly-section]').forEach(button => {
       const active = button.dataset.monthlySection === normalized;
