@@ -3598,7 +3598,9 @@ app.get(
       if (!site) {
         throw httpError(400, 'INVALID_REQUEST', '사업장이 필요합니다.');
       }
-      if (!allowedForSite(user, site)) {
+      // HOUSEMAN은 아래 SQL에서 본인 배정/처리/공동전달 후보만 반환하므로
+      // default_site/allowed_sites로 다시 차단하지 않는다. ADMIN/ORDER만 기존 사업장 권한을 유지한다.
+      if (role !== 'HOUSEMAN' && !allowedForSite(user, site)) {
         throw httpError(403, 'FORBIDDEN', '해당 사업장 조회 권한이 없습니다.');
       }
 
