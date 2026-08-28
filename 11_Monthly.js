@@ -175,6 +175,9 @@ function buildMonthlyHistoryBundle_(request) { // (월별 이력 조회·필터�
     .filter(item => !request.search || monthlyItemSearchText_(item).includes(request.search));
 
   const options = buildMonthlyOptions_(typedItems, users);
+  options.sites = Array.from(new Set([...(options.sites || []), ...getMonthlyConfiguredSites_()]))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'ko'));
   if (request.type === 'HOUSEMAN') {
     options.orderParts = getCodes_('하우스맨파트');
     options.orderItems = getCodes_('하우스맨품목');
@@ -412,6 +415,35 @@ function monthlyItemSearchText_(item) { // (월별 검색 문자열)
     item.businessDate, item.typeLabel, item.site, item.roomNo, item.employeeDisplay,
     item.statusLabel, item.cleaningTypeLabel, item.detailText, item.part, item.itemSummary, item.requester
   ].join(' ').toLowerCase();
+}
+
+function getMonthlyConfiguredSites_() { // (이력 유무와 무관한 객실 사업장 목록)
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'NOVA_MONTHLY_CONFIGURED_SITES_V79';
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (error) { /* 캐시 손상 시 재구성 */ }
+  }
+
+  const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  const headerMap = getHeaderMap_(sheet);
+  const siteColumn = headerMap['사업장'];
+  if (!siteColumn) return [];
+
+  const sites = Array.from(new Set(
+    sheet.getRange(2, siteColumn, lastRow - 1, 1)
+      .getDisplayValues()
+      .map(row => String(row[0] || '').trim())
+      .filter(Boolean)
+  )).sort((a, b) => a.localeCompare(b, 'ko'));
+
+  try { cache.put(cacheKey, JSON.stringify(sites), 300); } catch (error) { /* 캐시 저장 실패 무시 */ }
+  return sites;
 }
 
 function buildMonthlyOptions_(items, users) { // (월별 필터 선택 목록)

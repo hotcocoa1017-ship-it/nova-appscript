@@ -2719,12 +2719,8 @@
     }
     const businessDate = String($('monthlyDate')?.value || state.monthly.date || formatClientDate_(new Date())).trim();
     const site = String($('monthlySite')?.value || state.monthly.site || '').trim();
-    if (!site) {
-      showToast('오더를 등록할 사업장을 먼저 선택하세요.');
-      $('monthlySite')?.focus();
-      return;
-    }
     const options = state.monthly.data?.options || {};
+    const sites = Array.isArray(options.sites) ? options.sites : [];
     const parts = Array.isArray(options.orderParts) ? options.orderParts : [];
     const items = Array.isArray(options.orderItems) ? options.orderItems : [];
     const itemDatalist = `<datalist id="monthlyHousemanItemSuggestions">${items.map(item => `<option value="${escapeAttr(item.label || item.code || '')}"></option>`).join('')}</datalist>`;
@@ -2735,7 +2731,7 @@
           ${itemDatalist}
           <div class="modal-grid">
             <label class="modal-field"><span>업무일자</span><input id="monthlyOrderDate" value="${escapeAttr(businessDate)}" readonly></label>
-            <label class="modal-field"><span>사업장</span><input id="monthlyOrderSite" value="${escapeAttr(site)}" readonly></label>
+            <label class="modal-field"><span>사업장</span><select id="monthlyOrderSite"><option value="">사업장 선택</option>${sites.map(optionSite => `<option value="${escapeAttr(optionSite)}"${optionSite === site ? ' selected' : ''}>${escapeHtml(optionSite)}</option>`).join('')}</select></label>
             <label class="modal-field"><span>객실번호</span><input id="monthlyOrderRoomNo" maxlength="12" inputmode="numeric" placeholder="예: 9557"></label>
             <label class="modal-field"><span>파트</span><select id="monthlyOrderPart"><option value="">선택</option>${parts.map(part => `<option value="${escapeAttr(part.label || part.code || '')}">${escapeHtml(part.label || part.code || '')}</option>`).join('')}</select></label>
             <label class="modal-field full"><span>품목</span><input id="monthlyOrderItem" list="monthlyHousemanItemSuggestions" placeholder="품목을 선택하거나 입력하세요."></label>
@@ -2780,6 +2776,9 @@
       const result = await callServer('createHousemanOrder', state.token, payload);
       if (!result?.ok) throw new Error(result?.message || '오더 등록에 실패했습니다.');
       closeModal();
+      state.monthly.site = payload.site;
+      sessionStorage.setItem('novaMonthlySite', payload.site);
+      if ($('monthlySite')) $('monthlySite').value = payload.site;
       showToast(`${payload.roomNo}호 하우스맨 오더 등록 완료`);
       await loadMonthlyHistory({ page: 1 });
     } catch (error) {
