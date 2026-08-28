@@ -5714,10 +5714,11 @@
       }
       return active;
     });
-    active.initPromise = promise.finally(() => {
-      if (active.initPromise === promise) active.initPromise = null;
+    const trackedPromise = promise.finally(() => {
+      if (active.initPromise === trackedPromise) active.initPromise = null;
     });
-    return active.initPromise;
+    active.initPromise = trackedPromise;
+    return trackedPromise;
   }
 
   async function ensureQmInspectionDraftReady_(active) { // (사진/저장 시 background 초안 준비 완료 보장)
