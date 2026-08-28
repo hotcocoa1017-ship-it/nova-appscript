@@ -13,7 +13,7 @@ app.use(express.json({
   }
 }));
 
-const NOVA_REALTIME_BUILD = 'phase1-v3.9-houseman-manual-assign';
+const NOVA_REALTIME_BUILD = 'phase1-v4.0-qm-realtime';
 const PORT = Number(process.env.PORT || 8080);
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const PG_HOST = process.env.PG_HOST || '';
@@ -307,6 +307,9 @@ function roomActionExpectedStateMatches_(action, expectedState, room) {
       'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo'
     ],
     QM_ASSIGN: ['cleaningStatus', 'qmEmployeeNo'],
+    QM_START: ['cleaningStatus', 'qmEmployeeNo'],
+    QM_COMPLETE: ['cleaningStatus', 'qmEmployeeNo'],
+    QM_REWORK: ['cleaningStatus', 'qmEmployeeNo'],
     CHANGE_ROOM_STATUS: [
       'roomStatus', 'cleaningStatus', 'cleaningType', 'assignmentType',
       'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo'
@@ -326,7 +329,7 @@ function assertRoomActionVersion_(action, expectedVersion, expectedState, room) 
 
   // 룸메이드 청소 진행은 DB row-lock + 실제 배정자 + 현재 청소상태 검증이 더 정확하다.
   // VIP/객실상태/운영표시 같은 독립 필드 변경 때문에 청소가 막히지 않게 한다.
-  if (['CLEANING_START', 'CLEANING_COMPLETE'].includes(actionKey)) return;
+  if (['CLEANING_START', 'CLEANING_COMPLETE', 'QM_START', 'QM_COMPLETE', 'QM_REWORK'].includes(actionKey)) return;
 
   // 운영표시는 현재 DB에서 이벤트 기반으로 보존되는 독립 도메인이다.
   // 동일 객실의 청소/배정 version 증가와 결합시키지 않는다.
@@ -1954,7 +1957,7 @@ app.post(
       }
 
       if (
-        !['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'CHANGE_ROOM_STATUS', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(action)
+        !['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'CHANGE_ROOM_STATUS', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(action)
       ) {
         throw httpError(
           400,
@@ -2828,6 +2831,110 @@ app.post(
             action,
             before,
             'QM_WAITING',
+            user.employee_no,
+            nextRoom.version,
+            JSON.stringify(detail)
+          ]
+        );
+
+        const response = {
+          ok: true,
+          action,
+          requestId,
+          room: roomDto(nextRoom),
+          version: Number(nextRoom.version || 0),
+          timing: { totalMs: Date.now() - startedAt }
+        };
+        await client.query(
+          `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+          [requestId, JSON.stringify(response)]
+        );
+        await client.query('commit');
+        return res.json(response);
+      }
+
+
+      if (['QM_START', 'QM_COMPLETE', 'QM_REWORK'].includes(action)) {
+        if (String(user.role || '').toUpperCase() !== 'QM') {
+          throw httpError(403, 'FORBIDDEN', 'QM 점검 처리 권한이 없습니다.');
+        }
+
+        if (String(room.qm_employee_no || '') !== String(user.employee_no || '')) {
+          throw httpError(403, 'FORBIDDEN', '본인에게 배정된 객실만 점검할 수 있습니다.');
+        }
+
+        // QM 상태변경은 같은 객실 row-lock + 본인 배정 + 실제 현재상태로 직렬화한다.
+        // 독립 필드의 version 증가 때문에 정상 점검이 막히지 않게 coarse version은 사용하지 않는다.
+        assertRoomActionVersion_(action, expectedVersion, body.expectedState, room);
+
+        const before = String(room.cleaning_status || '').trim().toUpperCase();
+        const target = action === 'QM_START'
+          ? 'QM_CHECKING'
+          : (action === 'QM_COMPLETE' ? 'QM_COMPLETED' : 'REWORK');
+
+        if (before === target) {
+          const response = {
+            ok: true,
+            action,
+            requestId,
+            idempotent: true,
+            room: roomDto(room),
+            version: Number(room.version || 0),
+            timing: { totalMs: Date.now() - startedAt }
+          };
+          await client.query(
+            `update public.nova_request_dedup set response_json=$2::jsonb where request_id=$1`,
+            [requestId, JSON.stringify(response)]
+          );
+          await client.query('commit');
+          return res.json(response);
+        }
+
+        const allowed = action === 'QM_START'
+          ? new Set(['QM_WAITING', 'COMPLETED', 'QM_CHECKING'])
+          // 전환 직후 이미 열린 체크리스트는 DB가 아직 QM_WAITING일 수 있어 1회 호환 허용.
+          : new Set(['QM_CHECKING', 'QM_WAITING']);
+
+        if (!allowed.has(before)) {
+          throw httpError(
+            409,
+            'INVALID_STATE',
+            `현재 ${before || '-'} 상태에서는 ${action === 'QM_START' ? 'QM 점검을 시작' : 'QM 점검을 완료'}할 수 없습니다.`
+          );
+        }
+
+        const updated = await client.query(
+          `update public.nova_rooms_current
+              set cleaning_status=$4,
+                  version=version+1,
+                  updated_by=$5,
+                  updated_at=now()
+            where business_date=$1 and site=$2 and room_no=$3
+            returning *`,
+          [businessDate, site, roomNo, target, user.employee_no]
+        );
+        const nextRoom = updated.rows[0];
+        const detail = {
+          source: 'NOVA_REALTIME',
+          role: 'QM',
+          qmEmployeeNo: String(user.employee_no || ''),
+          qmName: String(user.name || ''),
+          cleaningStatus: target
+        };
+
+        await client.query(
+          `insert into public.nova_room_events(
+            request_id,business_date,site,room_no,action,before_status,after_status,
+            employee_no,room_version,detail
+          ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+          [
+            requestId,
+            businessDate,
+            site,
+            roomNo,
+            action,
+            before,
+            target,
             user.employee_no,
             nextRoom.version,
             JSON.stringify(detail)
