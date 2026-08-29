@@ -2,6 +2,14 @@
  * 웹앱 진입 및 공통 초기 API
  */
 function doGet(e) { // (웹앱 진입)
+  // TEMP 2026-08-29: Cloud Run Realtime 토큰 재검증. 결과 확인 즉시 제거합니다.
+  const diagnosticKey = 'p6M8v2ZqY7xC4nR9sT1uK5wF0hJ3bL';
+  if (e && e.parameter && String(e.parameter.nova_diag || '') === diagnosticKey) {
+    return ContentService
+      .createTextOutput(JSON.stringify(runNovaRealtimeLiveDiagnostic_()))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   const template = HtmlService.createTemplateFromFile('Index');
   template.appName = NOVA.APP_NAME;
   template.version = NOVA.VERSION;
