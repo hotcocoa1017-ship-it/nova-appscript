@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: nova-apps-script-production
@@ -14,6 +15,9 @@ concurrency:
 
 env:
   APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_REGION: asia-southeast1
+  CLOUD_RUN_REALTIME_SERVICE: nova-realtime-api
 
 jobs:
   deploy:
@@ -22,6 +26,96 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Authenticate Google Cloud preflight
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+
+      - name: Setup gcloud preflight
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Validate Cloud Run Realtime production preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_REALTIME_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/nova-cloudrun-service.json
+
+          ACTIVE_REV="$(python3 - <<'PY'
+          import json, sys
+          s=json.load(open('/tmp/nova-cloudrun-service.json'))
+          status=s.get('status') or {}
+          active=[]
+          for t in status.get('traffic') or []:
+              pct=int(t.get('percent') or 0)
+              rev=str(t.get('revisionName') or '')
+              if pct>0:
+                  active.append((rev,pct))
+          if len(active)!=1 or active[0][1]!=100 or not active[0][0]:
+              print('::error::Cloud Run Realtime traffic must point 100% to one explicit revision.', file=sys.stderr)
+              for rev,pct in active:
+                  print(f'active_revision={rev or "UNKNOWN"} traffic={pct}%', file=sys.stderr)
+              sys.exit(20)
+          print(active[0][0])
+          PY
+          )"
+          echo "Cloud Run active revision: $ACTIVE_REV"
+
+          gcloud run revisions describe "$ACTIVE_REV" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/nova-cloudrun-revision.json
+
+          python3 - <<'PY'
+          import json, sys
+          r=json.load(open('/tmp/nova-cloudrun-revision.json'))
+          conditions=(r.get('status') or {}).get('conditions') or []
+          ready=any(c.get('type')=='Ready' and str(c.get('status'))=='True' for c in conditions)
+          if not ready:
+              print('::error::Active Cloud Run Realtime revision is not Ready.', file=sys.stderr)
+              sys.exit(21)
+          containers=(r.get('spec') or {}).get('containers') or []
+          envs=(containers[0].get('env') or []) if containers else []
+          by={str(e.get('name','')):e for e in envs}
+          required=['SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET']
+          missing=[]
+          for name in required:
+              e=by.get(name)
+              present=bool(e and (e.get('valueFrom') or e.get('valueSource') or str(e.get('value','')).strip()))
+              print(f'{name}=' + ('CONFIGURED' if present else 'MISSING'))
+              if not present: missing.append(name)
+          if missing:
+              print('::error::Cloud Run Realtime configuration missing: '+','.join(missing), file=sys.stderr)
+              sys.exit(22)
+          print('CLOUD_RUN_REALTIME_ENV=OK')
+          PY
+
+          SERVICE_URL="$(python3 - <<'PY'
+          import json
+          s=json.load(open('/tmp/nova-cloudrun-service.json'))
+          print((s.get('status') or {}).get('url') or '')
+          PY
+          )"
+          test -n "$SERVICE_URL"
+          HEALTH_HTTP="$(curl -sS --retry 2 --retry-delay 1 -o /tmp/nova-cloudrun-health.json -w '%{http_code}' "$SERVICE_URL/health")"
+          echo "Cloud Run health HTTP: $HEALTH_HTTP"
+          test "$HEALTH_HTTP" = "200"
+          python3 - <<'PY'
+          import json, sys
+          try:
+              body=json.load(open('/tmp/nova-cloudrun-health.json'))
+          except Exception:
+              body={}
+          if body.get('ok') is not True:
+              print('::error::Cloud Run Realtime health response is not ok.', file=sys.stderr)
+              sys.exit(23)
+          build=str(body.get('build') or body.get('version') or '')
+          if not build:
+              print('::error::Cloud Run Realtime health build identifier is empty.', file=sys.stderr)
+              sys.exit(24)
+          print('Cloud Run health build: '+build)
+          print('CLOUD_RUN_REALTIME_PREFLIGHT=OK')
+          PY
 
       - name: Apply stable Realtime init hotfix
         run: python3 scripts/patch_realtime_client.py
