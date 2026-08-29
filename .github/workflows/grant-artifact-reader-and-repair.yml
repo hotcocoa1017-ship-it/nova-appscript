@@ -1,0 +1,82 @@
+name: Grant Artifact Reader And Repair Realtime
+
+on:
+  push:
+    branches: [diag/realtime-token-after-secret-20260829]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Grant repository reader and deploy desired template
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT='project-6a8144e9-31f3-4d5c-b9b'
+          REGION='asia-southeast1'
+          SERVICE='nova-realtime-api'
+          REPO='cloud-run-source-deploy'
+          DEPLOYER='nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com'
+
+          echo 'TRY_ARTIFACT_READER_BINDING'
+          gcloud artifacts repositories add-iam-policy-binding "$REPO" \
+            --project="$PROJECT" \
+            --location="$REGION" \
+            --member="serviceAccount:$DEPLOYER" \
+            --role='roles/artifactregistry.reader' \
+            --quiet
+          echo 'ARTIFACT_READER_BINDING_OK'
+
+          gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" --format=json > /tmp/svc.json
+          python3 - <<'PY' > /tmp/env.sh
+          import json, shlex
+          s=json.load(open('/tmp/svc.json'))
+          containers=((s.get('spec') or {}).get('template') or {}).get('spec',{}).get('containers',[])
+          envs=containers[0].get('env',[]) if containers else []
+          by={str(e.get('name','')):e for e in envs}
+          for shell_name,env_name in [('SBURL','SUPABASE_URL'),('SBKEY','SUPABASE_PUBLISHABLE_KEY'),('JWT','SUPABASE_JWT_SECRET')]:
+              value=str((by.get(env_name) or {}).get('value') or '')
+              if not value:
+                  raise SystemExit(env_name+' is missing from desired service template')
+              print(shell_name+'='+shlex.quote(value))
+          PY
+          # shellcheck disable=SC1091
+          source /tmp/env.sh
+          SUFFIX="rtfix$(date +%H%M%S)"
+          gcloud run services update "$SERVICE" \
+            --project="$PROJECT" --region="$REGION" \
+            --update-env-vars="SUPABASE_URL=$SBURL,SUPABASE_PUBLISHABLE_KEY=$SBKEY,SUPABASE_JWT_SECRET=$JWT" \
+            --revision-suffix="$SUFFIX" --quiet
+          unset SBURL SBKEY JWT
+          gcloud run services update-traffic "$SERVICE" --project="$PROJECT" --region="$REGION" --to-latest=100 --quiet
+
+          gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" --format=json > /tmp/after.json
+          python3 - <<'PY'
+          import json, subprocess
+          s=json.load(open('/tmp/after.json'))
+          st=s.get('status') or {}
+          ready=st.get('latestReadyRevisionName') or ''
+          print('LATEST_READY='+ready)
+          for t in st.get('traffic') or []:
+              print('TRAFFIC='+str(t.get('revisionName','LATEST'))+':'+str(t.get('percent',0)))
+          if not ready:
+              raise SystemExit('no ready revision')
+          raw=subprocess.check_output(['gcloud','run','revisions','describe',ready,'--project=project-6a8144e9-31f3-4d5c-b9b','--region=asia-southeast1','--format=json'], text=True)
+          r=json.loads(raw)
+          envs=((r.get('spec') or {}).get('containers') or [{}])[0].get('env',[])
+          names={str(e.get('name','')) for e in envs if str(e.get('value','')).strip() or e.get('valueFrom') or e.get('valueSource')}
+          for n in ['SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET']:
+              print('READY_'+n+'='+('SET' if n in names else 'MISSING'))
+              if n not in names: raise SystemExit(n+' absent from ready revision')
+          PY
+          echo 'REALTIME_REVISION_REPAIR_OK'
