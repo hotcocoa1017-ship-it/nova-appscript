@@ -241,7 +241,7 @@
 
     if (response.ok && data?.ok) return data;
 
-    const retryable = response.status === 429 || response.status >= 500;
+    const retryable = (response.status === 429 || response.status >= 500) && options.noRetry !== true;
     if (retryable && attempt < 2) {
       await novaRealtimeSleep_([160, 420, 800][attempt] || 800);
       return novaRealtimeFetch_(path, options, attempt + 1);
@@ -1148,6 +1148,7 @@
     const send = () => novaRealtimeFetch_(`/v1/rooms/${encodeURIComponent(String(safe.roomNo || ''))}/action`, {
       method: 'POST',
       headers: { 'X-Request-Id': safe.requestId },
+      noRetry: mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' && !String(safe.operationalStatus || '').trim(),
       body: JSON.stringify(safe)
     });
 
@@ -1156,6 +1157,35 @@
       result = await send();
     } catch (error) {
       const code = String(error?.code || '').trim().toUpperCase();
+      const errorStatus = Number(error?.status || 0);
+      const operationalStatusCompletion = mappedAction === 'UPDATE_ROOM_OPERATION_STATUS'
+        && !String(safe.operationalStatus || '').trim();
+
+      // 객실조치 완료 Realtime 실패 · 안전경로로 자동 전환
+      // 완료는 빈 상태값('')을 보내므로 Cloud Run 런타임이 5xx/네트워크 오류를 반환해도
+      // 실제 직전 객실조치 상태만 비교하는 Apps Script 안전경로로 확정하고,
+      // 성공 후 해당 1객실만 DB에 즉시 재동기화합니다. 4xx 권한/상태 오류는 우회하지 않습니다.
+      if (operationalStatusCompletion && (errorStatus === 0 || errorStatus >= 500)) {
+        console.warn('[NOVA Realtime] 객실조치 완료 API 실패 · 안전경로로 전환합니다.', error);
+        const fallbackPayload = Object.assign({}, legacySafe, {
+          action: 'UPDATE_ROOM_OPERATION_STATUS',
+          operationalStatus: '',
+          expectedVersion: 0,
+          expectedOperationalStatus: String(safe?.expectedState?.operationalStatus || '')
+        });
+        delete fallbackPayload.sheetExpectedVersion;
+        const fallbackResult = await callServer('updateRoomOperationalStatusSafe', state.token, fallbackPayload);
+        if (!fallbackResult?.ok) throw new Error(fallbackResult?.message || '객실조치 완료를 저장하지 못했습니다.');
+        void callServer('syncNovaRealtimeRoomForAction', state.token, {
+          businessDate: safe.businessDate,
+          site: safe.site,
+          roomNo: safe.roomNo,
+          action: 'UPDATE_ROOM_OPERATION_STATUS'
+        }).catch(syncError => {
+          console.warn('[NOVA Realtime] 객실조치 완료 후 DB 단건 재동기화는 정기 동기화로 넘깁니다.', syncError);
+        });
+        return Object.assign({}, fallbackResult, { realtimeFallback: true, realtimeFallbackReason: 'OPERATION_STATUS_COMPLETE_5XX' });
+      }
 
       // 권한/상태 오류는 DB 보정으로 해결되지 않으므로 느린 Sheets JIT 동기화를 실행하지 않습니다.
       // 누락 객실 또는 배정대상 사용자 누락처럼 실제 DB 보정이 필요한 경우에만 1회 동기화합니다.
