@@ -1,0 +1,19 @@
+<style>
+/* NOVA 통합인디게이터 업무일자 폭 영구 보정 */
+@media (min-width: 761px) {
+  .indicator-controls {
+    grid-template-columns: 194px 150px minmax(190px, 1fr) auto auto;
+  }
+  #indicatorDate {
+    width: 136px;
+    min-width: 136px;
+  }
+}
+
+@media (max-width: 760px) {
+  #indicatorDate {
+    width: 100%;
+    min-width: 0;
+  }
+}
+</style>
