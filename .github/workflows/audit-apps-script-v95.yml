@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -32,19 +34,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/nova-v95
-          mkdir -p /tmp/nova-v95
+          rm -rf /tmp/nova-v95 /tmp/current-main /tmp/nova-diff
+          mkdir -p /tmp/nova-v95 /tmp/current-main /tmp/nova-diff
           cd /tmp/nova-v95
           clasp clone 1eBwsaCPGbbtiWINYD4IB0I0GBTGHn-2Dag3dWVHoet8weX2YD_FS5kR8 95
-          echo '--- recovered files ---'
-          ls -la
-          echo '--- Client realtime routes ---'
-          grep -nE "realtimeAction|UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|UPDATE_OPERATION_FLAGS" Client.html | head -180 || true
-          echo '--- mirror action routing ---'
-          grep -nE "UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|CLEANING_START|CLEANING_COMPLETE|QM_START|QM_COMPLETE|QM_REWORK" RealtimeDailySync.js | head -260 || true
-      - name: Upload recovered v95
+      - name: Capture current main and diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          for f in Client.html RealtimeDailySync.js RealtimeBridge.js Index.html; do
+            git show origin/main:"$f" > "/tmp/current-main/$f"
+          done
+          diff -u /tmp/current-main/Client.html /tmp/nova-v95/Client.html > /tmp/nova-diff/Client.main_to_v95.diff || true
+          diff -u /tmp/current-main/RealtimeDailySync.js /tmp/nova-v95/RealtimeDailySync.js > /tmp/nova-diff/RealtimeDailySync.main_to_v95.diff || true
+          echo '--- route diff summary ---'
+          grep -nE "realtimeAction|UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|UPDATE_OPERATION_FLAGS|CLEAR_ASSIGNMENT|QM_START|QM_COMPLETE|QM_REWORK" /tmp/nova-diff/Client.main_to_v95.diff | head -260 || true
+          echo '--- mirror diff summary ---'
+          grep -nE "UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|CLEANING_START|CLEANING_COMPLETE|QM_START|QM_COMPLETE|QM_REWORK|CLEAR_ASSIGNMENT|UPDATE_OPERATION_FLAGS" /tmp/nova-diff/RealtimeDailySync.main_to_v95.diff | head -320 || true
+      - name: Upload audit bundle
         uses: actions/upload-artifact@v4
         with:
-          name: apps-script-v95
-          path: /tmp/nova-v95/
+          name: apps-script-v95-main-diff
+          path: |
+            /tmp/nova-v95/
+            /tmp/current-main/
+            /tmp/nova-diff/
           retention-days: 1
