@@ -41,6 +41,9 @@ jobs:
       - name: Apply QM notification bell patch
         run: python3 scripts/patch_qm_notification_bell.py
 
+      - name: Apply Roommaid notification bell patch
+        run: python3 scripts/patch_roommaid_notification_bell.py
+
       - name: Apply Realtime assignment batch merge patch
         run: python3 scripts/patch_realtime_assignment_batch_merge.py
 
@@ -65,8 +68,11 @@ jobs:
           grep -q "data-qm-browse-inspect" Client.html
           grep -q "qmBrowseLocationFilters" Client.html
           grep -q "QM_NOTIFICATION_BELL_V1" HousemanUiPerformancePatch.html
+          grep -q "ROOMMAID_NOTIFICATION_BELL_V1" HousemanUiPerformancePatch.html
           grep -q "S.mode==='QM'" HousemanUiPerformancePatch.html
+          grep -q "S.mode==='ROOMMAID'" HousemanUiPerformancePatch.html
           grep -q "function qmItem" HousemanUiPerformancePatch.html
+          grep -q "function roommaidItem" HousemanUiPerformancePatch.html
           if grep -q "include_('OperationalStatusHotfix')" Index.html; then
             echo "::error::OperationalStatusHotfix must not intercept the Realtime path."
             exit 2
@@ -76,20 +82,61 @@ jobs:
             exit 2
           fi
 
-      - name: Persist generated Client hotfix to main
+      - name: Validate production release regression gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate generated JavaScript syntax
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- Client.html; then
-            echo "Client.html already contains the stable Realtime init path."
+          node --check RealtimeDailySync.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for source, target in [
+              ('Client.html', '/tmp/NovaClient.js'),
+              ('HousemanUiPerformancePatch.html', '/tmp/NovaNotification.js'),
+          ]:
+              text = Path(source).read_text(encoding='utf-8')
+              scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+              if not scripts:
+                  raise SystemExit(f'No script block found in {source}')
+              Path(target).write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+          node --check /tmp/NovaNotification.js
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js | sha256sum | awk '{print $1}')"
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          after="$(sha256sum Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Persist generated production sources to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          generated=(Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js)
+          if git diff --quiet -- "${generated[@]}"; then
+            echo "Generated production sources already match repository source."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Client.html
-          git commit -m "Fix Realtime config initialization fallback [skip ci]"
+          git add "${generated[@]}"
+          git commit -m "Persist generated NOVA production patches [skip ci]"
           if ! git push origin HEAD:main; then
-            echo "::warning::Could not push generated Client.html back to main. Deployment will continue with the patched workspace."
+            echo "::warning::Could not persist generated production sources to main. Deployment will continue with the validated patched workspace."
           fi
 
       - name: Setup Node
