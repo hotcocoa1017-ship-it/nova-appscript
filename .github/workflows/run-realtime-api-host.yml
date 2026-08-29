@@ -1,0 +1,26 @@
+name: Run Realtime API Host Diagnostic
+
+on:
+  push:
+    branches: [diag/realtime-token-after-secret-20260829]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose-host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read production Realtime API host
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://script.google.com/macros/s/AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf/exec?nova_api_host=NOVA-RT-HOST-20260829-k9x7p2'
+          curl -fsSL --retry 2 --retry-delay 2 "$URL" -o /tmp/host.json
+          python3 - <<'PY'
+          import json
+          body=json.load(open('/tmp/host.json'))
+          print('API_HOST=' + str(body.get('host','')))
+          print('OK=' + str(bool(body.get('ok'))))
+          PY
