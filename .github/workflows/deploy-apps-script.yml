@@ -35,6 +35,9 @@ jobs:
       - name: Apply QM immediate checklist hotfix
         run: python3 scripts/patch_qm_immediate_checklist.py
 
+      - name: Apply QM roommaid display-name patch
+        run: python3 scripts/patch_qm_roommaid_name_display.py
+
       - name: Validate full Realtime routing
         shell: bash
         run: |
@@ -49,6 +52,7 @@ jobs:
           grep -q "QM 추가조회 탭 · 기존 점검대상 화면 보존" Client.html
           grep -q "QM 추가탭 동·층 필터 + 안전 즉시점검" Client.html
           grep -q "QM 추가탭 체크리스트 즉시노출 v1" Client.html
+          grep -q "QM 점검대상 정비자 이름 보존 v1" Client.html
           grep -q "function getQmMobileBrowseRooms" QmMobileBrowse.js
           grep -q "function startQmMobileBrowseInspection" QmMobileBrowse.js
           grep -q "data-qm-browse-inspect" Client.html
