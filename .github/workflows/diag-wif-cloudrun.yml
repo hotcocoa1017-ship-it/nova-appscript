@@ -1,4 +1,4 @@
-name: Activate Verified Realtime Revision
+name: Test Private Realtime Handshake
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   id-token: write
 
 jobs:
-  activate:
+  realtime-handshake:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -21,63 +21,81 @@ jobs:
           service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
-      - name: Route 100 percent traffic to verified revision
+      - name: Test private Supabase channels without exposing secrets
         shell: bash
         run: |
           set -euo pipefail
           PROJECT='project-6a8144e9-31f3-4d5c-b9b'
           REGION='asia-southeast1'
-          SERVICE='nova-realtime-api'
           REV='nova-realtime-api-rtfix133009'
           gcloud run revisions describe "$REV" --project="$PROJECT" --region="$REGION" --format=json > /tmp/rev.json
-          python3 - <<'PY'
-          import json,sys
+          python3 - <<'PY' > /tmp/rt-config.json
+          import json,sys,os
           r=json.load(open('/tmp/rev.json'))
-          st=r.get('status') or {}
-          ready=any(c.get('type')=='Ready' and str(c.get('status'))=='True' for c in st.get('conditions') or [])
-          spec=r.get('spec') or {}
-          containers=spec.get('containers') or []
+          containers=(r.get('spec') or {}).get('containers') or []
           envs=(containers[0].get('env') or []) if containers else []
           by={str(e.get('name','')):e for e in envs}
-          required=['SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET']
-          missing=[]
-          for name in required:
-              e=by.get(name)
-              present=bool(e and (e.get('valueFrom') or e.get('valueSource') or str(e.get('value','')).strip()))
-              if not present: missing.append(name)
-          print('REV_READY='+str(ready))
-          print('MISSING_REQUIRED='+(','.join(missing) if missing else 'NONE'))
-          if not ready or missing:
-              sys.exit(20)
+          def literal(name):
+              e=by.get(name) or {}
+              if e.get('valueFrom') or e.get('valueSource'):
+                  raise SystemExit('SECRET_REF_UNSUPPORTED_FOR_DIAG:'+name)
+              return str(e.get('value',''))
+          cfg={
+              'url': literal('SUPABASE_URL'),
+              'key': literal('SUPABASE_PUBLISHABLE_KEY'),
+              'secret': literal('SUPABASE_JWT_SECRET')
+          }
+          if not all(cfg.values()): raise SystemExit('REALTIME_CONFIG_MISSING')
+          print(json.dumps(cfg,ensure_ascii=False))
           PY
-          gcloud run services update-traffic "$SERVICE" \
-            --project="$PROJECT" --region="$REGION" \
-            --to-revisions="$REV=100" --quiet
-          gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" --format=json > /tmp/service.json
-          python3 - <<'PY'
-          import json,sys
-          s=json.load(open('/tmp/service.json'))
-          st=s.get('status') or {}
-          ok=False
-          for t in st.get('traffic') or []:
-              print('TRAFFIC='+str(t.get('revisionName') or '')+':'+str(t.get('percent',0)))
-              if t.get('revisionName')=='nova-realtime-api-rtfix133009' and int(t.get('percent') or 0)==100:
-                  ok=True
-          print('LATEST_READY='+str(st.get('latestReadyRevisionName','')))
-          if not ok: sys.exit(21)
-          PY
-          URL=$(python3 - <<'PY'
-          import json
-          print((json.load(open('/tmp/service.json')).get('status') or {}).get('url') or '')
-          PY
-          )
-          CODE=$(curl -sS -o /tmp/health.json -w '%{http_code}' "$URL/health")
-          echo "HEALTH_HTTP=$CODE"
-          python3 - <<'PY'
-          import json
-          try: b=json.load(open('/tmp/health.json'))
-          except Exception: b={}
-          print('HEALTH_OK='+str(bool(b.get('ok'))))
-          print('HEALTH_BUILD='+str(b.get('build') or b.get('version') or ''))
-          PY
-          [ "$CODE" = "200" ]
+          chmod 600 /tmp/rt-config.json
+          mkdir -p /tmp/nova-rt-test && cd /tmp/nova-rt-test
+          npm init -y >/dev/null 2>&1
+          npm install --silent --no-audit --no-fund @supabase/supabase-js@2 jsonwebtoken@9 >/dev/null 2>&1
+          cat > /tmp/nova-rt-test/test.mjs <<'JS'
+          import fs from 'node:fs';
+          import { createClient } from '@supabase/supabase-js';
+          import jwt from 'jsonwebtoken';
+
+          const cfg = JSON.parse(fs.readFileSync('/tmp/rt-config.json','utf8'));
+          const now = Math.floor(Date.now()/1000);
+          const token = jwt.sign({
+            aud:'authenticated', role:'authenticated',
+            sub:'00000000-0000-4000-8000-000000000001',
+            employee_no:'REALTIME_DIAG', nova_role:'ADMIN',
+            sites:['별관','쏘라노'], iat:now
+          }, cfg.secret, {algorithm:'HS256',expiresIn:'5m',issuer:'nova-realtime'});
+
+          const client = createClient(cfg.url, cfg.key, {
+            auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}
+          });
+          client.realtime.setAuth(token);
+
+          async function check(site) {
+            const topic = `nova:site:${site}:rooms`;
+            return await new Promise((resolve) => {
+              let settled=false;
+              const channel=client.channel(topic,{config:{private:true}});
+              const timer=setTimeout(()=>finish('TIMEOUT'),12000);
+              function finish(status,err='') {
+                if(settled) return;
+                settled=true; clearTimeout(timer);
+                Promise.resolve(client.removeChannel(channel)).finally(()=>resolve({site,status,err:String(err||'').slice(0,180)}));
+              }
+              channel.subscribe((status,err)=>{
+                if(status==='SUBSCRIBED') finish('SUBSCRIBED');
+                else if(['CHANNEL_ERROR','TIMED_OUT','CLOSED'].includes(status)) finish(status,err?.message||err||'');
+              });
+            });
+          }
+
+          const results=[];
+          for (const site of ['별관','쏘라노']) results.push(await check(site));
+          for (const r of results) console.log(`SITE=${r.site} STATUS=${r.status}${r.err?' ERROR='+r.err:''}`);
+          const ok=results.every(r=>r.status==='SUBSCRIBED');
+          console.log('PRIVATE_REALTIME_HANDSHAKE='+(ok?'OK':'FAIL'));
+          client.realtime.disconnect();
+          if(!ok) process.exit(30);
+          JS
+          node /tmp/nova-rt-test/test.mjs
+          rm -f /tmp/rt-config.json
