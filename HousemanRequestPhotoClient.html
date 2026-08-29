@@ -146,6 +146,8 @@
   const PHOTO_COUNT_ID = 'novaHmRequestPhotoCount';
   const PHOTO_STATUS_ID = 'novaHmRequestPhotoStatus';
   const PHOTO_PREVIEW_LIST_ID = 'novaHmRequestPhotoPreviewList';
+  const PHOTO_RESUME_KEY = 'novaHmRequestPhotoResume';
+  const PHOTO_RESUME_TTL_MS = 5 * 60 * 1000;
   const MAX_PHOTO_BYTES = 2500000;
   const DEFAULT_MAX_PHOTOS_PER_ORDER = 5;
 
@@ -159,8 +161,12 @@
   let capabilityToken = '';
   let capabilityPromise = null;
   let toastTimer = null;
+  let nativeCapturePending = false;
+  let nativeCaptureReturnTimer = null;
 
   document.addEventListener('click', handleHousemanPhotoClickCapture_, true); // (룸메이드 요청사진 클릭 선처리)
+  document.addEventListener('visibilitychange', handleHousemanPhotoVisibilityChange_); // (기기 카메라 취소·복귀 감지)
+  window.setTimeout(restoreHousemanPhotoRequestAfterReload_, 250); // (카메라 중 페이지 재생성 시 요청창 복원)
 
   function handleHousemanPhotoClickCapture_(event) { // (하우스맨 요청 열기·사진 포함 제출 가로채기)
     const requestButton = event.target && event.target.closest ? event.target.closest('[data-houseman-request]') : null;
@@ -210,7 +216,7 @@
         <small id="${PHOTO_COUNT_ID}">0/${maxPhotosAllowed}장</small>
       </div>
       <div class="nova-hm-photo-actions">
-        <label id="${PHOTO_CAMERA_ID}" class="nova-hm-photo-camera" for="${PHOTO_INPUT_ID}">사진 촬영</label>
+        <button id="${PHOTO_CAMERA_ID}" class="nova-hm-photo-camera" type="button">사진 촬영</button>
         <input id="${PHOTO_INPUT_ID}" class="nova-hm-photo-input" type="file" accept="image/*" capture="environment">
       </div>
       <div id="${PHOTO_STATUS_ID}" class="nova-hm-photo-status">사진은 선택사항이며 최대 ${maxPhotosAllowed}장까지 등록할 수 있습니다.</div>
@@ -221,10 +227,119 @@
     else if (submit.parentNode) submit.parentNode.insertBefore(field, submit);
 
     const input = document.getElementById(PHOTO_INPUT_ID);
+    const camera = document.getElementById(PHOTO_CAMERA_ID);
     const previewList = document.getElementById(PHOTO_PREVIEW_LIST_ID);
     if (input) input.addEventListener('change', handleHousemanPhotoSelection_);
+    if (camera) camera.addEventListener('click', handleHousemanPhotoCameraClick_);
     if (previewList) previewList.addEventListener('click', handleHousemanPhotoRemoveClick_);
     renderHousemanPhotoPreviews_();
+  }
+
+  function readHousemanPhotoResumeContext_() { // (카메라 복귀용 임시 요청내용 조회)
+    try {
+      const context = JSON.parse(localStorage.getItem(PHOTO_RESUME_KEY) || 'null');
+      if (!context || !context.roomNo || !Number(context.savedAt || 0)) return null;
+      if (Date.now() - Number(context.savedAt || 0) > PHOTO_RESUME_TTL_MS) {
+        localStorage.removeItem(PHOTO_RESUME_KEY);
+        return null;
+      }
+      return context;
+    } catch (ignore) {
+      localStorage.removeItem(PHOTO_RESUME_KEY);
+      return null;
+    }
+  }
+
+  function persistHousemanPhotoResumeContext_() { // (기기 카메라 실행 직전 요청화면·입력값 보존)
+    if (!activeRoomNo) return;
+    const context = {
+      savedAt: Date.now(),
+      roomNo: activeRoomNo,
+      part: String(document.getElementById('mobileRequestPart')?.value || ''),
+      item: String(document.getElementById('mobileRequestItem')?.value || ''),
+      quantity: String(document.getElementById('mobileRequestQty')?.value || '1'),
+      note: String(document.getElementById('mobileRequestNote')?.value || ''),
+      businessDate: String(document.getElementById('mobileDate')?.value || ''),
+      site: String(document.getElementById('mobileSite')?.value || '')
+    };
+    try {
+      localStorage.setItem(PHOTO_RESUME_KEY, JSON.stringify(context));
+      sessionStorage.setItem('novaActiveMenu', 'cleaning');
+    } catch (ignore) {}
+  }
+
+  function clearHousemanPhotoResumeContext_() { // (카메라 복귀 임시정보 정리)
+    try { localStorage.removeItem(PHOTO_RESUME_KEY); } catch (ignore) {}
+  }
+
+  function handleHousemanPhotoCameraClick_(event) { // (요청내용 보존 후 기기 후면카메라 실행)
+    event.preventDefault();
+    const camera = event.currentTarget;
+    if (!camera || camera.classList.contains('disabled') || camera.getAttribute('aria-disabled') === 'true') return;
+    const input = document.getElementById(PHOTO_INPUT_ID);
+    if (!input || input.disabled) return;
+    persistHousemanPhotoResumeContext_();
+    nativeCapturePending = true;
+    input.click();
+  }
+
+  function handleHousemanPhotoVisibilityChange_() { // (사진촬영 취소 시 오래된 복원정보 제거)
+    if (document.hidden || !nativeCapturePending) return;
+    if (nativeCaptureReturnTimer) window.clearTimeout(nativeCaptureReturnTimer);
+    nativeCaptureReturnTimer = window.setTimeout(() => {
+      if (!nativeCapturePending) return;
+      const input = document.getElementById(PHOTO_INPUT_ID);
+      if (!input || !input.files || !input.files.length) {
+        nativeCapturePending = false;
+        clearHousemanPhotoResumeContext_();
+      }
+    }, 1400);
+  }
+
+  function restoreHousemanPhotoRequestAfterReload_() { // (카메라 복귀 중 WebView 재생성 시 같은 요청창 자동 복원)
+    const context = readHousemanPhotoResumeContext_();
+    if (!context) return;
+    try { sessionStorage.setItem('novaActiveMenu', 'cleaning'); } catch (ignore) {}
+    const startedAt = Date.now();
+
+    const tryRestore = () => {
+      if (Date.now() - startedAt > 20000) {
+        clearHousemanPhotoResumeContext_();
+        return;
+      }
+
+      let submit = document.getElementById('mobileRequestSubmit');
+      if (!submit) {
+        const requestButton = Array.from(document.querySelectorAll('[data-houseman-request]'))
+          .find(button => String(button.dataset.housemanRequest || '').trim() === String(context.roomNo || '').trim());
+        if (requestButton) {
+          requestButton.click();
+          window.setTimeout(tryRestore, 160);
+          return;
+        }
+        window.setTimeout(tryRestore, 260);
+        return;
+      }
+
+      activeRoomNo = String(context.roomNo || '').trim();
+      const part = document.getElementById('mobileRequestPart');
+      const item = document.getElementById('mobileRequestItem');
+      const quantity = document.getElementById('mobileRequestQty');
+      const note = document.getElementById('mobileRequestNote');
+      if (part && context.part) part.value = String(context.part);
+      if (item) item.value = String(context.item || '');
+      if (quantity) quantity.value = String(context.quantity || '1');
+      if (note) note.value = String(context.note || '');
+
+      Promise.resolve(prepareHousemanPhotoUi_(activeRoomNo)).finally(() => {
+        window.setTimeout(() => {
+          setHousemanPhotoStatus_('카메라 복귀 후 요청내용을 복원했습니다. 사진을 다시 촬영해 주세요.', '');
+        }, 80);
+      });
+      clearHousemanPhotoResumeContext_();
+    };
+
+    tryRestore();
   }
 
   function getHousemanPhotoCapability_(token) { // (현재 토큰의 룸메이드 사진기능 권한 조회·세션 캐시)
@@ -237,8 +352,14 @@
   async function handleHousemanPhotoSelection_(event) { // (촬영 사진을 최대 5장까지 순차 압축·추가)
     const input = event.currentTarget;
     const file = input && input.files && input.files[0];
-    if (input) input.value = ''; // 같은 사진을 다시 선택해도 change가 동작하도록 즉시 초기화
-    if (!file) return;
+    nativeCapturePending = false;
+    if (nativeCaptureReturnTimer) window.clearTimeout(nativeCaptureReturnTimer);
+    nativeCaptureReturnTimer = null;
+    if (input) input.value = ''; // 같은 사진을 다시 선택해도 change가 동작하도록 초기화
+    if (!file) {
+      clearHousemanPhotoResumeContext_();
+      return;
+    }
 
     if (preparedPhotos.length >= maxPhotosAllowed) {
       setHousemanPhotoStatus_(`사진은 최대 ${maxPhotosAllowed}장까지 등록할 수 있습니다.`, 'error');
@@ -271,6 +392,7 @@
       });
 
     await photoPreparePromise;
+    clearHousemanPhotoResumeContext_();
   }
 
   function handleHousemanPhotoRemoveClick_(event) { // (선택 사진 개별 삭제)
@@ -318,7 +440,7 @@
     }).join('');
   }
 
-  async function submitHousemanRequestWithPhotos_(button) { // (오더 1건 생성 후 반환 orderId에 사진 최대 5장 순차 연결)
+  async function submitHousemanRequestWithPhotos_(button) { // (Realtime 오더 즉시확정 후 사진은 후행 저장)
     if (!activeRoomNo) throw new Error('요청 객실번호를 확인하지 못했습니다. 요청창을 닫고 다시 열어 주세요.');
     const token = String(localStorage.getItem('novaToken') || '').trim();
     if (!token) throw new Error('로그인 정보가 없습니다. 다시 로그인해 주세요.');
@@ -345,37 +467,56 @@
     }
     if (photos.length > maxPhotosAllowed) throw new Error(`사진은 최대 ${maxPhotosAllowed}장까지 등록할 수 있습니다.`);
 
-    setHousemanPhotoSubmitBusy_(button, true, '요청 등록 중…');
-    const createResult = await callCreateMobileHousemanRequestServer_(token, {
+    const createPayload = {
       businessDate,
       site,
       roomNo: activeRoomNo,
       part,
       items: [{ name: item, quantity: clampHousemanPhotoQuantity_(qtyEl && qtyEl.value) }],
       note: String(noteEl && noteEl.value || '').trim()
-    });
+    };
+    setHousemanPhotoSubmitBusy_(button, true, '요청 등록 중…');
+    const fastCreate = typeof window.novaCreateRoommaidHousemanRequestFast_ === 'function'
+      ? window.novaCreateRoommaidHousemanRequestFast_
+      : null;
+    const createResult = fastCreate
+      ? await fastCreate(createPayload)
+      : await callCreateMobileHousemanRequestServer_(token, createPayload);
     if (!createResult || !createResult.ok) {
       throw new Error(createResult && createResult.message ? createResult.message : '하우스맨 요청을 등록하지 못했습니다.');
     }
 
     const order = createResult.order || {};
     const orderId = String(order.orderId || '').trim();
-    if (!orderId) {
-      closeHousemanPhotoModal_();
-      showHousemanPhotoToast_('요청은 등록되었지만 사진 연결용 요청번호를 확인하지 못했습니다.', true);
-      window.setTimeout(() => window.location.reload(), 1800);
+    if (!orderId) throw new Error('사진 연결용 요청번호를 확인하지 못했습니다.');
+
+    // 오더 등록 반응은 DB 확정 시점에서 끝내고, 기존 Sheet/사진 저장은 사용자 대기와 분리한다.
+    closeHousemanPhotoModal_();
+    showHousemanPhotoToast_(`하우스맨 요청 등록 완료 · 사진 ${photos.length}장 저장 중…`, false);
+
+    let mirrorResult = createResult;
+    if (createResult.mirrorPromise && typeof createResult.mirrorPromise.then === 'function') {
+      try {
+        mirrorResult = await createResult.mirrorPromise;
+      } catch (error) {
+        showHousemanPhotoToast_(`요청은 등록되었습니다. 사진 저장 준비 오류 · ${error?.message || '이력 동기화 실패'}`, true);
+        return;
+      }
+    }
+    if (!mirrorResult?.ok) {
+      showHousemanPhotoToast_('요청은 등록되었습니다. 사진 저장 준비에 실패했습니다.', true);
       return;
     }
 
+    const sheetOrder = mirrorResult.order || order;
     let savedCount = 0;
     const failedMessages = [];
     for (let index = 0; index < photos.length; index += 1) {
       const photo = photos[index];
-      setHousemanPhotoSubmitBusy_(button, true, `사진 저장 중… ${index + 1}/${photos.length}`);
       try {
         const uploadResult = await callUploadHousemanRequestPhotoServer_(token, {
           orderId,
-          rowNumber: Number(order.rowNumber || 0),
+          rowNumber: Number(sheetOrder.rowNumber || 0),
           fileName: `${String(index + 1).padStart(2, '0')}_${photo.fileName}`,
           mimeType: photo.mimeType,
           base64: photo.base64
@@ -387,15 +528,11 @@
       }
     }
 
-    closeHousemanPhotoModal_();
     if (savedCount !== photos.length) {
-      showHousemanPhotoToast_(`하우스맨 요청은 등록되었습니다. 사진 ${savedCount}/${photos.length}장 저장${failedMessages.length ? ` · ${failedMessages[0]}` : ''}`, true);
-      window.setTimeout(() => window.location.reload(), 2600);
+      showHousemanPhotoToast_(`하우스맨 요청 등록완료 · 사진 ${savedCount}/${photos.length}장 저장${failedMessages.length ? ` · ${failedMessages[0]}` : ''}`, true);
       return;
     }
-
-    showHousemanPhotoToast_(`하우스맨 요청과 사진 ${savedCount}장을 등록했습니다.`, false);
-    window.setTimeout(() => window.location.reload(), 900);
+    showHousemanPhotoToast_(`하우스맨 요청과 사진 ${savedCount}장을 저장했습니다.`, false);
   }
 
   function callHousemanPhotoCapabilityServer_(token) { // (사진기능 권한 서버 호출)
@@ -425,34 +562,40 @@
     });
   }
 
-  async function compressHousemanRequestPhoto_(file) { // (요청사진 1600px JPEG 압축)
+  async function compressHousemanRequestPhoto_(file) { // (요청사진 1600px JPEG 압축·원본 Base64 복제 방지)
     if (!file || !String(file.type || '').startsWith('image/')) throw new Error('이미지 파일만 등록할 수 있습니다.');
-    const dataUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('사진을 읽지 못했습니다.'));
-      reader.readAsDataURL(file);
-    });
-    const image = await new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error('지원하지 않는 사진 형식입니다.'));
-      img.src = dataUrl;
-    });
-    const max = 1600;
-    const scale = Math.min(1, max / Math.max(image.naturalWidth, image.naturalHeight));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('사진 압축을 시작하지 못했습니다.');
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    const compressed = canvas.toDataURL('image/jpeg', 0.78);
-    const base64 = compressed.split(',')[1] || '';
-    const byteSize = Math.ceil(base64.length * 0.75);
-    if (!base64 || byteSize > MAX_PHOTO_BYTES) throw new Error('사진 용량이 큽니다. 더 낮은 해상도로 촬영해 주세요.');
-    const sourceName = String(file.name || 'houseman-request').replace(/\.[^.]+$/, '') || 'houseman-request';
-    return { fileName: `${sourceName}.jpg`, mimeType: 'image/jpeg', base64, byteSize };
+    if (!window.URL || typeof window.URL.createObjectURL !== 'function') throw new Error('현재 브라우저에서 사진을 처리할 수 없습니다.');
+
+    const objectUrl = window.URL.createObjectURL(file);
+    let image = null;
+    let canvas = null;
+    try {
+      image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.decoding = 'async';
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('지원하지 않는 사진 형식입니다.'));
+        img.src = objectUrl;
+      });
+      const max = 1600;
+      const scale = Math.min(1, max / Math.max(image.naturalWidth, image.naturalHeight));
+      canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!context) throw new Error('사진 압축을 시작하지 못했습니다.');
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const compressed = canvas.toDataURL('image/jpeg', 0.78);
+      const base64 = compressed.split(',')[1] || '';
+      const byteSize = Math.ceil(base64.length * 0.75);
+      if (!base64 || byteSize > MAX_PHOTO_BYTES) throw new Error('사진 용량이 큽니다. 더 낮은 해상도로 촬영해 주세요.');
+      const sourceName = String(file.name || 'houseman-request').replace(/\.[^.]+$/, '') || 'houseman-request';
+      return { fileName: `${sourceName}.jpg`, mimeType: 'image/jpeg', base64, byteSize };
+    } finally {
+      try { if (image) image.src = ''; } catch (ignore) {}
+      try { if (canvas) { canvas.width = 1; canvas.height = 1; } } catch (ignore) {}
+      try { window.URL.revokeObjectURL(objectUrl); } catch (ignore) {}
+    }
   }
 
   function clampHousemanPhotoQuantity_(value) { // (요청수량 1~99 정리)

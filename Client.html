@@ -54,6 +54,124 @@
       min-height: 44px;
     }
   }
+
+  .monthly-photo-cell { text-align: center; white-space: nowrap; }
+  .monthly-photo-button {
+    min-height: 32px;
+    padding: 0 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: #fff;
+    color: #111827;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  .monthly-photo-button:hover { background: #f8fafc; }
+  .monthly-order-cancel {
+    margin-left: 6px;
+    min-height: 28px;
+    padding: 0 8px;
+    border: 1px solid #fecaca;
+    border-radius: 7px;
+    background: #fff;
+    color: #b91c1c;
+    font-size: 11px;
+    font-weight: 800;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .monthly-order-cancel:hover { background: #fff7f7; }
+  .monthly-order-cancel:disabled { opacity: .55; cursor: default; }
+  .monthly-photo-viewer { display: grid; gap: 12px; }
+  .monthly-photo-viewer-image-wrap {
+    display: grid;
+    place-items: center;
+    min-height: 280px;
+    max-height: 70vh;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: #f8fafc;
+  }
+  .monthly-photo-viewer-image {
+    display: block;
+    max-width: 100%;
+    max-height: 68vh;
+    object-fit: contain;
+  }
+  .monthly-photo-viewer-meta,
+  .monthly-photo-viewer-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .monthly-photo-viewer-meta {
+    min-width: 0;
+  }
+  .monthly-photo-viewer-meta > span {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #monthlyPhotoDownload {
+    flex: 0 0 auto;
+    min-width: 84px;
+    height: 36px;
+    padding: 0 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    white-space: nowrap;
+    line-height: 1;
+    border-radius: 9px;
+  }
+  @media (max-width: 760px) {
+    #monthlyPhotoDownload {
+      min-width: 88px;
+      height: 38px;
+      padding: 0 14px;
+      font-size: 13px;
+    }
+  }
+
+  .monthly-subcategory-menu {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin: 0 0 14px;
+    padding: 4px;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    background: #f8fafc;
+  }
+  .monthly-subcategory-menu button {
+    min-height: 42px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: #6b7280;
+    font-size: 14px;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+  .monthly-subcategory-menu button.active {
+    background: #fff;
+    color: #111827;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  .monthly-subcategory-menu button:focus-visible {
+    outline: 2px solid #111827;
+    outline-offset: 1px;
+  }
+  @media (max-width: 760px) {
+    .monthly-subcategory-menu { gap: 4px; margin-bottom: 10px; }
+    .monthly-subcategory-menu button { min-height: 44px; padding: 0 8px; font-size: 13px; }
+  }
 </style>
 <script>
 (() => {
@@ -76,14 +194,15 @@
     indicatorDbTimer: null,
     indicatorDbBusy: false,
     indicatorEventCursorTime: '',
-    indicatorEventCursorRequestId: ''
+    indicatorEventCursorRequestId: '',
+    roomStatusProtections: new Map()
   };
 
   const NOVA_REALTIME_ROOM_FIELDS_ = Object.freeze([
     // Phase 1 Realtime owns cleaning progress and DB version metadata only.
     // 객실상태/배정/객실운영상태(고장·객실확인)는 기존 Sheets가 원본이므로
     // PostgreSQL의 지연·빈 값으로 덮어쓰지 않습니다.
-    'cleaningStatus', 'version', 'updatedAt'
+    'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo', 'operationalStatus', 'preassigned', 'vip', 'importantRoom', 'version', 'updatedAt'
   ]);
 
   function novaRealtimeIsEnabled_() {
@@ -255,20 +374,85 @@
     putText('secondaryRoommaidEmployeeNo', 'secondary_roommaid_employee_no', 'secondaryRoommaidEmployeeNo');
     putText('qmEmployeeNo', 'qm_employee_no', 'qmEmployeeNo');
     putText('operationalStatus', 'operational_status', 'operationalStatus');
+    if (hasOwn('preassigned')) mapped.preassigned = row.preassigned === true;
+    if (hasOwn('vip')) mapped.vip = row.vip === true;
+    if (hasOwn('important_room') || hasOwn('importantRoom')) mapped.importantRoom = (row.important_room ?? row.importantRoom) === true;
     if (hasOwn('version')) mapped.version = Number(row.version || 0);
     if (hasOwn('updated_at') || hasOwn('updatedAt')) mapped.updatedAt = row.updated_at || row.updatedAt || '';
     if (hasOwn('building') && row.building) mapped.building = String(row.building);
     return mapped;
   }
 
+  function novaRealtimeUpdatedAtMs_(value) { // (Sheet/DB 수정시각 비교용)
+    const text = String(value || '').trim();
+    if (!text) return 0;
+    const local = text.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2}):(\d{2})$/);
+    const normalized = local
+      ? `${local[1]}T${String(local[2]).padStart(2, '0')}:${local[3]}:${local[4]}+09:00`
+      : text;
+    const ms = Date.parse(normalized);
+    return Number.isFinite(ms) ? ms : 0;
+  }
+
   function novaRealtimeMergeRoom_(legacyRoom, realtimeRoom) {
     if (!legacyRoom) return realtimeRoom ? Object.assign({}, realtimeRoom) : legacyRoom;
     if (!realtimeRoom) return legacyRoom;
     const merged = Object.assign({}, legacyRoom);
+    // Sheet snapshot version and Realtime DB version are separate domains.
+    // Preserve the Sheet version before Realtime fields overwrite room.version.
+    if (!Object.prototype.hasOwnProperty.call(merged, '__sheetVersion')) {
+      merged.__sheetVersion = Number(legacyRoom.version || 0);
+    }
     NOVA_REALTIME_ROOM_FIELDS_.forEach(key => {
       if (Object.prototype.hasOwnProperty.call(realtimeRoom, key)) merged[key] = realtimeRoom[key];
     });
     if (realtimeRoom.building) merged.building = realtimeRoom.building;
+
+    // QM을 Realtime으로 전환하기 전 생성된 과거행은 Sheet의 완료/재정비가 DB의
+    // QM대기/점검중보다 최신일 수 있다. 이 경우에만 최신 Sheet 상태를 보존한다.
+    const legacyCleaningStatus = String(legacyRoom?.cleaningStatus || '').trim().toUpperCase();
+    const realtimeCleaningStatus = String(realtimeRoom?.cleaningStatus || '').trim().toUpperCase();
+    const legacyQmTerminal = ['QM_COMPLETED', 'REWORK'].includes(legacyCleaningStatus);
+    const realtimeQmPreTerminal = ['QM_WAITING', 'QM_CHECKING'].includes(realtimeCleaningStatus);
+    if (legacyQmTerminal && realtimeQmPreTerminal) {
+      const sheetUpdatedMs = novaRealtimeUpdatedAtMs_(legacyRoom?.updatedAt);
+      const dbUpdatedMs = novaRealtimeUpdatedAtMs_(realtimeRoom?.updatedAt);
+      if (sheetUpdatedMs && (!dbUpdatedMs || sheetUpdatedMs >= dbUpdatedMs)) {
+        merged.cleaningStatus = legacyCleaningStatus;
+      }
+    }
+
+    // 일반 객실상태 Realtime 저장 직후 Sheet 미러가 따라올 때까지만 상태를 보호한다.
+    // CHECKED_OUT은 이 보호맵을 사용하지 않으므로 기존 Apps Script 퇴실 결과가 stale DB에 의해 되돌아가지 않는다.
+    const protectionKey = `${String(merged.site || '').trim()}|${String(merged.roomNo || '').trim()}`;
+    const statusProtection = novaRealtime_.roomStatusProtections.get(protectionKey);
+    if (statusProtection) {
+      if (Date.now() >= Number(statusProtection.expiresAt || 0)) {
+        novaRealtime_.roomStatusProtections.delete(protectionKey);
+      } else if (String(legacyRoom?.roomStatus || '').trim().toUpperCase() === String(statusProtection.roomStatus || '').trim().toUpperCase()) {
+        // Sheet 미러가 새 상태를 따라오면 즉시 보호 해제.
+        novaRealtime_.roomStatusProtections.delete(protectionKey);
+      } else {
+        merged.roomStatus = String(statusProtection.roomStatus || merged.roomStatus || '');
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(realtimeRoom, 'roommaidEmployeeNo')
+        || Object.prototype.hasOwnProperty.call(realtimeRoom, 'secondaryRoommaidEmployeeNo')) {
+      const staff = state.indicator.data?.staff?.roommaids || [];
+      const primaryNo = String(merged.roommaidEmployeeNo || '').trim();
+      const secondaryNo = String(merged.secondaryRoommaidEmployeeNo || '').trim();
+      const primary = staff.find(user => String(user.employeeNo || '').trim() === primaryNo);
+      const secondary = staff.find(user => String(user.employeeNo || '').trim() === secondaryNo);
+      merged.roommaidName = primaryNo ? String(primary?.name || primaryNo) : '';
+      merged.secondaryRoommaidName = secondaryNo ? String(secondary?.name || secondaryNo) : '';
+    }
+    if (Object.prototype.hasOwnProperty.call(realtimeRoom, 'qmEmployeeNo')) {
+      const staff = state.indicator.data?.staff?.qms || [];
+      const qmNo = String(merged.qmEmployeeNo || '').trim();
+      const qm = staff.find(user => String(user.employeeNo || '').trim() === qmNo);
+      merged.qmName = qmNo ? String(qm?.name || qmNo) : '';
+    }
     return merged;
   }
 
@@ -289,9 +473,10 @@
       if (selected) return [selected];
       return [...new Set((state.indicator.data?.sites || []).map(String).map(v => v.trim()).filter(Boolean))];
     }
-    // 무료모드: ROOMMAID는 Realtime 상시 연결을 만들지 않습니다.
-    // 다만 현재 배정객실의 DB 상태를 화면 진입/30초 저빈도 조회로 hydrate 합니다.
-    if (state.activeMenu === 'cleaning' && role === 'ROOMMAID') {
+    // 직원 모바일은 상시 Realtime 채널을 만들지 않고 현재 화면 진입/저빈도 조회로 hydrate 합니다.
+    const mobileRealtimeRole = (state.activeMenu === 'cleaning' && role === 'ROOMMAID')
+      || (state.activeMenu === 'qm' && role === 'QM');
+    if (mobileRealtimeRole) {
       const selected = String(state.mobile.site || '').trim();
       if (selected) return [selected];
       return [...new Set([
@@ -307,6 +492,13 @@
     const query = new URLSearchParams({ businessDate: String(businessDate), site: String(site) });
     const result = await novaRealtimeFetch_(`/v1/rooms?${query.toString()}`);
     return Array.isArray(result.rooms) ? result.rooms : [];
+  }
+
+  async function novaRealtimeLoadHousemanOrders_(businessDate, site) { // (HOUSEMAN 본인 배정오더 DB 직접조회)
+    if (!businessDate || !site) return [];
+    const query = new URLSearchParams({ businessDate: String(businessDate), site: String(site) });
+    const result = await novaRealtimeFetch_(`/v1/houseman-orders?${query.toString()}`);
+    return Array.isArray(result.orders) ? result.orders : [];
   }
 
   async function novaRealtimeHydrateCurrentView_() {
@@ -327,16 +519,48 @@
       return;
     }
 
-    if (state.activeMenu === 'cleaning' && role === 'ROOMMAID' && state.mobile.data) {
+    const mobileRealtimeRole = (state.activeMenu === 'cleaning' && role === 'ROOMMAID')
+      || (state.activeMenu === 'qm' && role === 'QM');
+    if (mobileRealtimeRole && state.mobile.data) {
       const sites = novaRealtimeRelevantSites_();
       const lists = await Promise.all(sites.map(site =>
         novaRealtimeLoadRoomsForSite_(state.mobile.businessDate || state.bootstrap.app.businessDate, site)
           .catch(error => { console.error('[NOVA Realtime] 모바일 객실 조회 실패', site, error); return []; })
       ));
-      const realtimeMap = new Map(lists.flat().map(room => [`${room.site}|${room.roomNo}`, room]));
-      state.mobile.data.rooms = (state.mobile.data.rooms || []).map(room =>
-        novaRealtimeMergeRoom_(room, realtimeMap.get(`${room.site}|${room.roomNo}`))
-      );
+      const realtimeRows = lists.flat();
+
+      const assignedRoomMobile = (role === 'ROOMMAID' && state.activeMenu === 'cleaning')
+        || (role === 'QM' && state.activeMenu === 'qm');
+      if (assignedRoomMobile) {
+        // /v1/rooms는 ROOMMAID/QM 토큰이면 DB에서 본인 배정객실만 반환한다.
+        // 신규 배정·재배정·배정취소를 Sheet 미러와 무관하게 반영하도록 목록 자체를 재구성한다.
+        const employeeNo = String(state.bootstrap.user?.employeeNo || '').trim();
+        const employeeName = String(state.bootstrap.user?.name || '').trim();
+        const legacyMap = new Map((state.mobile.data.rooms || []).map(room => [`${room.site}|${room.roomNo}`, room]));
+        state.mobile.data.rooms = realtimeRows.map(rawRoom => {
+          const realtimeRoom = novaRealtimeMapPartialRoom_(rawRoom);
+          const key = `${realtimeRoom.site}|${realtimeRoom.roomNo}`;
+          const legacyRoom = legacyMap.get(key);
+          if (legacyRoom) return novaRealtimeMergeRoom_(legacyRoom, realtimeRoom);
+
+          const primaryNo = String(realtimeRoom.roommaidEmployeeNo || '').trim();
+          const secondaryNo = String(realtimeRoom.secondaryRoommaidEmployeeNo || '').trim();
+          const qmNo = String(realtimeRoom.qmEmployeeNo || '').trim();
+          return Object.assign({
+            rowNumber: 0,
+            roommaidName: role === 'ROOMMAID' && primaryNo === employeeNo ? employeeName : primaryNo,
+            secondaryRoommaidName: role === 'ROOMMAID' && secondaryNo === employeeNo ? employeeName : secondaryNo,
+            qmName: role === 'QM' && qmNo === employeeNo ? employeeName : qmNo,
+            pendingOrderCount: 0,
+            __sheetVersion: 0
+          }, realtimeRoom);
+        });
+      } else {
+        const realtimeMap = new Map(realtimeRows.map(room => [`${room.site}|${room.roomNo}`, room]));
+        state.mobile.data.rooms = (state.mobile.data.rooms || []).map(room =>
+          novaRealtimeMergeRoom_(room, realtimeMap.get(`${room.site}|${room.roomNo}`))
+        );
+      }
       renderMobileData();
     }
   }
@@ -388,7 +612,10 @@
       const topic = `nova:site:${site}:rooms`;
       const channel = novaRealtime_.supabase
         .channel(topic, { config: { private: true } })
-        .on('broadcast', { event: 'UPDATE' }, payload => novaRealtimeHandleBroadcast_(payload))
+        .on('broadcast', { event: 'UPDATE' }, payload => {
+          novaRealtimeHandleBroadcast_(payload);
+          novaRealtimeHandleHousemanOrderBroadcast_(payload);
+        })
         .on('broadcast', { event: 'INSERT' }, payload => {
           novaRealtimeHandleBroadcast_(payload);
           novaRealtimeHandleHousemanOrderBroadcast_(payload);
@@ -435,6 +662,9 @@
       mobileRooms[mobileIndex] = novaRealtimeMergeRoom_(mobileRooms[mobileIndex], room);
       if (state.activeMenu === 'cleaning' && state.mobile.data?.role === 'ROOMMAID') {
         refreshRoommaidMobileSummaryLocal_();
+        renderMobileSummary();
+        renderMobileList();
+      } else if (state.activeMenu === 'qm' && state.mobile.data?.role === 'QM') {
         renderMobileSummary();
         renderMobileList();
       }
@@ -514,7 +744,6 @@
       unableReason: String(row.unable_reason ?? row.unableReason ?? ''),
       updatedAt: novaRealtimeOrderDateTimeText_(row.updated_at ?? row.updatedAt),
       version: Number(row.version || 0),
-      __sheetMirrorPending: true,
       __localProtectUntil: Date.now() + 30000
     };
   }
@@ -527,6 +756,32 @@
     if (!order?.orderId || !order.roomNo || !order.site) return;
     if (String(order.businessDate) !== String(state.indicator.businessDate || '')) return;
     if (state.indicator.site && String(order.site) !== String(state.indicator.site)) return;
+
+    // Realtime DB version과 Sheet 변경버전은 서로 다른 버전 도메인입니다.
+    // 이미 Sheet 이력이 확인된 오더는 rowNumber/Sheet version을 유지해야
+    // 접수·처리·완료 및 재배정 시 기존 이력 동기화 대기 상태로 되돌아가지 않습니다.
+    const existing = (state.indicator.data.orders || [])
+      .find(item => String(item?.orderId || '') === String(order.orderId || ''));
+    const existingRowNumber = Number(existing?.rowNumber || 0);
+
+    if (existingRowNumber > 0) {
+      order.rowNumber = existingRowNumber;
+      order.version = Number(existing?.version || 0);
+      delete order.__sheetMirrorPending;
+      delete order.__sheetMirrorStartedAt;
+    } else if (existing?.__sheetMirrorPending) {
+      // 이 브라우저가 방금 Realtime 선저장을 시작한 경우에는
+      // 실제 Sheet 미러 완료 전까지만 pending을 유지합니다.
+      order.rowNumber = existingRowNumber;
+      order.version = Number(existing?.version || order.version || 0);
+      order.__sheetMirrorPending = true;
+      order.__sheetMirrorStartedAt = Number(existing?.__sheetMirrorStartedAt || Date.now());
+    } else {
+      // 다른 브라우저에서 방금 생성/배정된 오더는 Sheet 행이 확인될 때까지만 보호합니다.
+      order.__sheetMirrorPending = true;
+      order.__sheetMirrorStartedAt = Date.now();
+    }
+
     upsertOrderLocal_(order, state.indicator.version);
     setSyncStatus(`${order.roomNo}호 하우스맨 오더 실시간 반영`);
   }
@@ -534,6 +789,60 @@
   function novaRealtimeRoomSignature_(room) {
     if (!room) return '';
     return JSON.stringify(NOVA_REALTIME_ROOM_FIELDS_.map(key => room[key] ?? ''));
+  }
+
+  async function novaRealtimeHydrateIndicatorHousemanOrders_() { // (ADMIN/ORDER 하우스맨 DB 상태 직접 보정)
+    if (!novaRealtimeIsEnabled_() || document.hidden || state.activeMenu !== 'indicator' || !state.indicator.data) return 0;
+    const role = String(state.bootstrap?.user?.role || '').trim().toUpperCase();
+    if (!['ADMIN', 'ORDER'].includes(role)) return 0;
+    const businessDate = String(state.indicator.businessDate || state.bootstrap?.app?.businessDate || '').trim();
+    const sites = novaRealtimeRelevantSites_();
+    if (!businessDate || !sites.length) return 0;
+
+    const lists = await Promise.all(sites.map(site => novaRealtimeLoadHousemanOrders_(businessDate, site)
+      .catch(error => { console.warn('[NOVA Realtime] 하우스맨 관리자 DB 조회 실패', site, error); return []; })));
+    const orders = state.indicator.data.orders || (state.indicator.data.orders = []);
+    let changed = 0;
+    lists.flat().forEach(raw => {
+      const mapped = novaRealtimeMapHousemanOrder_(raw);
+      if (!mapped?.orderId) return;
+      const index = orders.findIndex(item => String(item?.orderId || '') === mapped.orderId);
+      if (index < 0) {
+        mapped.__dbVersion = Number(mapped.version || 0);
+        mapped.version = 0;
+        mapped.rowNumber = 0;
+        mapped.__sheetMirrorPending = true;
+        mapped.__sheetMirrorStartedAt = Date.now();
+        orders.unshift(mapped);
+        changed += 1;
+        return;
+      }
+      const previous = orders[index];
+      const dbUpdatedMs = novaRealtimeUpdatedAtMs_(mapped.updatedAt);
+      const previousUpdatedMs = novaRealtimeUpdatedAtMs_(previous.updatedAt);
+      if (previousUpdatedMs && dbUpdatedMs && previousUpdatedMs > dbUpdatedMs) return;
+      const next = Object.assign({}, previous, mapped, {
+        rowNumber: Number(previous.rowNumber || 0),
+        version: Number(previous.version || 0),
+        __dbVersion: Number(mapped.version || 0)
+      });
+      if (Number(previous.rowNumber || 0) > 0) {
+        delete next.__sheetMirrorPending;
+        delete next.__sheetMirrorStartedAt;
+      }
+      const beforeSig = JSON.stringify([previous.statusCode, previous.assignedEmployeeNo, previous.processorEmployeeNo, previous.acceptedAt, previous.startedAt, previous.completedAt, previous.unableReason, previous.updatedAt]);
+      const afterSig = JSON.stringify([next.statusCode, next.assignedEmployeeNo, next.processorEmployeeNo, next.acceptedAt, next.startedAt, next.completedAt, next.unableReason, next.updatedAt]);
+      if (beforeSig !== afterSig) {
+        orders[index] = next;
+        changed += 1;
+      }
+    });
+    if (changed) {
+      orders.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')) || String(b.registeredAt || '').localeCompare(String(a.registeredAt || '')));
+      renderOrderList();
+      renderIndicatorSummary();
+    }
+    return changed;
   }
 
   async function novaRealtimeHydrateIndicatorFallback_() {
@@ -591,9 +900,12 @@
         if (!result?.hasMore || page >= 3) break;
       } while (true);
 
+      const housemanChanged = await novaRealtimeHydrateIndicatorHousemanOrders_();
       if (changedCount) {
         renderIndicatorSummary();
-        setSyncStatus(`DB 변경확인 · ${changedCount}실 반영`);
+        setSyncStatus(`DB 변경확인 · ${changedCount}실 반영${housemanChanged ? ` · 오더 ${housemanChanged}건` : ''}`);
+      } else if (housemanChanged) {
+        setSyncStatus(`DB 변경확인 · 하우스맨 오더 ${housemanChanged}건 반영`);
       }
     } finally {
       novaRealtime_.indicatorDbBusy = false;
@@ -640,20 +952,164 @@
     novaRealtime_.supabase = null;
   }
 
+  const novaRealtimeHousemanMirrorChains_ = new Map();
+
+  async function novaRealtimeHousemanWorkerAction_(payload) { // (하우스맨 접수/처리 Cloud Run 전용)
+    const safe = Object.assign({}, payload || {});
+    const orderId = String(safe.orderId || '').trim();
+    const action = String(safe.action || '').trim().toUpperCase();
+    if (!orderId || !['ACCEPT', 'ACCEPT_START', 'START', 'COMPLETE', 'UNABLE', 'REOPEN'].includes(action)) {
+      throw new Error('하우스맨 처리 요청을 확인하세요.');
+    }
+    const requestId = novaRealtimeRequestId_(`HOUSEMAN_${action}`, orderId);
+    const result = await novaRealtimeFetch_(
+      `/v1/houseman-orders/${encodeURIComponent(orderId)}/action`,
+      {
+        method: 'POST',
+        headers: { 'X-Request-Id': requestId },
+        body: JSON.stringify({ action, reason: String(safe.reason || ''), requestId })
+      }
+    );
+    const mapped = novaRealtimeMapHousemanOrder_(result.order) || result.order || {};
+    mapped.rowNumber = Number(safe.rowNumber || 0);
+    mapped.__dbVersion = Number(result.orderVersion || result.order?.version || mapped.version || 0);
+    mapped.version = Number(safe.expectedVersion || 0);
+    mapped.__dbAssignmentTracked = true;
+    mapped.__localProtectUntil = Date.now() + 30000;
+    queueRealtimeHousemanWorkerMirror_(safe);
+    return { ok: true, realtime: true, order: mapped, version: Number(safe.expectedVersion || 0), timing: result.timing || {}, requestId };
+  }
+
+  function queueRealtimeHousemanWorkerMirror_(payload) { // (동일 오더 Sheet 미러 순서 보장)
+    const safe = Object.assign({}, payload || {});
+    const orderId = String(safe.orderId || '').trim();
+    if (!orderId) return;
+    const previous = novaRealtimeHousemanMirrorChains_.get(orderId) || Promise.resolve();
+    const next = previous.catch(() => null).then(() => mirrorRealtimeHousemanWorkerActionToSheet_(safe));
+    novaRealtimeHousemanMirrorChains_.set(orderId, next);
+    void next.finally(() => {
+      if (novaRealtimeHousemanMirrorChains_.get(orderId) === next) novaRealtimeHousemanMirrorChains_.delete(orderId);
+    });
+  }
+
+  async function mirrorRealtimeHousemanWorkerActionToSheet_(payload) { // (업무이력/감사 비동기 보완)
+    const safe = Object.assign({}, payload || {}, { expectedVersion: 0 });
+    const delays = [0, 650, 1600, 3600, 7000];
+    let lastError = null;
+    for (const delay of delays) {
+      if (delay) await novaRealtimeSleep_(delay);
+      try {
+        const mirrored = await callServer('updateHousemanOrder', state.token, safe);
+        if (!mirrored?.ok) throw new Error(mirrored?.message || '하우스맨 이력 동기화 실패');
+        setSyncStatus(`${mirrored.order?.roomNo || ''}호 하우스맨 이력 동기화 완료`);
+        return mirrored;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    console.error('[NOVA Realtime] 하우스맨 상태 Sheet 미러 실패:', lastError);
+    setSyncStatus(`${safe.orderId || ''} Realtime 처리 완료 · 기존 이력 동기화 재확인 필요`);
+    return null;
+  }
+
+  async function syncRealtimeHousemanEditedContent_(order, attempt = 0) { // (EDIT 확정내용만 DB 보조동기화)
+    if (!novaRealtimeIsEnabled_() || !order?.orderId) return null;
+    const safe = {
+      part: String(order.part || ''),
+      items: Array.isArray(order.items) ? order.items : [],
+      requester: String(order.requester || ''),
+      note: String(order.note || ''),
+      important: order.important === true,
+      handover: order.handover === true,
+      handoverTargetShift: String(order.handoverTargetShift || '')
+    };
+    try {
+      return await novaRealtimeFetch_(
+        `/v1/houseman-orders/${encodeURIComponent(String(order.orderId))}/content-sync`,
+        { method: 'POST', body: JSON.stringify(safe) }
+      );
+    } catch (error) {
+      const code = String(error?.code || '').trim().toUpperCase();
+      if (Number(error?.status || 0) === 404 || code === 'HOUSEMAN_ORDER_NOT_FOUND') return null;
+      if (attempt >= 2) {
+        console.warn('[NOVA Realtime] 하우스맨 내용 DB 동기화 실패', error?.message || error);
+        return null;
+      }
+      await novaRealtimeSleep_([700, 1800, 4000][attempt] || 1800);
+      return syncRealtimeHousemanEditedContent_(order, attempt + 1);
+    }
+  }
+
+  async function mirrorRealtimeClearAssignmentToSheet_(payload) { // (DB 배정초기화 성공 후 이력/Sheet 보조 미러)
+    const safe = Object.assign({}, payload || {}, {
+      action: 'CLEAR_ASSIGNMENT',
+      expectedVersion: 0
+    });
+    delete safe.sheetExpectedVersion;
+    const delays = [0, 700, 1800, 4000];
+    let lastError = null;
+    for (let index = 0; index < delays.length; index += 1) {
+      if (delays[index]) await novaRealtimeSleep_(delays[index]);
+      try {
+        const mirrored = await callServer('updateRoomOperation', state.token, safe);
+        if (!mirrored?.ok) throw new Error(mirrored?.message || '배정초기화 이력 동기화 실패');
+        setSyncStatus(`${safe.roomNo}호 배정초기화 · 기존 이력 동기화 완료`);
+        return mirrored;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    console.error('[NOVA Realtime] 배정초기화 Sheet 미러 실패:', lastError);
+    setSyncStatus(`${safe.roomNo}호 배정초기화 DB 완료 · 기존 이력 동기화 재확인 필요`);
+    return null;
+  }
+
   async function saveRoomActionRealtimeOrLegacy_(legacyMethod, payload) {
     const safe = Object.assign({}, payload || {});
     const rawAction = String(safe.action || '').trim().toUpperCase();
-    const mappedAction = rawAction === 'START' ? 'CLEANING_START'
-      : rawAction === 'COMPLETE' ? 'CLEANING_COMPLETE'
+    // START/COMPLETE 명칭은 룸메이드 모바일과 하우스맨 오더가 함께 사용한다.
+    // 객실 Realtime 액션으로의 변환은 룸메이드 모바일 작업에만 적용해야 한다.
+    // 하우스맨 START/COMPLETE를 CLEANING_*으로 바꾸면 /v1/rooms/.../action으로 잘못 전송되어 404가 발생한다.
+    const roommaidMobileOperation = legacyMethod === 'updateMobileRoomOperation';
+    const mappedAction = roommaidMobileOperation && rawAction === 'START' ? 'CLEANING_START'
+      : roommaidMobileOperation && rawAction === 'COMPLETE' ? 'CLEANING_COMPLETE'
       : rawAction;
-    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE'].includes(mappedAction);
+    const legacySafe = Object.assign({}, safe);
+    // Realtime room.version(DB)과 Sheet 마지막변경버전은 서로 다른 버전 도메인이다.
+    // Apps Script legacy 경로(퇴실 포함)로 내려갈 때는 항상 별도 보존한 Sheet version을 사용한다.
+    if (Number(safe.sheetExpectedVersion || 0) > 0) {
+      legacySafe.expectedVersion = Number(safe.sheetExpectedVersion || 0);
+    }
+    delete legacySafe.sheetExpectedVersion;
+
+    const currentRole = String(state.bootstrap?.user?.role || '').trim().toUpperCase();
+    const housemanWorkerAction = legacyMethod === 'updateHousemanOrder'
+      && currentRole === 'HOUSEMAN'
+      && ['ACCEPT', 'ACCEPT_START', 'START', 'COMPLETE', 'UNABLE'].includes(rawAction);
+    if (housemanWorkerAction) {
+      if (!novaRealtime_.configLoaded) await initNovaRealtime_();
+      if (novaRealtimeIsEnabled_()) {
+        try {
+          return await novaRealtimeHousemanWorkerAction_(legacySafe);
+        } catch (error) {
+          const code = String(error?.code || '').trim().toUpperCase();
+          if (Number(error?.status || 0) !== 404 && code !== 'HOUSEMAN_ORDER_NOT_FOUND') throw error;
+          console.warn('[NOVA Realtime] DB 미존재 하우스맨 오더는 기존 경로로 처리합니다.', error?.message || error);
+        }
+      }
+      return callServer(legacyMethod, state.token, legacySafe);
+    }
+
+    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
+      || (mappedAction === 'CHANGE_ROOM_STATUS'
+        && String(safe.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT');
 
     if (!realtimeAction) {
       const retryableLegacyAction = mappedAction === 'UPDATE_ROOM_OPERATION_STATUS'
         || (mappedAction === 'CHANGE_ROOM_STATUS'
           && String(safe.roomStatus || '').trim().toUpperCase() === 'CHECKED_OUT');
 
-      if (!retryableLegacyAction) return callServer(legacyMethod, state.token, safe);
+      if (!retryableLegacyAction) return callServer(legacyMethod, state.token, legacySafe);
 
       // 고장·객실확인·퇴실은 서버가 동일상태 재요청을 멱등 처리하므로
       // Apps Script 일시적 과부하/잠금경합에 한해 짧게 자동 재시도한다.
@@ -662,7 +1118,7 @@
       for (let index = 0; index < delays.length; index += 1) {
         if (delays[index]) await wait_(delays[index] + Math.round(Math.random() * 250));
         try {
-          return await callServer(legacyMethod, state.token, safe);
+          return await callServer(legacyMethod, state.token, legacySafe);
         } catch (error) {
           lastError = error;
           if (!isTransientServerError_(error) || index === delays.length - 1) throw error;
@@ -677,9 +1133,16 @@
       throw new Error('Realtime 설정을 확인하지 못했습니다. 잠시 후 다시 시도하세요.');
     }
     if (!novaRealtimeIsEnabled_()) {
-      return callServer(legacyMethod, state.token, safe);
+      if (mappedAction === 'UPDATE_ROOM_OPERATION_STATUS') {
+        const safeOperationalPayload = Object.assign({}, legacySafe, {
+          expectedOperationalStatus: String(legacySafe?.expectedState?.operationalStatus || '')
+        });
+        return callServer('updateRoomOperationalStatusSafe', state.token, safeOperationalPayload);
+      }
+      return callServer(legacyMethod, state.token, legacySafe);
     }
 
+    delete safe.sheetExpectedVersion;
     safe.action = mappedAction;
     safe.requestId = safe.requestId || novaRealtimeRequestId_(mappedAction, safe.roomNo);
     const send = () => novaRealtimeFetch_(`/v1/rooms/${encodeURIComponent(String(safe.roomNo || ''))}/action`, {
@@ -693,18 +1156,57 @@
       result = await send();
     } catch (error) {
       const code = String(error?.code || '').trim().toUpperCase();
-      if (!['ROOM_NOT_FOUND', 'FORBIDDEN', 'INVALID_STATE'].includes(code)) throw error;
-      // 업무일 생성/최근 배정·QM 변경이 DB에 아직 없을 때 해당 객실만 Sheets->DB 보정 후 동일 requestId로 1회 재시도.
+
+      // 권한/상태 오류는 DB 보정으로 해결되지 않으므로 느린 Sheets JIT 동기화를 실행하지 않습니다.
+      // 누락 객실 또는 배정대상 사용자 누락처럼 실제 DB 보정이 필요한 경우에만 1회 동기화합니다.
+      const jitCodes = mappedAction === 'ASSIGN_ROOMMAID'
+        ? ['ROOM_NOT_FOUND', 'ROOMMAID_NOT_AVAILABLE']
+        : mappedAction === 'QM_ASSIGN'
+          ? ['ROOM_NOT_FOUND', 'QM_NOT_AVAILABLE']
+          : ['ROOM_NOT_FOUND'];
+      if (!jitCodes.includes(code)) throw error;
+
       await callServer('syncNovaRealtimeRoomForAction', state.token, {
         businessDate: safe.businessDate,
         site: safe.site,
         roomNo: safe.roomNo,
         action: mappedAction
       });
+      if (mappedAction === 'CLEAR_ASSIGNMENT') safe.expectedVersion = 0;
       result = await send();
     }
     result.version = Number(result.version || result.room?.version || 0);
-    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : '청소완료 처리했습니다.');
+    if (mappedAction === 'CLEAR_ASSIGNMENT' && result.eventDeferred === true) {
+      // DB 초기화는 이미 확정되었습니다. DB 이벤트 스키마가 구버전인 경우에만
+      // 기존 Sheet/업무이력을 사용자 응답 경로 밖에서 안전하게 보완합니다.
+      void mirrorRealtimeClearAssignmentToSheet_(legacySafe);
+    }
+    if (mappedAction === 'CHANGE_ROOM_STATUS') {
+      const protectedStatus = String(result.room?.roomStatus || safe.roomStatus || '').trim().toUpperCase();
+      const protectionKey = `${String(safe.site || '').trim()}|${String(safe.roomNo || '').trim()}`;
+      if (protectedStatus && protectionKey !== '|') {
+        novaRealtime_.roomStatusProtections.set(protectionKey, {
+          roomStatus: protectedStatus,
+          expiresAt: Date.now() + 75000
+        });
+      }
+    }
+    if (mappedAction === 'QM_ASSIGN') {
+      // QM 점검 시작/제출은 아직 Sheet 업무흐름을 사용한다.
+      // DB 배정 이벤트가 Sheet까지 반영된 것을 확인한 뒤에만 배정 완료로 처리한다.
+      const qmMirror = await callServer('syncNovaRealtimeQmAssignmentMirror', state.token, {
+        businessDate: safe.businessDate,
+        site: safe.site,
+        roomNo: safe.roomNo,
+        employeeNo: safe.employeeNo
+      });
+      if (!qmMirror?.ok) throw new Error('QM 배정정보를 업무시트에 동기화하지 못했습니다.');
+      if (result.room) {
+        result.room.qmEmployeeNo = String(qmMirror.qmEmployeeNo || result.room.qmEmployeeNo || '');
+        result.room.cleaningStatus = String(qmMirror.cleaningStatus || result.room.cleaningStatus || 'QM_WAITING');
+      }
+    }
+    result.message = result.message || (mappedAction === 'CLEANING_START' ? '청소를 시작했습니다.' : mappedAction === 'ASSIGN_ROOMMAID' ? '룸메이드 배정을 저장했습니다.' : mappedAction === 'QM_ASSIGN' ? 'QM 배정을 저장했습니다.' : mappedAction === 'QM_START' ? 'QM 점검을 시작했습니다.' : mappedAction === 'QM_COMPLETE' ? 'QM 점검을 완료했습니다.' : mappedAction === 'QM_REWORK' ? '재정비를 요청했습니다.' : mappedAction === 'CHANGE_ROOM_STATUS' ? '객실상태를 저장했습니다.' : mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' ? '객실 조치상태를 저장했습니다.' : mappedAction === 'UPDATE_OPERATION_FLAGS' ? '운영표시를 저장했습니다.' : mappedAction === 'CLEAR_ASSIGNMENT' ? '배정을 초기화했습니다.' : mappedAction === 'CLEANING_RESET' ? '청소완료 실적 초기화를 저장했습니다.' : '청소완료 처리했습니다.');
     return result;
   }
 
@@ -712,7 +1214,15 @@
   const state = {
     token: localStorage.getItem('novaToken') || '',
     bootstrap: null,
-    activeMenu: sessionStorage.getItem('novaActiveMenu') || '',
+    activeMenu: (() => {
+      const savedMenu = sessionStorage.getItem('novaActiveMenu') || '';
+      try {
+        const resume = JSON.parse(localStorage.getItem('novaHmRequestPhotoResume') || '{}');
+        const savedAt = Number(resume && resume.savedAt || 0);
+        if (resume && resume.roomNo && savedAt && Date.now() - savedAt <= 5 * 60 * 1000) return 'cleaning';
+      } catch (ignore) {}
+      return savedMenu;
+    })(),
     scrollY: Number(sessionStorage.getItem('novaScrollY') || 0),
     toastTimer: null,
     indicator: {
@@ -720,8 +1230,8 @@
       loading: false,
       data: null,
       version: 0,
-      businessDate: '',
-      site: '',
+      businessDate: sessionStorage.getItem('novaIndicatorBusinessDate') || '',
+      site: sessionStorage.getItem('novaIndicatorSite') || '',
       filter: 'ALL',
       search: '',
       building: '',
@@ -739,8 +1249,8 @@
       loading: false,
       data: null,
       version: 0,
-      businessDate: '',
-      site: '',
+      businessDate: sessionStorage.getItem('novaMobileBusinessDate') || '',
+      site: sessionStorage.getItem('novaMobileSite') || '',
       filter: 'ACTIVE',
       search: '',
       building: '',
@@ -798,12 +1308,12 @@
       loaded: false,
       loading: false,
       data: null,
-      period: 'MONTHLY',
-      date: '',
+      period: sessionStorage.getItem('novaMonthlyPeriod') || 'DAILY',
+      date: sessionStorage.getItem('novaMonthlyDate') || '',
       year: 0,
       month: 0,
-      site: '',
-      type: 'ALL',
+      site: sessionStorage.getItem('novaMonthlySite') || '',
+      type: sessionStorage.getItem('novaMonthlyType') || 'HOUSEMAN',
       employeeNo: '',
       status: '',
       search: '',
@@ -1208,7 +1718,35 @@
     }
   }
 
+  function restoreShiftManagementContext_() { // (근무조 화면 새로고침 후 업무일자·사업장·담당동 편집대상 복원)
+    try {
+      if (!state.shifts.businessDate) state.shifts.businessDate = String(sessionStorage.getItem('novaShiftBusinessDate') || '').trim();
+      if (!state.shifts.site) state.shifts.site = String(sessionStorage.getItem('novaShiftSite') || '').trim();
+      const zoneEmployeeNo = String(sessionStorage.getItem('novaShiftZoneEmployeeNo') || '').trim();
+      const zoneBuildings = String(sessionStorage.getItem('novaShiftZoneBuildings') || '')
+        .split(',').map(value => value.trim()).filter(Boolean);
+      if (!String(state.shifts.zoneDraft?.employeeNo || '').trim() && zoneEmployeeNo) {
+        state.shifts.zoneDraft = { employeeNo: zoneEmployeeNo, buildings: zoneBuildings };
+      }
+    } catch (ignore) {}
+  }
+
+  function persistShiftManagementContext_() { // (근무조 조회조건·담당동 편집대상 새로고침 유지)
+    try {
+      if (state.shifts.businessDate) sessionStorage.setItem('novaShiftBusinessDate', state.shifts.businessDate);
+      if (state.shifts.site) sessionStorage.setItem('novaShiftSite', state.shifts.site);
+      else sessionStorage.removeItem('novaShiftSite');
+      const zoneEmployeeNo = String(state.shifts.zoneDraft?.employeeNo || '').trim();
+      const zoneBuildings = Array.isArray(state.shifts.zoneDraft?.buildings) ? state.shifts.zoneDraft.buildings.filter(Boolean) : [];
+      if (zoneEmployeeNo) sessionStorage.setItem('novaShiftZoneEmployeeNo', zoneEmployeeNo);
+      else sessionStorage.removeItem('novaShiftZoneEmployeeNo');
+      if (zoneEmployeeNo && zoneBuildings.length) sessionStorage.setItem('novaShiftZoneBuildings', zoneBuildings.join(','));
+      else sessionStorage.removeItem('novaShiftZoneBuildings');
+    } catch (ignore) {}
+  }
+
   function renderShiftManagementShell_() { // (A·B·C 근무조 관리 화면 골격)
+    restoreShiftManagementContext_();
     const businessDate = state.shifts.businessDate || state.bootstrap.app.businessDate;
     $('content').innerHTML = `
       <section class="shift-page">
@@ -1242,10 +1780,12 @@
     $('shiftBusinessDate').addEventListener('change', () => {
       state.shifts.businessDate = $('shiftBusinessDate').value;
       state.shifts.zoneDraft = { employeeNo: '', buildings: [] };
+      persistShiftManagementContext_();
     });
     $('shiftSite').addEventListener('change', () => {
       state.shifts.site = $('shiftSite').value;
       state.shifts.zoneDraft = { employeeNo: '', buildings: [] };
+      persistShiftManagementContext_();
     });
     $('shiftReloadButton').addEventListener('click', () => loadShiftManagement_({ force: true }));
     $('shiftSaveButton').addEventListener('click', saveShiftManagement_);
@@ -1267,17 +1807,26 @@
       state.shifts.data = result;
       state.shifts.businessDate = result.businessDate;
       state.shifts.site = result.site;
+      persistShiftManagementContext_();
       state.shifts.draft = {
         A: [...(result.assignments?.A || [])],
         B: [...(result.assignments?.B || [])],
         C: [...(result.assignments?.C || [])]
       };
-      const selectedZoneEmployee = state.shifts.zoneDraft.employeeNo;
+      // 담당동 저장값은 브라우저 세션이 아니라 서버 저장자료를 원본으로 복원합니다.
+      // 재로그인처럼 sessionStorage 편집대상이 사라진 경우에도 저장된 담당동이 있는
+      // 출근직원을 자동 선택해 카드가 즉시 실제 저장상태(검정색)로 표시되게 합니다.
+      const attendanceStaff = result.attendanceStaff || [];
+      const requestedZoneEmployee = String(state.shifts.zoneDraft.employeeNo || '').trim();
+      const selectedZoneEmployee = requestedZoneEmployee && attendanceStaff.some(item => item.employeeNo === requestedZoneEmployee)
+        ? requestedZoneEmployee
+        : String(attendanceStaff.find(item => result.zoneAssignments?.[item.employeeNo])?.employeeNo || '').trim();
       const selectedZone = selectedZoneEmployee ? result.zoneAssignments?.[selectedZoneEmployee] : null;
       state.shifts.zoneDraft = {
-        employeeNo: selectedZoneEmployee && (result.attendanceStaff || []).some(item => item.employeeNo === selectedZoneEmployee) ? selectedZoneEmployee : '',
+        employeeNo: selectedZoneEmployee,
         buildings: selectedZone ? [...(selectedZone.buildings || [])] : []
       };
+      persistShiftManagementContext_();
       if (state.activeMenu === 'shifts') renderShiftManagementData_();
       setSyncStatus(`근무조 조회 · 서버 ${result.performance?.elapsedMs ?? '-'}ms`);
     } catch (error) {
@@ -1345,6 +1894,7 @@
         employeeNo,
         buildings: existing ? [...(existing.buildings || [])] : []
       };
+      persistShiftManagementContext_();
       renderZoneAssignmentManagement_();
     };
 
@@ -1360,6 +1910,7 @@
       const draft = new Set(state.shifts.zoneDraft.buildings || []);
       if (draft.has(building)) draft.delete(building); else draft.add(building);
       state.shifts.zoneDraft.buildings = Array.from(draft).sort((a, b) => Number(a.replace(/\D/g, '')) - Number(b.replace(/\D/g, '')));
+      persistShiftManagementContext_();
       renderZoneAssignmentManagement_();
     }));
 
@@ -1381,6 +1932,7 @@
       const employeeNo = button.dataset.zoneLoad;
       const existing = data.zoneAssignments?.[employeeNo];
       state.shifts.zoneDraft = { employeeNo, buildings: [...(existing?.buildings || [])] };
+      persistShiftManagementContext_();
       renderZoneAssignmentManagement_();
     }));
 
@@ -1411,6 +1963,7 @@
       if (!result?.ok) throw new Error(result?.message || '담당동을 처리하지 못했습니다.');
       showToast(result.message || '담당동을 처리했습니다.');
       state.shifts.zoneDraft = { employeeNo: action === 'CANCEL' ? '' : employeeNo, buildings: action === 'CANCEL' ? [] : [...(result.buildings || [])] };
+      persistShiftManagementContext_();
       await loadShiftManagement_({ force: true });
     } catch (error) {
       showToast(error?.message || '담당동 처리 오류');
@@ -2231,18 +2784,29 @@
     if (!state.monthly.year) state.monthly.year = now.getFullYear();
     if (!state.monthly.month) state.monthly.month = now.getMonth() + 1;
     if (!state.monthly.date) state.monthly.date = formatClientDate_(now);
-    if (!['MONTHLY', 'DAILY'].includes(state.monthly.period)) state.monthly.period = 'MONTHLY';
+    if (!['MONTHLY', 'DAILY'].includes(state.monthly.period)) state.monthly.period = 'DAILY';
     $('content').innerHTML = `
       <section class="monthly-page">
         <div class="monthly-header">
           <div><small>업무이력 통합 조회</small><h1 id="monthlyPageTitle">월별 룸메이드·QM·하우스맨 이력</h1></div>
           <div class="monthly-header-actions">
+            <button id="monthlyHousemanOrderButton" class="primary-button hidden" type="button">+ 오더 등록</button>
             <button id="dailyCloseCancelButton" class="daily-close-cancel hidden" type="button">마감 취소</button>
             <button id="dailyCloseSaveButton" class="daily-close-save hidden" type="button">마감 저장</button>
             <button id="monthlySheetButton" class="secondary-button" type="button">스프레드시트 반영</button>
             <button id="monthlyExcelButton" class="primary-button" type="button">엑셀 다운로드</button>
           </div>
         </div>
+        <div id="monthlySubcategoryMenu" class="monthly-subcategory-menu" role="tablist" aria-label="월별조회 소분류">
+          <button type="button" data-monthly-section="HOUSEMAN" role="tab">하우스맨</button>
+          <button type="button" data-monthly-section="CLEANING" role="tab">룸메이드</button>
+          <button type="button" data-monthly-section="QM" role="tab">QM</button>
+        </div>
+        <select id="monthlyType" class="hidden" aria-hidden="true" tabindex="-1">
+          <option value="HOUSEMAN">하우스맨</option>
+          <option value="CLEANING">룸메이드</option>
+          <option value="QM">QM</option>
+        </select>
         <div id="monthlyControls" class="monthly-controls">
           <div class="monthly-period-toggle" id="monthlyPeriodToggle" role="tablist" aria-label="조회 방식">
             <button type="button" data-period="MONTHLY">월별</button>
@@ -2257,7 +2821,6 @@
             <button id="monthlyNextDay" type="button" title="다음 날짜">›</button>
           </div>
           <label><span>사업장</span><select id="monthlySite"><option value="">전체</option></select></label>
-          <label><span>업무구분</span><select id="monthlyType"><option value="ALL">전체</option><option value="CLEANING">룸메이드</option><option value="QM">QM</option><option value="HOUSEMAN">하우스맨</option></select></label>
           <label><span>직원</span><select id="monthlyEmployee"><option value="">전체</option></select></label>
           <label><span>상태</span><select id="monthlyStatus"><option value="">전체</option></select></label>
           <label class="monthly-search"><span>검색</span><input id="monthlySearch" placeholder="객실·직원·품목·내용"></label>
@@ -2269,8 +2832,8 @@
         <details class="monthly-staff-panel"><summary>직원별 집계 보기</summary><div id="monthlyStaffSummary" class="monthly-staff-summary"></div></details>
         <div class="monthly-table-wrap">
           <table class="monthly-table">
-            <thead><tr><th>업무일자</th><th>구분</th><th>사업장</th><th>객실</th><th>담당자</th><th>상태</th><th>업무내용</th><th>등록/시작</th><th>완료</th><th>소요</th></tr></thead>
-            <tbody id="monthlyTableBody"><tr><td colspan="10" class="table-empty">조회 데이터를 불러오는 중입니다.</td></tr></tbody>
+            <thead><tr><th>업무일자</th><th>구분</th><th>사업장</th><th>객실</th><th>담당자</th><th>상태</th><th>업무내용</th><th>사진</th><th>등록/시작</th><th>완료</th><th>소요</th></tr></thead>
+            <tbody id="monthlyTableBody"><tr><td colspan="11" class="table-empty">조회 데이터를 불러오는 중입니다.</td></tr></tbody>
           </table>
         </div>
         <div id="monthlyPagination" class="monthly-pagination"></div>
@@ -2285,9 +2848,28 @@
     $('monthlyMonth').innerHTML = Array.from({ length: 12 }, (_, index) => index + 1)
       .map(month => `<option value="${month}"${month === Number(state.monthly.month) ? ' selected' : ''}>${month}월</option>`).join('');
     $('monthlyDate').value = state.monthly.date || formatClientDate_(new Date());
-    $('monthlyType').value = state.monthly.type || 'ALL';
+    $('monthlyType').value = ['HOUSEMAN', 'CLEANING', 'QM'].includes(String(state.monthly.type || '').toUpperCase())
+      ? String(state.monthly.type).toUpperCase()
+      : 'HOUSEMAN';
+    state.monthly.type = $('monthlyType').value;
     $('monthlySearch').value = state.monthly.search || '';
     applyMonthlyPeriodUi_(state.monthly.period);
+    applyMonthlySubcategoryUi_(state.monthly.type);
+
+    $('monthlySubcategoryMenu').addEventListener('click', event => {
+      const button = event.target.closest('[data-monthly-section]');
+      if (!button) return;
+      const nextType = String(button.dataset.monthlySection || '').toUpperCase();
+      if (!['HOUSEMAN', 'CLEANING', 'QM'].includes(nextType) || nextType === state.monthly.type) return;
+      state.monthly.type = nextType;
+      sessionStorage.setItem('novaMonthlyType', nextType);
+      $('monthlyType').value = nextType;
+      state.monthly.employeeNo = '';
+      state.monthly.status = '';
+      state.monthly.page = 1;
+      applyMonthlySubcategoryUi_(nextType);
+      loadMonthlyHistory({ page: 1, resetDetailFilters: true });
+    });
 
     $('monthlyPeriodToggle').addEventListener('click', event => {
       const button = event.target.closest('[data-period]');
@@ -2295,7 +2877,9 @@
       const period = button.dataset.period === 'DAILY' ? 'DAILY' : 'MONTHLY';
       if (state.monthly.period === period) return;
       state.monthly.period = period;
+      sessionStorage.setItem('novaMonthlyPeriod', period);
       if (period === 'DAILY' && !$('monthlyDate').value) $('monthlyDate').value = formatClientDate_(new Date());
+      if (period === 'DAILY') sessionStorage.setItem('novaMonthlyDate', String($('monthlyDate').value || ''));
       applyMonthlyPeriodUi_(period);
       loadMonthlyHistory({ page: 1 });
     });
@@ -2305,21 +2889,595 @@
     });
     $('monthlyYear').addEventListener('change', () => loadMonthlyHistory({ page: 1 }));
     $('monthlyMonth').addEventListener('change', () => loadMonthlyHistory({ page: 1 }));
-    $('monthlyDate').addEventListener('change', () => loadMonthlyHistory({ page: 1 }));
+    $('monthlyDate').addEventListener('change', event => {
+      state.monthly.date = event.target.value;
+      sessionStorage.setItem('novaMonthlyDate', String(state.monthly.date || ''));
+      loadMonthlyHistory({ page: 1 });
+    });
     $('monthlyPrevDay').addEventListener('click', () => moveMonthlyDay_(-1));
     $('monthlyToday').addEventListener('click', () => {
       $('monthlyDate').value = formatClientDate_(new Date());
+      state.monthly.date = $('monthlyDate').value;
+      sessionStorage.setItem('novaMonthlyDate', state.monthly.date);
       loadMonthlyHistory({ page: 1 });
     });
     $('monthlyNextDay').addEventListener('click', () => moveMonthlyDay_(1));
-    $('monthlyType').addEventListener('change', () => loadMonthlyHistory({ page: 1, resetDetailFilters: true }));
-    $('monthlySite').addEventListener('change', () => loadMonthlyHistory({ page: 1 }));
+    $('monthlySite').addEventListener('change', event => {
+      state.monthly.site = event.target.value;
+      sessionStorage.setItem('novaMonthlySite', String(state.monthly.site || ''));
+      loadMonthlyHistory({ page: 1 });
+    });
     $('monthlyEmployee').addEventListener('change', () => loadMonthlyHistory({ page: 1 }));
     $('monthlyStatus').addEventListener('change', () => loadMonthlyHistory({ page: 1 }));
     $('monthlyExcelButton').addEventListener('click', downloadMonthlyExcel_);
     $('monthlySheetButton').addEventListener('click', writeMonthlySheet_);
+    $('monthlyHousemanOrderButton').addEventListener('click', openMonthlyHousemanOrderModal_);
     $('dailyCloseSaveButton').addEventListener('click', saveDailyCloseFromMonthly_);
     $('dailyCloseCancelButton').addEventListener('click', cancelDailyCloseFromMonthly_);
+  }
+
+
+  const novaMonthlyHousemanAssignmentCache_ = new Map();
+  let novaMonthlyHousemanAssignmentTimer_ = null;
+
+  function novaMonthlyComposeHangulKeys_(rawText) { // (영문키를 두벌식 한글 음절로 조합)
+    const raw = String(rawText || '');
+    if (!raw) return '';
+    const L = { r:0,R:1,s:2,e:3,E:4,f:5,a:6,q:7,Q:8,t:9,T:10,d:11,w:12,W:13,c:14,z:15,x:16,v:17,g:18 };
+    const LJ = { r:'ㄱ',R:'ㄲ',s:'ㄴ',e:'ㄷ',E:'ㄸ',f:'ㄹ',a:'ㅁ',q:'ㅂ',Q:'ㅃ',t:'ㅅ',T:'ㅆ',d:'ㅇ',w:'ㅈ',W:'ㅉ',c:'ㅊ',z:'ㅋ',x:'ㅌ',v:'ㅍ',g:'ㅎ' };
+    const V = { k:0,o:1,i:2,O:3,j:4,p:5,u:6,P:7,h:8,hk:9,ho:10,hl:11,y:12,n:13,nj:14,np:15,nl:16,b:17,m:18,ml:19,l:20 };
+    const VJ = { k:'ㅏ',o:'ㅐ',i:'ㅑ',O:'ㅒ',j:'ㅓ',p:'ㅔ',u:'ㅕ',P:'ㅖ',h:'ㅗ',hk:'ㅘ',ho:'ㅙ',hl:'ㅚ',y:'ㅛ',n:'ㅜ',nj:'ㅝ',np:'ㅞ',nl:'ㅟ',b:'ㅠ',m:'ㅡ',ml:'ㅢ',l:'ㅣ' };
+    const T = { r:1,R:2,rt:3,s:4,sw:5,sg:6,e:7,f:8,fr:9,fa:10,fq:11,ft:12,fx:13,fv:14,fg:15,a:16,q:17,qt:18,t:19,T:20,d:21,w:22,c:23,z:24,x:25,v:26,g:27 };
+    const V_COMBINE = { 'h|k':'hk','h|o':'ho','h|l':'hl','n|j':'nj','n|p':'np','n|l':'nl','m|l':'ml' };
+    const T_COMBINE = { 'r|t':'rt','s|w':'sw','s|g':'sg','f|r':'fr','f|a':'fa','f|q':'fq','f|t':'ft','f|x':'fx','f|v':'fv','f|g':'fg','q|t':'qt' };
+    const normalizeKey = key => {
+      if (Object.prototype.hasOwnProperty.call(L, key) || Object.prototype.hasOwnProperty.call(V, key)) return key;
+      const lower = String(key || '').toLowerCase();
+      return Object.prototype.hasOwnProperty.call(L, lower) || Object.prototype.hasOwnProperty.call(V, lower) ? lower : key;
+    };
+    const chars = Array.from(raw, normalizeKey);
+    let out = '';
+    let l = '';
+    let v = '';
+    let t = '';
+    const syllable = (lk, vk, tk = '') => {
+      if (!lk && vk) return VJ[vk] || vk;
+      if (lk && !vk) return LJ[lk] || lk;
+      if (!Object.prototype.hasOwnProperty.call(L, lk) || !Object.prototype.hasOwnProperty.call(V, vk)) {
+        return `${LJ[lk] || lk}${VJ[vk] || vk}${tk ? (LJ[tk] || tk) : ''}`;
+      }
+      const finalIndex = tk && Object.prototype.hasOwnProperty.call(T, tk) ? T[tk] : 0;
+      return String.fromCharCode(0xAC00 + ((L[lk] * 21 + V[vk]) * 28) + finalIndex);
+    };
+    const flush = () => {
+      if (l || v) out += syllable(l, v, t);
+      l = ''; v = ''; t = '';
+    };
+
+    chars.forEach(key => {
+      const vowel = Object.prototype.hasOwnProperty.call(V, key);
+      const consonant = Object.prototype.hasOwnProperty.call(L, key);
+      if (!vowel && !consonant) {
+        flush();
+        out += key;
+        return;
+      }
+
+      if (vowel) {
+        if (!l) {
+          if (!v) { v = key; return; }
+          const combined = V_COMBINE[`${v}|${key}`] || '';
+          if (combined) { v = combined; return; }
+          flush();
+          v = key;
+          return;
+        }
+        if (!v) { v = key; return; }
+        if (t) {
+          let remainFinal = '';
+          let movedInitial = t;
+          if (t.length === 2) {
+            remainFinal = t.charAt(0);
+            movedInitial = t.charAt(1);
+          }
+          out += syllable(l, v, remainFinal);
+          l = Object.prototype.hasOwnProperty.call(L, movedInitial) ? movedInitial : '';
+          v = key;
+          t = '';
+          return;
+        }
+        const combined = V_COMBINE[`${v}|${key}`] || '';
+        if (combined) { v = combined; return; }
+        flush();
+        v = key;
+        return;
+      }
+
+      if (!l) {
+        if (v) flush();
+        l = key;
+        return;
+      }
+      if (!v) {
+        flush();
+        l = key;
+        return;
+      }
+      if (!t) {
+        if (Object.prototype.hasOwnProperty.call(T, key)) {
+          t = key;
+        } else {
+          flush();
+          l = key;
+        }
+        return;
+      }
+      const compound = T_COMBINE[`${t}|${key}`] || '';
+      if (compound) {
+        t = compound;
+      } else {
+        flush();
+        l = key;
+      }
+    });
+    flush();
+    return out;
+  }
+
+  function bindMonthlyKoreanItemInput_(input) { // (품목 영문키 입력도 한글로 자동변환)
+    if (!input || input.dataset.novaKoreanBound === 'Y') return;
+    input.dataset.novaKoreanBound = 'Y';
+    input.setAttribute('lang', 'ko');
+    input.setAttribute('autocomplete', 'off');
+    input.setAttribute('autocapitalize', 'none');
+    input.spellcheck = false;
+
+    let rawKeys = '';
+    let segmentStart = 0;
+    let segmentEnd = 0;
+    let internalChange = false;
+    const reset = () => { rawKeys = ''; segmentStart = 0; segmentEnd = 0; };
+    const renderRaw = () => {
+      const composed = novaMonthlyComposeHangulKeys_(rawKeys);
+      internalChange = true;
+      input.setRangeText(composed, segmentStart, segmentEnd, 'end');
+      internalChange = false;
+      segmentEnd = segmentStart + composed.length;
+    };
+
+    input.addEventListener('compositionstart', reset);
+    input.addEventListener('input', () => { if (!internalChange) reset(); });
+    input.addEventListener('mousedown', reset);
+    input.addEventListener('blur', reset);
+    input.addEventListener('keydown', event => {
+      if (event.isComposing || event.key === 'Process' || event.ctrlKey || event.metaKey || event.altKey) return;
+      const selectionStart = Number(input.selectionStart ?? input.value.length);
+      const selectionEnd = Number(input.selectionEnd ?? selectionStart);
+      if (/^[A-Za-z]$/.test(event.key)) {
+        if (!rawKeys || selectionStart !== segmentEnd || selectionEnd !== segmentEnd) {
+          rawKeys = '';
+          segmentStart = selectionStart;
+          segmentEnd = selectionEnd;
+        }
+        event.preventDefault();
+        rawKeys += event.key;
+        renderRaw();
+        return;
+      }
+      if (event.key === 'Backspace' && rawKeys && selectionStart === segmentEnd && selectionEnd === segmentEnd) {
+        event.preventDefault();
+        rawKeys = rawKeys.slice(0, -1);
+        renderRaw();
+        if (!rawKeys) reset();
+        return;
+      }
+      reset();
+    });
+    input.addEventListener('paste', event => {
+      const text = String(event.clipboardData?.getData('text') || '');
+      if (!text || !/^[A-Za-z]+$/.test(text)) return;
+      event.preventDefault();
+      reset();
+      const start = Number(input.selectionStart ?? input.value.length);
+      const end = Number(input.selectionEnd ?? start);
+      const converted = novaMonthlyComposeHangulKeys_(text);
+      input.setRangeText(converted, start, end, 'end');
+    });
+  }
+
+  function monthlyHousemanAssignmentKey_(payload) {
+    return [payload?.businessDate, payload?.site, payload?.roomNo].map(value => String(value || '').trim()).join('|');
+  }
+
+  async function resolveMonthlyHousemanAutoAssignment_(payload) { // (입력 중 자동배정 후보 선조회·캐시)
+    const key = monthlyHousemanAssignmentKey_(payload);
+    if (!payload?.businessDate || !payload?.site || !/^\d{4}$/.test(String(payload?.roomNo || '').trim())) {
+      throw new Error('자동배정 확인을 위해 사업장과 4자리 객실번호를 확인하세요.');
+    }
+    if (novaMonthlyHousemanAssignmentCache_.has(key)) {
+      return await novaMonthlyHousemanAssignmentCache_.get(key);
+    }
+    const promise = callServer('getMonthlyHousemanAutoAssignment', state.token, {
+      businessDate: payload.businessDate,
+      site: payload.site,
+      roomNo: payload.roomNo
+    }).then(result => {
+      if (!result?.ok || !result.assignment?.employeeNo) {
+        throw new Error('담당 하우스맨 자동배정 정보를 확인할 수 없습니다.');
+      }
+      return result.assignment;
+    }).catch(error => {
+      novaMonthlyHousemanAssignmentCache_.delete(key);
+      throw error;
+    });
+    novaMonthlyHousemanAssignmentCache_.set(key, promise);
+    return await promise;
+  }
+
+  function queueMonthlyHousemanAssignmentPreload_() { // (객실번호 입력 중 서버후보를 미리 준비)
+    window.clearTimeout(novaMonthlyHousemanAssignmentTimer_);
+    novaMonthlyHousemanAssignmentTimer_ = window.setTimeout(() => {
+      const mode = String($('monthlyOrderAssignmentMode')?.value || '').toUpperCase();
+      const payload = {
+        businessDate: String($('monthlyOrderDate')?.value || '').trim(),
+        site: String($('monthlyOrderSite')?.value || '').trim(),
+        roomNo: String($('monthlyOrderRoomNo')?.value || '').trim()
+      };
+      if (mode !== 'AUTO' || !/^\d{4}$/.test(payload.roomNo) || !payload.site) return;
+      void resolveMonthlyHousemanAutoAssignment_(payload).catch(error => {
+        console.warn('월별조회 하우스맨 자동배정 사전조회:', error?.message || error);
+      });
+    }, 120);
+  }
+
+  async function novaMonthlyRealtimeCreateHousemanOrder_(payload, assignment) { // (월별조회 PostgreSQL 선등록)
+    if (!novaRealtimeIsEnabled_()) throw new Error('Realtime이 비활성화되어 있습니다.');
+    const orderId = novaRealtimeHousemanOrderId_(payload.businessDate);
+    const requestId = novaRealtimeRequestId_('HOUSEMAN_CREATE', payload.roomNo);
+    const currentShift = String(assignment?.currentShift || '').trim().toUpperCase();
+    const apiPayload = Object.assign({}, payload, {
+      orderId,
+      requestId,
+      assignment: assignment || {},
+      handoverTargetShift: payload.handover ? novaRealtimeNextShift_(currentShift) : ''
+    });
+    const result = await novaRealtimeFetch_('/v1/houseman-orders', {
+      method: 'POST',
+      headers: { 'X-Request-Id': requestId },
+      body: JSON.stringify(apiPayload)
+    });
+    const order = novaRealtimeMapHousemanOrder_(result.order) || result.order;
+    if (!order?.orderId) throw new Error('Realtime 오더 저장 응답이 올바르지 않습니다.');
+    return {
+      order,
+      orderId,
+      requestId,
+      assignment,
+      timing: result.timing || {},
+      mirrorPayload: Object.assign({}, payload, {
+        realtimeOrderId: orderId,
+        realtimeAssignmentSnapshot: assignment
+      })
+    };
+  }
+
+  function monthlyHousemanRealtimeItem_(order, payload) { // (DB확정 오더를 현재 이력표에 즉시 추가)
+    const assignedEmployeeNo = String(order?.assignedEmployeeNo || '').trim();
+    const assignedName = String(order?.assignedName || '').trim();
+    const itemSummary = String(order?.itemSummary || (payload.items || []).map(item => item.quantity > 1 ? `${item.name}×${item.quantity}` : item.name).join(', '));
+    const part = String(order?.part || payload.part || '');
+    const note = String(order?.note || payload.note || '');
+    return {
+      rowNumber: 0,
+      recordId: String(order?.orderId || ''),
+      typeCode: 'HOUSEMAN',
+      typeLabel: '하우스맨',
+      businessDate: String(order?.businessDate || payload.businessDate || ''),
+      site: String(order?.site || payload.site || ''),
+      roomNo: String(order?.roomNo || payload.roomNo || ''),
+      employeeNos: assignedEmployeeNo ? [assignedEmployeeNo] : [],
+      employeeNo: assignedEmployeeNo,
+      employeeName: assignedName || assignedEmployeeNo || '-',
+      employeeDisplay: assignedEmployeeNo ? `${assignedName || assignedEmployeeNo} (${assignedEmployeeNo})` : '-',
+      statusCode: String(order?.statusCode || (assignedEmployeeNo ? 'ASSIGNED' : 'REGISTERED')),
+      statusLabel: String(order?.statusLabel || (assignedEmployeeNo ? '배정' : '등록')),
+      requestSource: 'MONTHLY_HISTORY',
+      canDelete: false,
+      detailText: [part, itemSummary, note].filter(Boolean).join(' · '),
+      registeredAt: String(order?.registeredAt || ''),
+      acceptedAt: '',
+      startedAt: '',
+      completedAt: '',
+      eventAt: String(order?.registeredAt || ''),
+      durationMinutes: null,
+      cleaningType: '',
+      cleaningTypeLabel: '',
+      creditUnit: 0,
+      part,
+      itemSummary,
+      requester: String(order?.requester || payload.requester || ''),
+      photos: [],
+      photoCount: 0,
+      important: Boolean(order?.important ?? payload.important),
+      handover: Boolean(order?.handover ?? payload.handover)
+    };
+  }
+
+  function insertMonthlyHousemanRealtimeItem_(order, payload) { // (기존 리스트 유지·신규 1건만 즉시 추가)
+    if (state.activeMenu !== 'monthly' || state.monthly.period !== 'DAILY' || String(state.monthly.type || '').toUpperCase() !== 'HOUSEMAN') return;
+    if (Number(state.monthly.page || 1) !== 1 || !state.monthly.data) return;
+    const item = monthlyHousemanRealtimeItem_(order, payload);
+    if (String(state.monthly.date || '') && item.businessDate !== String(state.monthly.date || '')) return;
+    if (String(state.monthly.site || '') && item.site !== String(state.monthly.site || '')) return;
+    if (String(state.monthly.employeeNo || '') && !item.employeeNos.includes(String(state.monthly.employeeNo || ''))) return;
+    const statusFilter = String(state.monthly.status || '').trim();
+    if (statusFilter && statusFilter !== '전체' && ![item.statusCode, item.statusLabel, '진행중'].includes(statusFilter)) return;
+    const search = String(state.monthly.search || '').trim().toLowerCase();
+    if (search) {
+      const text = [item.roomNo, item.site, item.employeeDisplay, item.detailText, item.requester].join(' ').toLowerCase();
+      if (!text.includes(search)) return;
+    }
+    const currentItems = Array.isArray(state.monthly.data.items) ? state.monthly.data.items : [];
+    state.monthly.data.items = [item, ...currentItems.filter(row => String(row.recordId || '') !== item.recordId)].slice(0, 100);
+    if (state.monthly.data.pagination) {
+      state.monthly.data.pagination = Object.assign({}, state.monthly.data.pagination, {
+        total: Number(state.monthly.data.pagination.total || 0) + (currentItems.some(row => String(row.recordId || '') === item.recordId) ? 0 : 1)
+      });
+    }
+    renderMonthlyTable_(state.monthly.data.items);
+    renderMonthlyPagination_(state.monthly.data.pagination || { page: 1, pageCount: 1, total: state.monthly.data.items.length });
+  }
+
+  async function novaMonthlyRealtimeCancelHousemanOrder_(orderId) { // (DB등록취소 선확정)
+    const requestId = novaRealtimeRequestId_('HOUSEMAN_CANCEL', orderId);
+    return await novaRealtimeFetch_(`/v1/houseman-orders/${encodeURIComponent(orderId)}/cancel`, {
+      method: 'POST',
+      headers: { 'X-Request-Id': requestId },
+      body: JSON.stringify({ requestId })
+    });
+  }
+
+  const novaMonthlyHousemanOptionPreload_ = { promise: null };
+
+  function monthlyHousemanOptionSnapshot_() { // (월별조회 하우스맨 등록창 옵션 메모리 스냅샷)
+    const options = state.monthly.data?.options || {};
+    return {
+      sites: Array.isArray(options.sites) ? options.sites.slice() : [],
+      parts: Array.isArray(options.orderParts) ? options.orderParts.slice() : [],
+      items: Array.isArray(options.orderItems) ? options.orderItems.slice() : []
+    };
+  }
+
+  function mergeMonthlyHousemanOrderOptions_(fallback) { // (서버 코드옵션을 현재 월별조회 상태에 병합)
+    const current = monthlyHousemanOptionSnapshot_();
+    const sites = Array.from(new Set([
+      ...current.sites,
+      ...(Array.isArray(fallback?.sites) ? fallback.sites : [])
+    ].map(value => String(value || '').trim()).filter(Boolean)));
+    const parts = Array.isArray(fallback?.orderParts) && fallback.orderParts.length
+      ? fallback.orderParts.slice()
+      : current.parts;
+    const items = Array.isArray(fallback?.orderItems) && fallback.orderItems.length
+      ? fallback.orderItems.slice()
+      : current.items;
+    if (state.monthly.data) {
+      state.monthly.data.options = Object.assign({}, state.monthly.data.options || {}, {
+        sites,
+        orderParts: parts,
+        orderItems: items
+      });
+    }
+    return { sites, parts, items };
+  }
+
+  function preloadMonthlyHousemanOrderOptions_() { // (하우스맨 화면 진입 즉시 파트·품목 백그라운드 사전조회)
+    const current = monthlyHousemanOptionSnapshot_();
+    if (current.parts.length && current.items.length && current.sites.length) {
+      return Promise.resolve(current);
+    }
+    if (novaMonthlyHousemanOptionPreload_.promise) return novaMonthlyHousemanOptionPreload_.promise;
+    const promise = callServer('getMonthlyHousemanOrderOptions', state.token)
+      .then(result => {
+        if (!result?.ok) throw new Error(result?.message || '하우스맨 등록 옵션을 불러오지 못했습니다.');
+        return mergeMonthlyHousemanOrderOptions_(result);
+      })
+      .finally(() => {
+        if (novaMonthlyHousemanOptionPreload_.promise === promise) {
+          novaMonthlyHousemanOptionPreload_.promise = null;
+        }
+      });
+    novaMonthlyHousemanOptionPreload_.promise = promise;
+    return promise;
+  }
+
+  function applyMonthlyHousemanOptionsToOpenModal_(resolved) { // (이미 열린 등록창에 옵션만 비동기 채움)
+    if (!$('monthlyOrderPart') || !$('monthlyOrderItem')) return;
+    const parts = Array.isArray(resolved?.parts) ? resolved.parts : [];
+    const items = Array.isArray(resolved?.items) ? resolved.items : [];
+    const sites = Array.isArray(resolved?.sites) ? resolved.sites : [];
+
+    const partSelect = $('monthlyOrderPart');
+    const selectedPart = String(partSelect.value || '');
+    partSelect.innerHTML = `<option value="">선택</option>${parts.map(part => {
+      const value = String(part?.label || part?.code || '').trim();
+      return `<option value="${escapeAttr(value)}">${escapeHtml(value)}</option>`;
+    }).join('')}`;
+    if (selectedPart && parts.some(part => String(part?.label || part?.code || '').trim() === selectedPart)) {
+      partSelect.value = selectedPart;
+    }
+    partSelect.disabled = false;
+
+    const datalist = document.getElementById('monthlyHousemanItemSuggestions');
+    if (datalist) {
+      datalist.innerHTML = items.map(item => {
+        const value = String(item?.label || item?.code || '').trim();
+        return `<option value="${escapeAttr(value)}"></option>`;
+      }).join('');
+    }
+
+    const siteSelect = $('monthlyOrderSite');
+    if (siteSelect) {
+      const selectedSite = String(siteSelect.value || state.monthly.site || '');
+      siteSelect.innerHTML = `<option value="">사업장 선택</option>${sites.map(site => `<option value="${escapeAttr(site)}">${escapeHtml(site)}</option>`).join('')}`;
+      if (selectedSite && sites.includes(selectedSite)) siteSelect.value = selectedSite;
+      siteSelect.disabled = false;
+    }
+  }
+
+  async function openMonthlyHousemanOrderModal_() { // (일별 하우스맨 이력에서 오더 등록)
+    if (state.monthly.period !== 'DAILY' || String(state.monthly.type || '').toUpperCase() !== 'HOUSEMAN') {
+      showToast('하우스맨 일별조회에서 오더를 등록할 수 있습니다.');
+      return;
+    }
+    const businessDate = String($('monthlyDate')?.value || state.monthly.date || formatClientDate_(new Date())).trim();
+    const site = String($('monthlySite')?.value || state.monthly.site || '').trim();
+    const options = state.monthly.data?.options || {};
+    const sites = Array.isArray(options.sites) ? options.sites.slice() : [];
+    const parts = Array.isArray(options.orderParts) ? options.orderParts.slice() : [];
+    const items = Array.isArray(options.orderItems) ? options.orderItems.slice() : [];
+    const optionsPromise = preloadMonthlyHousemanOrderOptions_();
+
+    const itemDatalist = `<datalist id="monthlyHousemanItemSuggestions">${items.map(item => `<option value="${escapeAttr(item.label || item.code || '')}"></option>`).join('')}</datalist>`;
+    openModal(`
+      <div class="modal-card">
+        <div class="modal-header"><h2>하우스맨 오더 등록</h2><button class="modal-close" type="button" data-close-modal>×</button></div>
+        <div class="modal-body">
+          ${itemDatalist}
+          <div class="modal-grid">
+            <label class="modal-field"><span>업무일자</span><input id="monthlyOrderDate" value="${escapeAttr(businessDate)}" readonly></label>
+            <label class="modal-field"><span>사업장</span><select id="monthlyOrderSite"${sites.length ? '' : ' disabled'}><option value="">${sites.length ? '사업장 선택' : '불러오는 중…'}</option>${sites.map(optionSite => `<option value="${escapeAttr(optionSite)}"${optionSite === site ? ' selected' : ''}>${escapeHtml(optionSite)}</option>`).join('')}</select></label>
+            <label class="modal-field"><span>객실번호</span><input id="monthlyOrderRoomNo" maxlength="12" inputmode="numeric" placeholder="예: 9557"></label>
+            <label class="modal-field"><span>파트</span><select id="monthlyOrderPart"${parts.length ? '' : ' disabled'}>${parts.length ? `<option value="">선택</option>${parts.map(part => `<option value="${escapeAttr(part.label || part.code || '')}">${escapeHtml(part.label || part.code || '')}</option>`).join('')}` : '<option value="">불러오는 중…</option>'}</select></label>
+            <label class="modal-field full"><span>품목</span><input id="monthlyOrderItem" lang="ko" autocomplete="off" autocapitalize="none" list="monthlyHousemanItemSuggestions" placeholder="품목을 한글로 입력하세요. (영문키도 한글 자동변환)"></label>
+            <label class="modal-field"><span>수량</span><input id="monthlyOrderQty" type="number" min="1" max="99" value="1"></label>
+            <label class="modal-field"><span>배정</span><select id="monthlyOrderAssignmentMode"><option value="AUTO" selected>근무자 자동배정</option><option value="UNASSIGNED">미배정</option></select></label>
+            <label class="modal-field"><span>요청자</span><select id="monthlyOrderRequester"><option value="고객">고객</option><option value="룸메이드">룸메이드</option><option value="프런트">프런트</option><option value="오더테이커" selected>오더테이커</option></select></label>
+            <label class="modal-field full"><span>추가내용</span><textarea id="monthlyOrderNote" placeholder="필요한 내용을 입력하세요."></textarea></label>
+            <label class="modal-field"><span>중요</span><label class="toggle-compact"><input id="monthlyOrderImportant" type="checkbox"> 중요 오더</label></label>
+            <label class="modal-field"><span>인수인계</span><label class="toggle-compact"><input id="monthlyOrderHandover" type="checkbox"> 인수인계</label></label>
+          </div>
+          <div class="modal-actions"><button id="monthlyOrderSubmit" class="action-button primary" type="button">오더 등록</button></div>
+        </div>
+      </div>`);
+    const monthlyItemInput = $('monthlyOrderItem');
+    bindMonthlyKoreanItemInput_(monthlyItemInput);
+    void optionsPromise.then(applyMonthlyHousemanOptionsToOpenModal_).catch(error => {
+      console.warn('월별조회 하우스맨 등록 옵션 비동기 조회 실패:', error?.message || error);
+      showToast('파트·품목 목록을 불러오지 못했습니다. 다시 시도하세요.');
+    });
+    $('monthlyOrderRoomNo')?.addEventListener('input', queueMonthlyHousemanAssignmentPreload_);
+    $('monthlyOrderSite')?.addEventListener('change', queueMonthlyHousemanAssignmentPreload_);
+    $('monthlyOrderAssignmentMode')?.addEventListener('change', queueMonthlyHousemanAssignmentPreload_);
+    $('monthlyOrderRoomNo')?.focus();
+    $('monthlyOrderSubmit').addEventListener('click', submitMonthlyHousemanOrder_);
+  }
+
+  async function submitMonthlyHousemanOrder_() { // (월별조회 하우스맨 오더 등록·DB 선확정)
+    const button = $('monthlyOrderSubmit');
+    if (!button) return;
+    const payload = {
+      businessDate: String($('monthlyOrderDate')?.value || state.monthly.date || '').trim(),
+      site: String($('monthlyOrderSite')?.value || state.monthly.site || '').trim(),
+      roomNo: String($('monthlyOrderRoomNo')?.value || '').trim(),
+      part: String($('monthlyOrderPart')?.value || '').trim(),
+      items: [{ name: String($('monthlyOrderItem')?.value || '').trim(), quantity: clampQuantity($('monthlyOrderQty')?.value) }],
+      note: String($('monthlyOrderNote')?.value || '').trim(),
+      requester: String($('monthlyOrderRequester')?.value || '오더테이커'),
+      requestSource: 'MONTHLY_HISTORY',
+      assignmentMode: String($('monthlyOrderAssignmentMode')?.value || 'AUTO'),
+      important: Boolean($('monthlyOrderImportant')?.checked),
+      handover: Boolean($('monthlyOrderHandover')?.checked)
+    };
+    if (!payload.businessDate) return showToast('업무일자를 선택하세요.');
+    if (!payload.site) return showToast('사업장을 선택하세요.');
+    if (!payload.roomNo) return showToast('객실번호를 입력하세요.');
+    if (!payload.part) return showToast('파트를 선택하세요.');
+    if (!payload.items[0].name) return showToast('품목을 입력하세요.');
+
+    const original = button.textContent;
+    const clickedAt = performance.now();
+    button.disabled = true;
+    button.textContent = '등록 중…';
+    try {
+      let realtimeFallbackReason = '';
+      let assignment = null;
+      if (String(payload.assignmentMode || '').toUpperCase() === 'AUTO') {
+        assignment = await resolveMonthlyHousemanAutoAssignment_(payload);
+      } else {
+        assignment = {
+          building: `${String(payload.roomNo || '').charAt(0)}동`,
+          employeeNo: '', employeeNos: [], names: [], currentShift: '', activeShiftCodes: []
+        };
+      }
+
+      if (!novaRealtime_.configLoaded) {
+        const ready = await initNovaRealtime_();
+        if (!ready && !novaRealtime_.configLoaded) realtimeFallbackReason = 'REALTIME_CONFIG_UNAVAILABLE';
+      }
+
+      if (novaRealtimeIsEnabled_()) {
+        try {
+          const realtime = await novaMonthlyRealtimeCreateHousemanOrder_(payload, assignment);
+          const elapsed = Math.round(performance.now() - clickedAt);
+          const dbMs = Math.max(0, Number(realtime.timing?.totalMs || 0));
+          closeModal();
+          insertMonthlyHousemanRealtimeItem_(realtime.order, payload);
+          showToast(`${payload.roomNo}호 오더 등록 완료 · ${elapsed}ms`);
+          setSyncStatus(`${payload.roomNo}호 DB 저장 ${dbMs}ms · 화면 ${elapsed}ms · 이력 동기화 중`);
+
+          void mirrorRealtimeHousemanOrderToSheet_(realtime.mirrorPayload).then(mirrorResult => {
+            if (!mirrorResult?.ok) return;
+            if (state.activeMenu === 'monthly'
+                && state.monthly.period === 'DAILY'
+                && String(state.monthly.type || '').toUpperCase() === 'HOUSEMAN') {
+              void loadMonthlyHistory({ page: Number(state.monthly.page || 1), preserveTable: true });
+            }
+          });
+          return;
+        } catch (realtimeError) {
+          realtimeFallbackReason = String(realtimeError?.code || realtimeError?.message || 'REALTIME_ERROR')
+            .replace(/\s+/g, ' ').trim().slice(0, 80);
+          console.warn('[NOVA Realtime] 월별조회 하우스맨 등록은 기존 저장경로로 전환합니다.', realtimeError);
+        }
+      } else if (!realtimeFallbackReason) {
+        realtimeFallbackReason = novaRealtime_.configLoaded ? 'REALTIME_DISABLED' : 'REALTIME_CONFIG_UNAVAILABLE';
+      }
+
+      const result = await callServer('createHousemanOrder', state.token, payload);
+      if (!result?.ok) throw new Error(result?.message || '오더 등록에 실패했습니다.');
+      const elapsed = Math.round(performance.now() - clickedAt);
+      closeModal();
+      showToast(`${payload.roomNo}호 오더 등록 완료 · ${elapsed}ms`);
+      setSyncStatus(`${payload.roomNo}호 기존 저장경로 ${elapsed}ms · ${realtimeFallbackReason || 'LEGACY'}`);
+      await loadMonthlyHistory({ page: 1, preserveTable: true });
+    } catch (error) {
+      showToast(error?.message || '오더 등록 오류');
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  function applyMonthlySubcategoryUi_(type) { // (월별조회 하우스맨·룸메이드·QM 소분류 전환)
+    const normalized = ['HOUSEMAN', 'CLEANING', 'QM'].includes(String(type || '').toUpperCase())
+      ? String(type).toUpperCase()
+      : 'HOUSEMAN';
+    state.monthly.type = normalized;
+    if (normalized === 'HOUSEMAN') {
+      void preloadMonthlyHousemanOrderOptions_().catch(error => {
+        console.warn('월별조회 하우스맨 등록 옵션 사전조회 실패:', error?.message || error);
+      });
+    }
+    if ($('monthlyType')) $('monthlyType').value = normalized;
+    document.querySelectorAll('#monthlySubcategoryMenu [data-monthly-section]').forEach(button => {
+      const active = button.dataset.monthlySection === normalized;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    const closePanel = $('dailyClosePanel');
+    const qmPanel = $('monthlyQmQualityPanel');
+    if (closePanel) closePanel.classList.toggle('hidden', normalized !== 'CLEANING');
+    if (qmPanel) qmPanel.classList.toggle('hidden', normalized !== 'QM');
+    $('monthlyHousemanOrderButton')?.classList.toggle('hidden', normalized !== 'HOUSEMAN' || state.monthly.period !== 'DAILY');
   }
 
   function applyMonthlyPeriodUi_(period) { // (월별·일별 입력영역 전환)
@@ -2335,6 +3493,7 @@
     $('monthlyDayNav')?.classList.toggle('hidden', !daily);
     $('monthlyControls')?.classList.toggle('daily-mode', daily);
     $('dailyCloseSaveButton')?.classList.toggle('hidden', !daily);
+    $('monthlyHousemanOrderButton')?.classList.toggle('hidden', !daily || String(state.monthly.type || '').toUpperCase() !== 'HOUSEMAN');
     $('dailyCloseCancelButton')?.classList.toggle('hidden', state.bootstrap?.user?.role !== 'ADMIN' || !daily || !['CLOSED', 'MIXED'].includes(String(state.monthly.data?.close?.source || '').toUpperCase()));
     if ($('monthlyPageTitle')) {
       $('monthlyPageTitle').textContent = `${daily ? '일별' : '월별'} 룸메이드·QM·하우스맨 이력`;
@@ -2348,6 +3507,8 @@
       ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + Number(delta || 0), 12, 0, 0)
       : new Date();
     $('monthlyDate').value = formatClientDate_(date);
+    state.monthly.date = $('monthlyDate').value;
+    sessionStorage.setItem('novaMonthlyDate', state.monthly.date);
     loadMonthlyHistory({ page: 1 });
   }
 
@@ -2361,14 +3522,14 @@
 
   function collectMonthlyFilters_(overrides = {}) { // (월별·일별 화면 조회조건 수집)
     const resetDetail = overrides.resetDetailFilters === true;
-    const period = String(state.monthly.period || 'MONTHLY').toUpperCase() === 'DAILY' ? 'DAILY' : 'MONTHLY';
+    const period = String(state.monthly.period || 'DAILY').toUpperCase() === 'MONTHLY' ? 'MONTHLY' : 'DAILY';
     return {
       period,
       date: String($('monthlyDate')?.value || state.monthly.date || formatClientDate_(new Date())),
       year: Number($('monthlyYear')?.value || state.monthly.year || new Date().getFullYear()),
       month: Number($('monthlyMonth')?.value || state.monthly.month || new Date().getMonth() + 1),
       site: resetDetail ? '' : String($('monthlySite')?.value ?? state.monthly.site ?? ''),
-      type: String($('monthlyType')?.value || state.monthly.type || 'ALL'),
+      type: String($('monthlyType')?.value || state.monthly.type || 'HOUSEMAN'),
       employeeNo: resetDetail ? '' : String($('monthlyEmployee')?.value ?? state.monthly.employeeNo ?? ''),
       status: resetDetail ? '' : String($('monthlyStatus')?.value ?? state.monthly.status ?? ''),
       search: String($('monthlySearch')?.value ?? state.monthly.search ?? '').trim(),
@@ -2380,22 +3541,27 @@
   async function loadMonthlyHistory(overrides = {}) { // (월별·일별 이력 서버 조회)
     if (state.monthly.loading) return;
     state.monthly.loading = true;
+    const preserveTable = Boolean(overrides && overrides.preserveTable);
     const filters = collectMonthlyFilters_(overrides);
     const periodLabel = filters.period === 'DAILY' ? '일별' : '월별';
-    if ($('monthlyTableBody')) $('monthlyTableBody').innerHTML = `<tr><td colspan="10" class="table-empty">${periodLabel} 데이터를 불러오는 중입니다.</td></tr>`;
+    if (!preserveTable && $('monthlyTableBody')) $('monthlyTableBody').innerHTML = `<tr><td colspan="11" class="table-empty">${periodLabel} 데이터를 불러오는 중입니다.</td></tr>`;
     try {
       const result = await callServer('getMonthlyHistory', state.token, filters);
       if (!result?.ok) throw new Error(result?.message || '조회 데이터를 불러오지 못했습니다.');
       state.monthly.loaded = true;
       state.monthly.data = result;
       Object.assign(state.monthly, result.filters || {});
+      sessionStorage.setItem('novaMonthlyPeriod', String(state.monthly.period || 'DAILY'));
+      sessionStorage.setItem('novaMonthlyDate', String(state.monthly.date || ''));
+      sessionStorage.setItem('novaMonthlySite', String(state.monthly.site || ''));
+      sessionStorage.setItem('novaMonthlyType', String(state.monthly.type || 'HOUSEMAN'));
       renderMonthlyData_();
       const rangeText = state.monthly.period === 'DAILY'
         ? state.monthly.date
         : `${state.monthly.year}-${String(state.monthly.month).padStart(2, '0')}`;
       setSyncStatus(`${periodLabel}조회 ${rangeText} · ${Number(result.pagination?.total || 0).toLocaleString('ko-KR')}건 · ${result.serverTime || ''}`);
     } catch (error) {
-      if ($('monthlyTableBody')) $('monthlyTableBody').innerHTML = `<tr><td colspan="10" class="table-empty error">${escapeHtml(error?.message || '통합조회 오류')}</td></tr>`;
+      if ($('monthlyTableBody')) $('monthlyTableBody').innerHTML = `<tr><td colspan="11" class="table-empty error">${escapeHtml(error?.message || '통합조회 오류')}</td></tr>`;
       showToast(error?.message || '통합조회 오류');
     } finally {
       state.monthly.loading = false;
@@ -2408,8 +3574,11 @@
     applyMonthlyPeriodUi_(state.monthly.period);
     renderMonthlyFilterOptions_(data.options || {});
     renderMonthlySummary_(data.summary || {});
-    renderDailyClosePanel_(data.close || {});
-    renderMonthlyQmQuality_(data.qmQuality || {});
+    applyMonthlySubcategoryUi_(state.monthly.type);
+    if (state.monthly.type === 'CLEANING') renderDailyClosePanel_(data.close || {});
+    else if ($('dailyClosePanel')) $('dailyClosePanel').innerHTML = '';
+    if (state.monthly.type === 'QM') renderMonthlyQmQuality_(data.qmQuality || {});
+    else if ($('monthlyQmQualityPanel')) $('monthlyQmQualityPanel').innerHTML = '';
     renderMonthlyStaffSummary_(data.staffSummary || []);
     renderMonthlyTable_(data.items || []);
     renderMonthlyPagination_(data.pagination || {});
@@ -2428,6 +3597,7 @@
     $('monthlyMonth').value = String(state.monthly.month);
     $('monthlyDate').value = state.monthly.date || formatClientDate_(new Date());
     $('monthlyType').value = state.monthly.type;
+    applyMonthlySubcategoryUi_(state.monthly.type);
     $('monthlySearch').value = state.monthly.search || '';
   }
 
@@ -2588,9 +3758,9 @@
     $('monthlyStaffSummary').innerHTML = `<table><thead><tr><th>직원</th><th>직무</th><th>기록</th><th>완료</th><th>처리불가</th><th>인정 정비수</th><th>평균</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.employeeNo)}</small></td><td>${escapeHtml(item.job || '-')}</td><td>${Number(item.total || 0).toLocaleString('ko-KR')}</td><td>${Number(item.completed || 0).toLocaleString('ko-KR')}</td><td>${Number(item.unable || 0).toLocaleString('ko-KR')}</td><td>${Number(item.recognizedUnits || 0).toLocaleString('ko-KR')}</td><td>${formatMonthlyMinutes_(item.averageMinutes)}</td></tr>`).join('')}</tbody></table>`;
   }
 
-  function renderMonthlyTable_(items) { // (월별·일별 이력 목록)
+  function renderMonthlyTable_(items) { // (월별·일별 이력 목록·하우스맨 사진보기)
     if (!items.length) {
-      $('monthlyTableBody').innerHTML = '<tr><td colspan="10" class="table-empty">선택한 조건의 이력이 없습니다.</td></tr>';
+      $('monthlyTableBody').innerHTML = '<tr><td colspan="11" class="table-empty">선택한 조건의 이력이 없습니다.</td></tr>';
       return;
     }
     $('monthlyTableBody').innerHTML = items.map(item => `
@@ -2600,12 +3770,116 @@
         <td>${escapeHtml(item.site || '-')}</td>
         <td class="room-cell">${escapeHtml(item.roomNo || '-')}</td>
         <td>${escapeHtml(item.employeeDisplay || '-')}</td>
-        <td><span class="monthly-status">${escapeHtml(item.statusLabel || '-')}</span></td>
+        <td><span class="monthly-status">${escapeHtml(item.statusLabel || '-')}</span>${item.canDelete ? `<button class="monthly-order-cancel" type="button" data-monthly-order-cancel="${escapeAttr(item.recordId)}">등록취소</button>` : ''}</td>
         <td class="monthly-detail" title="${escapeAttr(item.detailText || '')}">${escapeHtml(item.detailText || '-')}</td>
+        <td class="monthly-photo-cell">${item.typeCode === 'HOUSEMAN' && Number(item.photoCount || 0) > 0 ? `<button class="monthly-photo-button" type="button" data-monthly-photo-order="${escapeAttr(item.recordId)}">사진보기</button>` : '-'}</td>
         <td>${escapeHtml(item.startedAt || item.acceptedAt || item.registeredAt || '-')}</td>
         <td>${escapeHtml(item.completedAt || '-')}</td>
         <td>${formatMonthlyMinutes_(item.durationMinutes)}</td>
       </tr>`).join('');
+    $('monthlyTableBody').querySelectorAll('[data-monthly-photo-order]').forEach(button => {
+      button.addEventListener('click', () => openMonthlyHousemanPhotoViewer_(button.dataset.monthlyPhotoOrder, 0));
+    });
+    $('monthlyTableBody').querySelectorAll('[data-monthly-order-cancel]').forEach(button => {
+      button.addEventListener('click', () => cancelMonthlyHousemanOrder_(button));
+    });
+  }
+
+  async function cancelMonthlyHousemanOrder_(button) { // (월별조회 직접등록 오더 DB+Sheet 등록취소)
+    const orderId = String(button?.dataset?.monthlyOrderCancel || '').trim();
+    const item = (state.monthly.data?.items || []).find(row => String(row.recordId || '') === orderId);
+    if (!item || !item.canDelete) return showToast('등록취소할 수 없는 오더입니다.');
+    if (!window.confirm(`${item.roomNo || '-'}호 하우스맨 오더를 삭제할까요?\n\n접수·처리 시작 전 오더만 삭제할 수 있습니다.`)) return;
+
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = '취소 중…';
+    try {
+      if (!novaRealtime_.configLoaded) await initNovaRealtime_();
+      if (novaRealtimeIsEnabled_()) {
+        const realtimeCancel = await novaMonthlyRealtimeCancelHousemanOrder_(orderId);
+        if (!realtimeCancel?.ok) throw new Error('Realtime 오더 등록취소에 실패했습니다.');
+      } else if (!novaRealtime_.configLoaded) {
+        throw new Error('고속 서버 연결을 확인하지 못했습니다. 잠시 후 다시 등록취소하세요.');
+      }
+
+      const result = await callServer('deleteMonthlyHousemanOrder', state.token, {
+        orderId,
+        rowNumber: Number(item.rowNumber || 0)
+      });
+      if (!result?.ok) throw new Error(result?.message || '오더를 삭제하지 못했습니다.');
+      showToast(result.message || `${item.roomNo || ''}호 오더 등록취소 완료`);
+      await loadMonthlyHistory({ page: Number(state.monthly.page || 1), preserveTable: true });
+    } catch (error) {
+      showToast(error?.message || '오더 등록취소 오류');
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  async function openMonthlyHousemanPhotoViewer_(orderId, index = 0) { // (월별조회 사진보기·다운로드)
+    const item = (state.monthly.data?.items || []).find(row => String(row.recordId || '') === String(orderId || ''));
+    const photos = Array.isArray(item?.photos) ? item.photos : [];
+    if (!item || !photos.length) return showToast('확인할 요청사진이 없습니다.');
+    const safeIndex = Math.max(0, Math.min(photos.length - 1, Number(index || 0)));
+    openModal(`
+      <div class="modal-card monthly-photo-modal">
+        <div class="modal-header"><h2>${escapeHtml(item.roomNo || '-')} 요청사진</h2><button class="modal-close" type="button" data-close-modal>×</button></div>
+        <div class="modal-body"><div id="monthlyHousemanPhotoViewerBody" class="monthly-photo-viewer"><div class="settings-loading">사진을 불러오는 중입니다.</div></div></div>
+      </div>`);
+    await loadMonthlyHousemanPhotoViewer_(item, safeIndex);
+  }
+
+  async function loadMonthlyHousemanPhotoViewer_(item, index) { // (사진 한 장씩 지연 로드)
+    const root = $('monthlyHousemanPhotoViewerBody');
+    const photos = Array.isArray(item?.photos) ? item.photos : [];
+    if (!root || !photos.length) return;
+    const safeIndex = Math.max(0, Math.min(photos.length - 1, Number(index || 0)));
+    const photo = photos[safeIndex];
+    root.innerHTML = '<div class="settings-loading">사진을 불러오는 중입니다.</div>';
+    try {
+      const result = await callServer('getHousemanRequestPhoto', state.token, {
+        orderId: item.recordId,
+        rowNumber: Number(item.rowNumber || 0),
+        fileId: photo.fileId
+      });
+      if (!result?.ok || !result.base64) throw new Error(result?.message || '사진을 불러오지 못했습니다.');
+      if (!$('monthlyHousemanPhotoViewerBody')) return;
+      const mimeType = String(result.photo?.mimeType || 'image/jpeg');
+      const fileName = String(result.photo?.name || `houseman-photo-${safeIndex + 1}.jpg`);
+      root.innerHTML = `
+        <div class="monthly-photo-viewer-nav">
+          <button id="monthlyPhotoPrev" class="secondary-button" type="button"${safeIndex <= 0 ? ' disabled' : ''}>이전</button>
+          <strong>${safeIndex + 1} / ${photos.length}</strong>
+          <button id="monthlyPhotoNext" class="secondary-button" type="button"${safeIndex >= photos.length - 1 ? ' disabled' : ''}>다음</button>
+        </div>
+        <div class="monthly-photo-viewer-image-wrap"><img class="monthly-photo-viewer-image" src="data:${escapeAttr(mimeType)};base64,${result.base64}" alt="${escapeAttr(fileName)}"></div>
+        <div class="monthly-photo-viewer-meta"><span>${escapeHtml(fileName)}</span><button id="monthlyPhotoDownload" class="action-button primary" type="button">다운로드</button></div>`;
+      $('monthlyPhotoPrev')?.addEventListener('click', () => loadMonthlyHousemanPhotoViewer_(item, safeIndex - 1));
+      $('monthlyPhotoNext')?.addEventListener('click', () => loadMonthlyHousemanPhotoViewer_(item, safeIndex + 1));
+      $('monthlyPhotoDownload')?.addEventListener('click', () => downloadMonthlyHousemanPhoto_(result));
+    } catch (error) {
+      if (root) root.innerHTML = `<div class="settings-loading error">${escapeHtml(error?.message || '사진 조회 오류')}</div>`;
+    }
+  }
+
+  function downloadMonthlyHousemanPhoto_(result) { // (조회한 사진파일 브라우저 다운로드)
+    try {
+      const binary = window.atob(String(result?.base64 || ''));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      const blob = new Blob([bytes], { type: String(result?.photo?.mimeType || 'image/jpeg') });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = String(result?.photo?.name || 'houseman-request.jpg');
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } catch (error) {
+      showToast(error?.message || '사진 다운로드 오류');
+    }
   }
 
   function renderMonthlyPagination_(pagination) { // (월별·일별 목록 페이지 이동)
@@ -2867,6 +4141,7 @@
   function bindIndicatorShellEvents() { // (통합 화면 이벤트 연결)
     $('indicatorDate').addEventListener('change', event => {
       state.indicator.businessDate = event.target.value;
+      if (state.indicator.businessDate) sessionStorage.setItem('novaIndicatorBusinessDate', state.indicator.businessDate);
       state.indicator.building = '';
       state.indicator.floor = '';
       state.indicator.version = 0;
@@ -2874,6 +4149,7 @@
     });
     $('indicatorSite').addEventListener('change', event => {
       state.indicator.site = event.target.value;
+      sessionStorage.setItem('novaIndicatorSite', String(state.indicator.site || ''));
       state.indicator.building = '';
       state.indicator.floor = '';
       state.indicator.version = 0;
@@ -3033,7 +4309,9 @@
     state.indicator.loaded = true;
     state.indicator.version = Number(result.version || 0);
     state.indicator.businessDate = result.selection?.businessDate || state.indicator.businessDate;
+    if (state.indicator.businessDate) sessionStorage.setItem('novaIndicatorBusinessDate', state.indicator.businessDate);
     state.indicator.site = result.selection?.site ?? state.indicator.site;
+    sessionStorage.setItem('novaIndicatorSite', String(state.indicator.site || ''));
     state.indicator.data = Object.assign({}, previousData || {}, result);
 
     if (deferUiRender) {
@@ -3672,6 +4950,7 @@
     $('orderRoomNo').value = roomNo;
     if (siteChanged) {
       state.indicator.site = room.site;
+      sessionStorage.setItem('novaIndicatorSite', String(state.indicator.site || ''));
       if ($('indicatorSite')) $('indicatorSite').value = room.site;
     }
     renderRoomGrid();
@@ -3763,7 +5042,7 @@
     };
   }
 
-  async function novaRealtimeCreateHousemanOrder_(payload) { // (Cloud Run/PostgreSQL 등록 확정)
+  async function novaRealtimeCreateHousemanOrder_(payload, authRetry = 0) { // (Cloud Run/PostgreSQL 등록 확정)
     if (!novaRealtimeIsEnabled_()) throw new Error('Realtime이 비활성화되어 있습니다.');
     const assignment = novaRealtimeHousemanAssignmentSnapshot_(payload);
     if (String(payload.assignmentMode || '').trim().toUpperCase() === 'AUTO' && !assignment?.employeeNo) {
@@ -3780,11 +5059,26 @@
       assignment,
       handoverTargetShift: payload.handover ? novaRealtimeNextShift_(currentShift) : ''
     });
-    const result = await novaRealtimeFetch_('/v1/houseman-orders', {
-      method: 'POST',
-      headers: { 'X-Request-Id': requestId },
-      body: JSON.stringify(apiPayload)
-    });
+    let result;
+    try {
+      result = await novaRealtimeFetch_('/v1/houseman-orders', {
+        method: 'POST',
+        headers: { 'X-Request-Id': requestId },
+        body: JSON.stringify(apiPayload)
+      });
+    } catch (error) {
+      // Apps Script 로그인은 정상인데 Realtime DB 사용자/서명이 뒤처진 경우 1회 자가복구합니다.
+      // 기존 signed JIT sync가 현재 사용자와 객실을 PostgreSQL에 맞춘 뒤 동일 등록을 재시도합니다.
+      if (authRetry < 1 && String(error?.code || '').trim().toUpperCase() === 'UNAUTHORIZED') {
+        await callServer('syncNovaRealtimeRoomForAction', state.token, {
+          businessDate: String(payload.businessDate || ''),
+          site: String(payload.site || ''),
+          roomNo: String(payload.roomNo || '')
+        });
+        return novaRealtimeCreateHousemanOrder_(payload, authRetry + 1);
+      }
+      throw error;
+    }
     const order = novaRealtimeMapHousemanOrder_(result.order) || result.order;
     if (!order?.orderId) throw new Error('Realtime 오더 저장 응답이 올바르지 않습니다.');
     order.__sheetMirrorPending = true;
@@ -3800,6 +5094,72 @@
         realtimeAssignmentSnapshot: assignment
       })
     };
+  }
+
+
+  async function novaRealtimeAssignHousemanOrder_(order, employeeNo) { // (미배정 하우스맨 오더 Realtime 수동배정)
+    if (!novaRealtimeIsEnabled_()) throw new Error('Realtime이 비활성화되어 있습니다.');
+    const orderId = String(order?.orderId || '').trim();
+    const assignedEmployeeNo = String(employeeNo || '').trim();
+    if (!orderId || !assignedEmployeeNo) throw new Error('배정할 오더와 직원을 확인하세요.');
+
+    const requestId = novaRealtimeRequestId_('houseman-assign');
+    const result = await novaRealtimeFetch_(
+      `/v1/houseman-orders/${encodeURIComponent(orderId)}/assign`,
+      {
+        method: 'POST',
+        headers: { 'X-Request-Id': requestId },
+        body: JSON.stringify({
+          employeeNo: assignedEmployeeNo,
+          requestId
+        })
+      }
+    );
+
+    const mapped = novaRealtimeMapHousemanOrder_(result.order) || result.order;
+    return {
+      ok: true,
+      order: mapped,
+      orderVersion: Number(result.orderVersion || result.order?.version || 0),
+      timing: result.timing || {},
+      requestId
+    };
+  }
+
+  async function mirrorRealtimeHousemanAssignmentToSheet_(sourceOrder, employeeNo) { // (Realtime 수동배정 Sheet·감사·Telegram 백그라운드 미러)
+    const payload = {
+      orderId: String(sourceOrder?.orderId || '').trim(),
+      action: 'ASSIGN',
+      expectedVersion: Number(sourceOrder?.version || 0),
+      rowNumber: Number(sourceOrder?.rowNumber || 0),
+      employeeNo: String(employeeNo || '').trim()
+    };
+
+    try {
+      const mirror = await callServer('assignHousemanOrderFast', state.token, payload);
+      if (!mirror?.ok) throw new Error(mirror?.message || '수동배정 이력 동기화에 실패했습니다.');
+      upsertOrderLocal_(mirror.order, mirror.version);
+
+      const aux = await callServer('finalizeHousemanAssignmentAux', state.token, {
+        orderId: mirror.order.orderId,
+        employeeNo: mirror.order.assignedEmployeeNo,
+        rowNumber: Number(mirror.order.rowNumber || 0),
+        version: Number(mirror.version || mirror.order.version || 0)
+      });
+      const telegram = aux?.telegram || {};
+      if (telegram.queued && telegram.queueRecordId) {
+        void callServer('dispatchHousemanOrderTelegramFast', state.token, {
+          recordId: telegram.queueRecordId,
+          rowNumber: Number(telegram.queueRowNumber || 0)
+        }).catch(error => {
+          console.warn('Realtime 수동배정 텔레그램 즉시발송은 큐 재시도로 전환됩니다.', error?.message || error);
+        });
+      }
+      setSyncStatus(`${mirror.order.roomNo}호 배정 이력 동기화 완료`);
+    } catch (error) {
+      console.warn('Realtime 수동배정 Sheet 미러 실패', error?.message || error);
+      setSyncStatus(`${sourceOrder?.roomNo || ''}호 Realtime 배정 완료 · 기존 이력 동기화 재확인 필요`);
+    }
   }
 
   async function mirrorRealtimeHousemanOrderToSheet_(mirrorPayload, attempt = 0) { // (기존 이력·감사·Telegram 보존)
@@ -3861,6 +5221,13 @@
     setOrderFormBusy(true);
     const clickedAt = performance.now();
     try {
+      let realtimeFallbackReason = '';
+      // 로그인 직후 Realtime 설정 비동기 초기화가 끝나기 전에 등록을 누르더라도
+      // 느린 Apps Script 경로로 바로 추락하지 않고 설정 확인을 먼저 완료합니다.
+      if (!novaRealtime_.configLoaded) {
+        const realtimeReady = await initNovaRealtime_();
+        if (!realtimeReady && !novaRealtime_.configLoaded) realtimeFallbackReason = 'REALTIME_CONFIG_UNAVAILABLE';
+      }
       if (novaRealtimeIsEnabled_()) {
         try {
           const realtime = await novaRealtimeCreateHousemanOrder_(payload);
@@ -3869,14 +5236,24 @@
           void mirrorRealtimeHousemanOrderToSheet_(realtime.mirrorPayload);
           resetOrderForm(true);
           const elapsed = Math.round(performance.now() - clickedAt);
-          showToast(realtime.order.assignedName
-            ? `${realtime.order.roomNo}호 · ${realtime.order.assignedName}님에게 자동 배정했습니다.`
-            : `${realtime.order.roomNo}호 미배정 오더를 등록했습니다.`);
-          setSyncStatus(`${realtime.order.roomNo}호 오더 DB 저장 완료 · ${elapsed}ms`);
-          return;
+          const assignedDisplay = String(realtime.order.assignedName || realtime.order.assignedEmployeeNo || '').trim();
+          const realtimeServerMs = Math.max(0, Number(realtime.timing?.totalMs || 0));
+          const housemanCreatePathLabel = `Realtime ${elapsed}ms${realtimeServerMs > 0 ? ` · 서버 ${realtimeServerMs}ms` : ''}`;
+          const registrationTimingMessage = realtime.order.autoAssigned
+            ? `${realtime.order.roomNo}호 · ${assignedDisplay || '하우스맨'}님 자동배정 완료 · ${housemanCreatePathLabel}`
+            : realtime.order.assignedEmployeeNo
+              ? `${realtime.order.roomNo}호 · ${assignedDisplay || '하우스맨'}님 배정완료 · ${housemanCreatePathLabel}`
+              : `${realtime.order.roomNo}호 · 오더 등록 완료 · ${housemanCreatePathLabel}`;
+          showToast(registrationTimingMessage);
+          setSyncStatus(`${realtime.order.roomNo}호 오더 DB 저장 완료 · ${housemanCreatePathLabel}`);
+      return;
         } catch (realtimeError) {
+          realtimeFallbackReason = String(realtimeError?.code || realtimeError?.message || 'REALTIME_ERROR')
+            .replace(/\s+/g, ' ').trim().slice(0, 80);
           console.warn('[NOVA Realtime] 하우스맨 등록은 기존 저장경로로 자동 전환합니다.', realtimeError);
         }
+      } else if (!realtimeFallbackReason) {
+        realtimeFallbackReason = novaRealtime_.configLoaded ? 'REALTIME_DISABLED' : 'REALTIME_CONFIG_UNAVAILABLE';
       }
 
       // Realtime 비활성/오류 시 기존 동작을 그대로 유지합니다.
@@ -3884,9 +5261,21 @@
       if (!result?.ok) throw new Error(result?.message || '오더 등록에 실패했습니다.');
       replacePendingOrderLocal_(pendingOrder.orderId, result.order, result.version);
       resetOrderForm(true);
+      const legacyElapsed = Math.round(performance.now() - clickedAt);
+      const legacyServerMs = Math.max(0, Number(result.timing?.totalMs || result.performance?.elapsedMs || 0));
+      const legacyPathLabel = `Apps Script ${legacyElapsed}ms${legacyServerMs > 0 ? ` · 서버 ${legacyServerMs}ms` : ''}`;
+      const legacyTiming = result.timing || {};
+      const legacyTimingDetails = [
+        `잠금 ${Math.max(0, Number(legacyTiming.lockWaitMs || 0))}ms`,
+        `자동배정 ${Math.max(0, Number(legacyTiming.autoAssignMs || 0))}ms`,
+        `쓰기 ${Math.max(0, Number(legacyTiming.writeMs || 0))}ms`,
+        `flush ${Math.max(0, Number(legacyTiming.flushMs || 0))}ms`
+      ].join(' · ');
+      const legacyDiagnosticLabel = `${legacyPathLabel} · 우회 ${realtimeFallbackReason || 'UNKNOWN'} · ${legacyTimingDetails}`;
       showToast(result.order.assignedName
-        ? `${result.order.roomNo}호 · ${result.order.assignedName}님에게 자동 배정했습니다.`
-        : `${result.order.roomNo}호 미배정 오더를 등록했습니다.`);
+        ? `${result.order.roomNo}호 · ${result.order.assignedName}님 자동배정 완료 · ${legacyDiagnosticLabel}`
+        : `${result.order.roomNo}호 미배정 오더 등록 완료 · ${legacyDiagnosticLabel}`);
+      setSyncStatus(`${result.order.roomNo}호 오더 저장 완료 · ${legacyDiagnosticLabel}`);
       const telegram = result.telegram || {};
       if (telegram.queued && telegram.queueRecordId) {
         void callServer('dispatchHousemanOrderTelegramFast', state.token, {
@@ -4086,19 +5475,110 @@
       showToast('오더는 저장되었습니다. 기존 이력 동기화가 완료된 뒤 처리할 수 있습니다.');
       return;
     }
-    const payload = { orderId: order.orderId, action, expectedVersion: Number(order.version || 0) };
+    const payload = {
+      orderId: order.orderId,
+      action,
+      expectedVersion: Number(order.version || 0),
+      rowNumber: Number(order.rowNumber || 0)
+    };
     if (action === 'ASSIGN') payload.employeeNo = $('detailAssignee').value;
     if (action === 'UNABLE') {
       const reason = window.prompt('처리불가 사유를 입력하세요.');
       if (reason === null) return;
       payload.reason = reason.trim();
     }
+    const actionStartedAt = performance.now();
     try {
-      const result = await callServer('updateHousemanOrder', state.token, payload);
+      if (
+        action === 'ASSIGN'
+        && String(order?.statusCode || '').trim().toUpperCase() === 'REGISTERED'
+        && novaRealtimeIsEnabled_()
+      ) {
+        try {
+          const realtime = await novaRealtimeAssignHousemanOrder_(order, payload.employeeNo);
+          const elapsed = Math.round(performance.now() - actionStartedAt);
+          const serverElapsed = Number(realtime.timing?.totalMs || 0);
+          const pendingOrder = Object.assign({}, realtime.order, {
+            rowNumber: Number(order.rowNumber || 0),
+            version: Number(order.version || 0),
+            __sheetMirrorPending: true,
+            __sheetMirrorStartedAt: Date.now()
+          });
+          upsertOrderLocal_(pendingOrder, state.indicator.version);
+          closeModal();
+          showToast(`${pendingOrder.roomNo}호 배정 완료 · Realtime ${elapsed}ms${serverElapsed ? ` · 서버 ${serverElapsed}ms` : ''}`);
+          setSyncStatus(`하우스맨 배정 DB 확정 · ${elapsed}ms${serverElapsed ? ` · 서버 ${serverElapsed}ms` : ''}`);
+          void mirrorRealtimeHousemanAssignmentToSheet_(order, payload.employeeNo);
+          return;
+        } catch (realtimeError) {
+          console.warn('[NOVA Realtime] 미배정 수동배정은 기존 저장경로로 자동 전환합니다.', realtimeError?.message || realtimeError);
+        }
+      }
+
+      const managerRole = String(state.bootstrap?.user?.role || '').trim().toUpperCase();
+      if (
+        action !== 'ASSIGN'
+        && ['ADMIN', 'ORDER'].includes(managerRole)
+        && ['ACCEPT', 'START', 'COMPLETE', 'UNABLE', 'REOPEN'].includes(action)
+        && novaRealtimeIsEnabled_()
+      ) {
+        try {
+          const realtime = await novaRealtimeHousemanWorkerAction_(payload);
+          upsertOrderLocal_(realtime.order, state.indicator.version);
+          closeModal();
+          const elapsed = Math.round(performance.now() - actionStartedAt);
+          showToast(action === 'REOPEN' ? '오더를 다시 열었습니다.' : `${realtime.order?.roomNo || order.roomNo}호 ${housemanActionMessage_(action)}`);
+          setSyncStatus(`하우스맨 관리자 DB 확정 · ${elapsed}ms`);
+          return;
+        } catch (realtimeError) {
+          const code = String(realtimeError?.code || '').trim().toUpperCase();
+          if (Number(realtimeError?.status || 0) !== 404 && code !== 'HOUSEMAN_ORDER_NOT_FOUND') throw realtimeError;
+          console.warn('[NOVA Realtime] DB 미존재 관리자 하우스맨 오더는 기존 저장경로로 처리합니다.', realtimeError?.message || realtimeError);
+        }
+      }
+
+      const result = action === 'ASSIGN'
+        ? await callServer('assignHousemanOrderFast', state.token, payload)
+        : await callServer('updateHousemanOrder', state.token, payload);
       if (!result?.ok) throw new Error(result?.message || '오더를 변경하지 못했습니다.');
       upsertOrderLocal_(result.order, result.version);
       closeModal();
-      showToast(`${result.order.roomNo}호 오더: ${result.order.statusLabel}`);
+
+      if (action === 'ASSIGN') {
+        const elapsed = Math.round(performance.now() - actionStartedAt);
+        const serverElapsed = Number(result.performance?.elapsedMs || 0);
+        const telegram = result.telegram || {};
+        showToast(`${result.order.roomNo}호 배정 완료 · ${elapsed}ms${serverElapsed ? ` · 서버 ${serverElapsed}ms` : ''}`);
+        setSyncStatus(`하우스맨 배정 완료 · ${elapsed}ms${serverElapsed ? ` · 서버 ${serverElapsed}ms` : ''}`);
+        if (telegram.deferred) {
+          void callServer('finalizeHousemanAssignmentAux', state.token, {
+            orderId: result.order.orderId,
+            employeeNo: result.order.assignedEmployeeNo,
+            rowNumber: Number(result.order.rowNumber || 0),
+            version: Number(result.version || result.order.version || 0)
+          }).then(aux => {
+            const queued = aux?.telegram || {};
+            if (queued.queued && queued.queueRecordId) {
+              return callServer('dispatchHousemanOrderTelegramFast', state.token, {
+                recordId: queued.queueRecordId,
+                rowNumber: Number(queued.queueRowNumber || 0)
+              });
+            }
+            return null;
+          }).catch(error => {
+            console.warn('하우스맨 배정 감사·텔레그램 후속처리는 큐 재확인이 필요합니다.', error?.message || error);
+          });
+        } else if (telegram.queued && telegram.queueRecordId) {
+          void callServer('dispatchHousemanOrderTelegramFast', state.token, {
+            recordId: telegram.queueRecordId,
+            rowNumber: Number(telegram.queueRowNumber || 0)
+          }).catch(error => {
+            console.warn('하우스맨 배정 텔레그램 즉시발송은 큐 재시도로 전환됩니다.', error?.message || error);
+          });
+        }
+      } else {
+        showToast(`${result.order.roomNo}호 오더: ${result.order.statusLabel}`);
+      }
     } catch (error) {
       showToast(error?.message || '오더 처리 오류');
     }
@@ -4161,6 +5641,9 @@
         });
         if (!result?.ok) throw new Error(result?.message || '오더 수정에 실패했습니다.');
         upsertOrderLocal_(result.order, result.version);
+        // Apps Script EDIT가 확정한 동일 내용을 DB 표시자료에만 반영한다.
+        // 상태/배정 필드는 content-sync가 건드리지 않으므로 진행중 오더와 충돌하지 않는다.
+        void syncRealtimeHousemanEditedContent_(result.order);
         closeModal();
         showToast('오더 내용을 수정했습니다.');
       } catch (error) { showToast(error?.message || '오더 수정 오류'); }
@@ -4359,6 +5842,7 @@
             <button class="action-button status-change" type="button" data-room-action="CHANGE_ROOM_STATUS">상태변경</button>
             <button class="action-button checkout" type="button" data-room-action="CHANGE_ROOM_STATUS" data-room-status="CHECKED_OUT">퇴실</button>
             <button class="action-button" type="button" data-room-action="ASSIGN_ROOMMAID">배정</button>
+            <button class="action-button danger" type="button" data-room-action="CLEAR_ASSIGNMENT">배정 초기화</button>
             <button class="action-button" type="button" data-room-action="CLEANING_START">청소시작</button>
             <button class="action-button primary" type="button" data-room-action="CLEANING_COMPLETE"${cleaningCompletionLocked ? ' disabled title="룸메이드 청소완료가 이미 기록된 객실입니다." aria-label="완료 처리됨"' : ''}>${cleaningCompletionLocked ? '완료 처리됨' : '청소완료'}</button>
             <button class="action-button" type="button" data-room-action="QM_ASSIGN">QM배정</button>
@@ -4589,7 +6073,25 @@
       vip: action === 'UPDATE_OPERATION_FLAGS' ? Boolean($('roomVipFlag')?.checked) : Boolean(room.vip),
       importantRoom: action === 'UPDATE_OPERATION_FLAGS' ? Boolean($('roomImportantFlag')?.checked) : Boolean(room.importantRoom),
       operationalStatus: action === 'UPDATE_ROOM_OPERATION_STATUS' ? normalizeIndicatorRoomOperationalStatus_(forcedOperationalStatus) : normalizeIndicatorRoomOperationalStatus_(room.operationalStatus),
-      expectedVersion: Number(room.version || 0)
+      // Realtime 요청은 DB version을 사용하고, Realtime 비활성/장애 시 legacy CLEANING_RESET만
+      // 별도로 보존한 Sheet version을 사용한다. 두 버전 도메인을 섞지 않는다.
+      // CLEAR_ASSIGNMENT는 관리자가 현재 배정을 '없음'으로 만드는 멱등 작업이므로
+      // 지연된 Realtime version 때문에 초기화가 거절되지 않도록 version 충돌검사를 사용하지 않는다.
+      expectedVersion: action === 'CLEAR_ASSIGNMENT' ? 0 : Number(room.version || 0),
+      // Cloud Run은 DB version을 사용하되, version이 달라졌을 때 실제로 이 작업과
+      // 충돌하는 필드가 바뀌었는지 expectedState로 한 번 더 판정한다.
+      expectedState: {
+        roomStatus: String(room.roomStatus || ''),
+        cleaningStatus: String(room.cleaningStatus || ''),
+        cleaningType: String(room.cleaningType || 'NORMAL'),
+        assignmentType: String(room.assignmentType || 'SOLO'),
+        roommaidEmployeeNo: String(room.roommaidEmployeeNo || ''),
+        secondaryRoommaidEmployeeNo: String(room.secondaryRoommaidEmployeeNo || ''),
+        qmEmployeeNo: String(room.qmEmployeeNo || ''),
+        operationalStatus: String(room.operationalStatus || '')
+      },
+      // Realtime 비활성/legacy 퇴실 경로에서는 반드시 Sheet version을 사용한다.
+      sheetExpectedVersion: Number(room.__sheetVersion ?? room.version ?? 0)
     };
     const validationError = validateRoomActionPayload_(payload);
     if (validationError) {
@@ -4604,7 +6106,21 @@
     const index = rooms.findIndex(item => item.roomNo === room.roomNo && item.site === room.site);
     const beforeRoom = index >= 0 ? Object.assign({}, rooms[index]) : null;
     const optimisticPatch = buildOptimisticRoomPatch_(room, payload);
-    const fastAction = Boolean(optimisticPatch);
+    if (action === 'CHANGE_ROOM_STATUS'
+        && String(payload.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT'
+        && optimisticPatch) {
+      const realtimeRoomPatch = {};
+      [
+        'cleaningStatus', 'cleaningType', 'assignmentType',
+        'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo'
+      ].forEach(key => {
+        if (Object.prototype.hasOwnProperty.call(optimisticPatch, key)) {
+          realtimeRoomPatch[key] = optimisticPatch[key];
+        }
+      });
+      payload.realtimeRoomPatch = realtimeRoomPatch;
+    }
+    const fastAction = Boolean(optimisticPatch) && action !== 'QM_ASSIGN'; // QM배정은 DB+Sheet 확정 후에만 화면반영
     const originalButtonText = sourceButton?.textContent || '';
     const actionLabel = {
       CHANGE_ROOM_STATUS: payload.roomStatus === 'CHECKED_OUT' ? '퇴실 전환' : '객실상태 변경',
@@ -4637,6 +6153,9 @@
       const result = await saveRoomActionRealtimeOrLegacy_('updateRoomOperation', payload);
       if (!result?.ok) throw new Error(result?.message || '객실 작업을 저장하지 못했습니다.');
       const resultRoom = Object.assign({}, result.room || {});
+      if (action === 'CLEAR_ASSIGNMENT' || action === 'CLEANING_RESET') {
+        Object.assign(resultRoom, emptyRoomAssignmentPatch_(), { cleaningStatus: 'WAITING' });
+      }
       if (action === 'UPDATE_ROOM_OPERATION_STATUS') {
         // 서버 저장 성공 응답에서는 요청한 조치상태를 화면 확정값으로 강제 병합한다.
         // stale delta/부분응답이 끼어도 '저장완료인데 표시 없음' 상태가 생기지 않게 한다.
@@ -4680,7 +6199,9 @@
       showRoomActionToast_(duplicateIgnored
         ? `${room.roomNo}호는 이미 청소완료 처리되어 중복 요청을 제외했습니다.`
         : action === 'CLEANING_RESET'
-          ? `${room.roomNo}호 청소완료 실적 ${Number(result.resetCompletionCount || 0)}건 초기화 완료`
+          ? (result.mirrorPending === true
+              ? `${room.roomNo}호 청소완료 실적 초기화 완료 · 이력 동기화 중`
+              : `${room.roomNo}호 청소완료 실적 ${Number(result.resetCompletionCount || 0)}건 초기화 완료`)
           : `${room.roomNo}호 ${actionLabel} 완료`);
     } catch (error) {
       if (fastAction && index >= 0 && beforeRoom) {
@@ -4834,6 +6355,7 @@
 
   function handleRoomUploadPreview(event) { // (업로드 파일 서버 검증)
     event.preventDefault();
+    const previewStartedAt = performance.now();
     const form = event.currentTarget;
     const file = $('roomUploadFile').files?.[0];
     if (!file) return showToast('업로드할 파일을 선택하세요.');
@@ -4848,6 +6370,11 @@
         }
         state.indicator.uploadPreviewId = result.previewId || '';
         renderRoomUploadPreview_(result);
+        const totalMs = Math.round(performance.now() - previewStartedAt);
+        const serverMs = Number(result.performance?.elapsedMs || 0);
+        const previewStatusText = `객실현황 검증 완료 · 총 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}`;
+        if ($('uploadPerformanceStatus')) $('uploadPerformanceStatus').textContent = previewStatusText;
+        setSyncStatus(previewStatusText);
       })
       .withFailureHandler(error => {
         setUploadBusy_(false);
@@ -4878,6 +6405,7 @@
         ${errors.length ? `<div class="upload-error-list">${errors.map(text => `<div>${escapeHtml(text)}</div>`).join('')}</div>` : ''}
         ${(result.warnings || []).length ? `<div class="upload-warning-list">${result.warnings.map(text => `<div>${escapeHtml(text)}</div>`).join('')}</div>` : ''}
         <p class="upload-message">${escapeHtml(result.message || '')}</p>
+        <div id="uploadPerformanceStatus" class="upload-processing"></div>
         ${result.canApply ? `<div class="modal-actions">
           <button id="uploadResetApplyButton" class="action-button danger" type="button">초기화 후 반영</button>
           <button id="uploadApplyButton" class="action-button primary" type="button">기존 상태 유지 반영</button>
@@ -4892,6 +6420,7 @@
   }
 
   async function applyRoomUploadPreview_(resetExisting) { // (검증된 객실현황 유지 반영·초기화 후 교체)
+    const clickedAt = performance.now();
     const previewId = state.indicator.uploadPreviewId;
     if (!previewId) return showToast('유효한 업로드 미리보기가 없습니다.');
 
@@ -4912,6 +6441,11 @@
       button.textContent = resetMode ? '초기화 후 반영 중…' : '반영 중…';
     }
     if (otherButton) otherButton.disabled = true;
+    if ($('uploadPerformanceStatus')) {
+      $('uploadPerformanceStatus').textContent = resetMode
+        ? '객실현황 초기화 후 반영 중…'
+        : '객실현황 반영 중…';
+    }
     try {
       const result = await callServer('applyRoomStatusUpload', state.token, previewId, {
         resetExisting: resetMode
@@ -4928,14 +6462,33 @@
         renderRoomFilters();
         renderRoomGrid();
       }
-      showToast(result.message || '객실현황을 반영했습니다.');
-      await loadIndicatorSnapshot({ silent: true, force: true });
+      const totalMs = Math.round(performance.now() - clickedAt);
+      const serverMs = Number(result.performance?.elapsedMs || result.timing?.totalMs || 0);
+      const writeMs = Number(result.timing?.currentWriteMs || 0);
+      const lockMs = Number(result.timing?.lockWaitMs || 0);
+      const flushMs = Number(result.timing?.flushMs || 0);
+      const applyStatusText =
+        `객실현황 반영 완료 · 총 ${totalMs}ms${serverMs ? ` · 서버 ${serverMs}ms` : ''}`
+        + `${writeMs ? ` · 저장 ${writeMs}ms` : ''}${lockMs ? ` · 잠금 ${lockMs}ms` : ''}${flushMs ? ` · flush ${flushMs}ms` : ''}`;
+      showToast(applyStatusText);
+      setSyncStatus(applyStatusText);
+
+      // 서버가 이미 최신 객실목록을 반환했으므로 완료 응답 직후 동일 자료를 다시 전체조회하지 않습니다.
+      // 보조 재조회는 사용자 응답 경로 밖에서 수행해 업로드 완료 체감을 지연시키지 않습니다.
+      window.setTimeout(() => {
+        if (state.activeMenu !== 'indicator' || !state.indicator.loaded) return;
+        void loadIndicatorSnapshot({ silent: true, force: true })
+          .catch(error => console.error('[NOVA] 업로드 후 보조 동기화 실패:', error));
+      }, 1200);
     } catch (error) {
       if (button) {
         button.disabled = false;
         button.textContent = originalText;
       }
       if (otherButton) otherButton.disabled = false;
+      if ($('uploadPerformanceStatus')) {
+        $('uploadPerformanceStatus').textContent = `객실현황 반영 오류 · ${error?.message || '서버 처리 오류'}`;
+      }
       showToast(error?.message || '객실현황 반영 오류');
     }
   }
@@ -5217,23 +6770,135 @@
     $('qmQualityContent').querySelectorAll('[data-qm-photo-view]').forEach(button => button.addEventListener('click', () => openQmPhotoViewer_(button.dataset.qmPhotoView)));
   }
 
-  async function startQmInspection_(roomNo, button) { // (점검 시작 즉시 장소별 체크리스트 팝업)
+  function applyQmRealtimeRoomLocal_(roomNo, realtimeRoom) { // (QM Realtime 응답 즉시 모바일 반영)
+    const rooms = state.mobile.data?.rooms || [];
+    const index = rooms.findIndex(item => String(item.roomNo || '') === String(roomNo || ''));
+    if (index < 0 || !realtimeRoom) return null;
+    const mapped = novaRealtimeMapRow_(realtimeRoom);
+    rooms[index] = novaRealtimeMergeRoom_(rooms[index], mapped);
+    if (state.activeMenu === 'qm') {
+      renderMobileSummary();
+      renderMobileList();
+    }
+    return rooms[index];
+  }
+
+  function beginQmInspectionDraftInit_(active) { // (상태변경 후 체크리스트 초안은 background 준비)
+    if (!active) return Promise.reject(new Error('점검정보가 없습니다.'));
+    if (active.draft?.draftId) return Promise.resolve(active);
+    if (active.initPromise) return active.initPromise;
+    const payload = {
+      businessDate: state.mobile.businessDate,
+      site: state.mobile.site,
+      roomNo: active.roomNo,
+      expectedVersion: Number(active.sheetExpectedVersion || 0),
+      realtimeStarted: true,
+      realtimeVersion: Number(active.roomVersion || 0)
+    };
+    const promise = callServer('startQmInspection', state.token, payload).then(result => {
+      if (!result?.ok) throw new Error(result?.message || '체크리스트 저장준비에 실패했습니다.');
+      const serverDraft = result.draft || {};
+      const currentDraft = active.draft || { answers: [], defects: [] };
+      active.checklist = result.checklist || active.checklist;
+      active.draft = active.localDirty
+        ? Object.assign({}, serverDraft, currentDraft, {
+            draftId: serverDraft.draftId,
+            rowNumber: Number(serverDraft.rowNumber || 0),
+            startedAt: serverDraft.startedAt || currentDraft.startedAt || '',
+            savedAt: serverDraft.savedAt || currentDraft.savedAt || ''
+          })
+        : serverDraft;
+      if (state.qmChecklist.activeInspection === active) {
+        const modalOpen = Boolean(document.querySelector('.qm-checklist-modal'));
+        if (modalOpen && !active.localDirty) openQmInspectionModal_();
+        const status = $('qmDraftSaveStatus');
+        if (status) status.textContent = active.localDirty ? '저장 준비 완료 · 변경사항 저장 대기…' : `저장 준비 완료 ${active.draft?.savedAt || ''}`;
+        if (modalOpen && active.localDirty) scheduleQmInspectionAutosave_();
+      }
+      return active;
+    });
+    const trackedPromise = promise.finally(() => {
+      if (active.initPromise === trackedPromise) active.initPromise = null;
+    });
+    active.initPromise = trackedPromise;
+    return trackedPromise;
+  }
+
+  async function ensureQmInspectionDraftReady_(active) { // (사진/저장 시 background 초안 준비 완료 보장)
+    const target = active || state.qmChecklist.activeInspection;
+    if (!target) throw new Error('진행 중인 점검이 없습니다.');
+    if (!target.draft?.draftId) await beginQmInspectionDraftInit_(target);
+    if (!target.draft?.draftId) throw new Error('체크리스트 저장준비가 완료되지 않았습니다. 다시 시도하세요.');
+    return target;
+  }
+
+  async function startQmInspection_(roomNo, button) { // (QM Realtime 시작 후 체크리스트 즉시 노출)
     const local = state.qmChecklist.activeInspection;
-    if (local?.roomNo === roomNo && local?.draft?.draftId) {
+    if (local?.roomNo === roomNo) {
       openQmInspectionModal_();
       return;
     }
     if (button) button.disabled = true;
     try {
-      const room = (state.mobile.data?.rooms || []).find(item => item.roomNo === roomNo);
-      const result = await callServer('startQmInspection', state.token, { businessDate: state.mobile.businessDate, site: state.mobile.site, roomNo, expectedVersion: Number(room?.version || 0) });
-      if (!result?.ok) throw new Error(result?.message || '점검을 시작하지 못했습니다.');
-      state.mobile.version = Number(result.version || state.mobile.version);
-      state.mobile.data.qmChecklist = result.checklist || state.mobile.data.qmChecklist;
-      state.qmChecklist.activeInspection = { roomNo, checklist: result.checklist, draft: result.draft, roomVersion: Number(result.room?.version || result.version || 0) };
+      const room = (state.mobile.data?.rooms || []).find(item => String(item.roomNo || '') === String(roomNo || ''));
+      if (!room) throw new Error('점검할 객실을 찾을 수 없습니다.');
+
+      if (!novaRealtime_.configLoaded) await initNovaRealtime_();
+      if (!novaRealtimeIsEnabled_()) {
+        const result = await callServer('startQmInspection', state.token, {
+          businessDate: state.mobile.businessDate, site: state.mobile.site, roomNo,
+          expectedVersion: Number(room?.__sheetVersion || room?.version || 0)
+        });
+        if (!result?.ok) throw new Error(result?.message || '점검을 시작하지 못했습니다.');
+        state.mobile.version = Number(result.version || state.mobile.version);
+        state.mobile.data.qmChecklist = result.checklist || state.mobile.data.qmChecklist;
+        state.qmChecklist.activeInspection = { roomNo, checklist: result.checklist, draft: result.draft, roomVersion: Number(result.room?.version || result.version || 0), localDirty: false };
+        openQmInspectionModal_();
+        loadMobileSnapshot({ silent: true, force: true }).catch(error => console.warn('[NOVA QM] 시작 후 화면갱신 실패:', error));
+        return;
+      }
+
+      const realtime = await saveRoomActionRealtimeOrLegacy_('updateMobileRoomOperation', {
+        businessDate: state.mobile.businessDate,
+        site: state.mobile.site,
+        roomNo,
+        action: 'QM_START',
+        expectedVersion: Number(room?.version || 0),
+        expectedState: {
+          cleaningStatus: String(room?.cleaningStatus || ''),
+          qmEmployeeNo: String(room?.qmEmployeeNo || '')
+        }
+      });
+      const localRoom = applyQmRealtimeRoomLocal_(roomNo, realtime.room) || room;
+      const checklist = state.mobile.data?.qmChecklist || {};
+      if (!(checklist.items || []).length) {
+        throw new Error('QM 체크리스트를 불러오지 못했습니다. 화면을 새로고침한 뒤 다시 시도하세요.');
+      }
+      const active = {
+        roomNo,
+        checklist,
+        draft: { answers: [], defects: [], startedAt: '', savedAt: '' },
+        roomVersion: Number(realtime.version || realtime.room?.version || localRoom?.version || 0),
+        sheetExpectedVersion: Number(room?.__sheetVersion || 0),
+        localDirty: false,
+        realtime: true,
+        initPromise: null
+      };
+      state.qmChecklist.activeInspection = active;
       openQmInspectionModal_();
-      await loadMobileSnapshot({ silent: true, force: true });
-    } catch (error) { showToast(error?.message || '점검 시작 오류'); if (button) button.disabled = false; }
+      if (button) button.disabled = false;
+      void beginQmInspectionDraftInit_(active).catch(error => {
+        console.error('[NOVA QM] 체크리스트 background 준비 실패:', error);
+        if (state.qmChecklist.activeInspection === active) {
+          const status = $('qmDraftSaveStatus');
+          if (status) status.textContent = `저장 준비 오류 · ${error?.message || ''}`;
+          showToast('점검은 시작됐지만 체크리스트 저장준비가 지연되고 있습니다. 저장 시 자동 재시도합니다.');
+        }
+      });
+    } catch (error) {
+      showToast(error?.message || '점검 시작 오류');
+      if (button) button.disabled = false;
+    }
   }
 
   function openQmChecklistModal_(roomNo, button) { // (진행중 점검 다시 열기 호환)
@@ -5251,7 +6916,7 @@
     openModal(`<div class="modal-card qm-checklist-modal rc3">
       <div class="modal-header"><div><small>QM 실시간 점검</small><h2>${escapeHtml(active.roomNo)} 장소별 체크리스트</h2><p>${escapeHtml(draft.startedAt || '')} 시작</p></div><button class="modal-close" data-close-modal>×</button></div>
       <div class="modal-body">
-        <div class="qm-checklist-guide"><b>실시간 저장</b> · 장소별로 양호/불량을 선택하고, 하자는 사진과 함께 등록할 수 있습니다. 최종 저장 시 지적이 있으면 재정비로 전환됩니다.<span id="qmDraftSaveStatus">${escapeHtml(draft.savedAt ? `마지막 저장 ${draft.savedAt}` : '저장 대기')}</span></div>
+        <div class="qm-checklist-guide"><b>점검</b> · 양호/불량을 선택하세요. 불량은 내용을 입력하고, 사진 필수 항목만 사진을 등록하세요.<span id="qmDraftSaveStatus">${escapeHtml(draft.savedAt ? `마지막 저장 ${draft.savedAt}` : '저장 대기')}</span></div>
         <div id="qmChecklistInspectionItems" class="qm-checklist-place-list">
           ${(checklist.groups || []).map(group => {
             const placeDefects = defects.filter(defect => defect.placeCode === group.place.code);
@@ -5341,6 +7006,8 @@
   }
 
   function scheduleQmInspectionAutosave_() { // (입력 후 0.8초 자동저장)
+    const active = state.qmChecklist.activeInspection;
+    if (active) active.localDirty = true;
     collectQmInspectionForm_();
     const status = $('qmDraftSaveStatus');
     if (status) status.textContent = '변경사항 저장 대기…';
@@ -5350,14 +7017,20 @@
 
   async function saveQmInspectionDraftNow_(showMessage) { // (점검 초안 서버 저장)
     const active = state.qmChecklist.activeInspection;
-    if (!active?.draft?.draftId) return null;
+    if (!active) return null;
+    if (!active?.draft?.draftId) {
+      const status = $('qmDraftSaveStatus');
+      if (status) status.textContent = '저장 준비 중…';
+      try { await ensureQmInspectionDraftReady_(active); }
+      catch (error) { if (status) status.textContent = `저장 준비 오류 · ${error?.message || ''}`; if (showMessage) showToast(error?.message || '임시 저장 준비 오류'); return null; }
+    }
     if (state.qmChecklist.autosaveTimer) clearTimeout(state.qmChecklist.autosaveTimer);
     state.qmChecklist.autosaveTimer = null;
     const draft = collectQmInspectionForm_() || active.draft;
     const status = $('qmDraftSaveStatus');
     if (status) status.textContent = '저장 중…';
     try {
-      const result = await callServer('saveQmInspectionDraft', state.token, { draftId: draft.draftId, answers: draft.answers, defects: draft.defects });
+      const result = await callServer('saveQmInspectionDraft', state.token, { draftId: draft.draftId, draftRowNumber: Number(draft.rowNumber || 0), answers: draft.answers, defects: draft.defects });
       if (!result?.ok) throw new Error(result?.message || '임시 저장하지 못했습니다.');
       active.draft = Object.assign({}, active.draft, result.draft || {}, { answers: draft.answers, defects: draft.defects });
       if (status) status.textContent = `실시간 저장 ${result.savedAt || ''}`;
@@ -5456,10 +7129,11 @@
     }
   }
 
-  async function submitQmInspectionFinal_(event) { // (QM 최종완료·재정비 저장)
+  async function submitQmInspectionFinal_(event) { // (QM Realtime 최종상태 즉시반영·상세이력 background 저장)
     const button = event.currentTarget;
     button.disabled = true;
     const active = state.qmChecklist.activeInspection;
+    if (!active) { button.disabled = false; return; }
     const draft = collectQmInspectionForm_();
     const items = active.checklist?.items || [];
     const answerMap = {};
@@ -5468,22 +7142,86 @@
     if (missing) { showToast(`${missing.placeLabel} · ${missing.label} 점검결과를 선택하세요.`); button.disabled = false; return; }
     const failNoNote = items.find(item => answerMap[item.code]?.result === 'FAIL' && !answerMap[item.code]?.note);
     if (failNoNote) { showToast(`${failNoNote.placeLabel} 불량 내용을 입력하세요.`); button.disabled = false; return; }
+    const photoMissing = items.find(item => item.photoRequired && !(answerMap[item.code]?.photos || []).length);
+    if (photoMissing) { showToast(`${photoMissing.placeLabel} · ${photoMissing.label} 항목의 사진을 등록하세요.`); button.disabled = false; return; }
     const invalidDefect = (draft.defects || []).find(defect => !defect.note || !(defect.photos || []).length);
     if (invalidDefect) { showToast('추가 하자는 내용과 사진을 모두 등록하세요.'); button.disabled = false; return; }
+
+    if (state.qmChecklist.autosaveTimer) window.clearTimeout(state.qmChecklist.autosaveTimer);
+    state.qmChecklist.autosaveTimer = null;
+    const passed = !items.some(item => answerMap[item.code]?.result === 'FAIL') && !(draft.defects || []).length;
+    const realtimeAction = passed ? 'QM_COMPLETE' : 'QM_REWORK';
+    const targetStatus = passed ? 'QM_COMPLETED' : 'REWORK';
+    const requestId = novaRealtimeRequestId_(realtimeAction, active.roomNo);
+    const room = (state.mobile.data?.rooms || []).find(item => String(item.roomNo || '') === String(active.roomNo || ''));
+
     try {
-      await saveQmInspectionDraftNow_(false);
-      const result = await callServer('submitQmChecklistInspection', state.token, {
-        businessDate: state.mobile.businessDate, site: state.mobile.site, roomNo: active.roomNo,
-        draftId: active.draft.draftId, revision: active.checklist.revision,
-        answers: active.draft.answers, defects: active.draft.defects, expectedVersion: Number(active.roomVersion || 0)
+      if (!novaRealtime_.configLoaded) await initNovaRealtime_();
+      if (!novaRealtimeIsEnabled_()) {
+        await ensureQmInspectionDraftReady_(active);
+        const result = await callServer('submitQmChecklistInspection', state.token, {
+          businessDate: state.mobile.businessDate, site: state.mobile.site, roomNo: active.roomNo,
+          draftId: active.draft.draftId, draftRowNumber: Number(active.draft.rowNumber || 0), revision: active.checklist.revision,
+          answers: draft.answers, defects: draft.defects, expectedVersion: Number(active.roomVersion || 0)
+        });
+        if (!result?.ok) throw new Error(result?.message || '점검결과를 저장하지 못했습니다.');
+        state.qmChecklist.activeInspection = null;
+        closeModal();
+        showToast(result.message || '점검결과를 저장했습니다.');
+        loadMobileSnapshot({ silent: true, force: true }).catch(error => console.warn('[NOVA QM] 완료 후 화면갱신 실패:', error));
+        return;
+      }
+
+      const realtime = await saveRoomActionRealtimeOrLegacy_('updateMobileRoomOperation', {
+        businessDate: state.mobile.businessDate,
+        site: state.mobile.site,
+        roomNo: active.roomNo,
+        action: realtimeAction,
+        requestId,
+        expectedVersion: Number(active.roomVersion || room?.version || 0),
+        expectedState: {
+          cleaningStatus: String(room?.cleaningStatus || 'QM_CHECKING'),
+          qmEmployeeNo: String(room?.qmEmployeeNo || state.bootstrap?.user?.employeeNo || '')
+        }
       });
-      if (!result?.ok) throw new Error(result?.message || '점검결과를 저장하지 못했습니다.');
+      applyQmRealtimeRoomLocal_(active.roomNo, realtime.room);
+      active.roomVersion = Number(realtime.version || realtime.room?.version || active.roomVersion || 0);
       state.qmChecklist.activeInspection = null;
       closeModal();
-      showToast(result.message || '점검결과를 저장했습니다.');
-      await loadMobileSnapshot({ silent: true, force: true });
-    } catch (error) { showToast(error?.message || '체크리스트 저장 오류'); button.disabled = false; }
+      showToast(passed ? 'QM 점검완료를 반영했습니다.' : `하자 ${(draft.defects || []).length + items.filter(item => answerMap[item.code]?.result === 'FAIL').length}건 · 재정비를 반영했습니다.`);
+
+      // 무거운 Sheet 체크리스트/품질이력 저장은 사용자 응답 경로 밖에서 이어서 처리한다.
+      const persistDetail = async () => {
+        await ensureQmInspectionDraftReady_(active);
+        return callServer('submitQmChecklistInspection', state.token, {
+          businessDate: state.mobile.businessDate,
+          site: state.mobile.site,
+          roomNo: active.roomNo,
+          draftId: active.draft.draftId,
+          draftRowNumber: Number(active.draft.rowNumber || 0),
+          revision: active.checklist.revision,
+          answers: draft.answers,
+          defects: draft.defects,
+          expectedVersion: Number(active.sheetExpectedVersion || 0),
+          realtimeCommitted: true,
+          realtimeTargetStatus: targetStatus,
+          realtimeRequestId: requestId,
+          realtimeVersion: Number(realtime.version || 0)
+        });
+      };
+      void persistDetail().then(result => {
+        if (!result?.ok) throw new Error(result?.message || 'QM 상세이력 저장 실패');
+        loadMobileSnapshot({ silent: true, force: true }).catch(error => console.warn('[NOVA QM] 상세이력 저장 후 갱신 실패:', error));
+      }).catch(error => {
+        console.error('[NOVA QM] 상태 반영 후 상세이력 저장 실패:', error);
+        showToast(`QM 상태는 반영됐지만 상세이력 저장을 확인해야 합니다. · ${error?.message || ''}`);
+      });
+    } catch (error) {
+      showToast(error?.message || '체크리스트 저장 오류');
+      button.disabled = false;
+    }
   }
+
 
 
   function renderMobileShell(menuId) { // (직원 스마트폰 전용 화면 골격)
@@ -5524,6 +7262,7 @@
     ensureMobileSelectionControlsVisible_();
     $('mobileDate').addEventListener('change', event => {
       state.mobile.businessDate = event.target.value;
+      if (state.mobile.businessDate) sessionStorage.setItem('novaMobileBusinessDate', state.mobile.businessDate);
       state.mobile.building = '';
       state.mobile.floor = '';
       state.mobile.version = 0;
@@ -5531,6 +7270,7 @@
     });
     $('mobileSite').addEventListener('change', event => {
       state.mobile.site = event.target.value;
+      sessionStorage.setItem('novaMobileSite', String(state.mobile.site || ''));
       state.mobile.building = '';
       state.mobile.floor = '';
       state.mobile.version = 0;
@@ -5588,11 +7328,17 @@
     state.mobile.data = result;
     state.mobile.version = Number(result.version || 0);
     state.mobile.businessDate = result.selection?.businessDate || state.mobile.businessDate || state.bootstrap.app.businessDate;
+    if (state.mobile.businessDate) sessionStorage.setItem('novaMobileBusinessDate', state.mobile.businessDate);
     state.mobile.site = result.selection?.site ?? state.mobile.site;
+    sessionStorage.setItem('novaMobileSite', String(state.mobile.site || ''));
     renderMobileData();
-    if (novaRealtimeIsEnabled_() && state.bootstrap?.user?.role === 'ROOMMAID') {
-      // 무료모드: 모바일은 DB hydrate만 하고 Realtime 채널은 열지 않습니다.
+    const mobileRole = String(state.bootstrap?.user?.role || '').toUpperCase();
+    if (novaRealtimeIsEnabled_() && ['ROOMMAID', 'QM'].includes(mobileRole)) {
+      // ROOMMAID/QM은 Sheet 첫 화면 이후 DB의 본인 배정목록을 바로 보정한다.
       void novaRealtimeHydrateCurrentView_();
+    } else if (novaRealtimeIsEnabled_() && mobileRole === 'HOUSEMAN') {
+      // HOUSEMAN도 첫 Sheet 화면 직후 DB 배정목록을 바로 보조조회한다.
+      window.setTimeout(() => { void syncMobileDelta(); }, 0);
     }
   }
 
@@ -5848,7 +7594,7 @@
     return `<article class="mobile-room-card${roommaidMobileCardClass_(room, role)}${mobileCleaningActive ? ' mobile-card-cleaning' : ''}">
       <div class="mobile-card-top"><strong>${escapeHtml(room.roomNo)}</strong><span>${escapeHtml([room.building, room.floor ? `${room.floor}층` : ''].filter(Boolean).join(' · '))}</span></div>
       ${operationBadges ? `<div class="mobile-operation-badges">${operationBadges}</div>` : ''}
-      <div class="mobile-room-status"><b>${escapeHtml(roomStatus)}</b><span>${escapeHtml(cleaningStatus)}</span></div>
+      <div class="mobile-room-status"><b>${escapeHtml(role === 'QM' ? (assignedNames || '-') : roomStatus)}</b><span>${escapeHtml(cleaningStatus)}</span></div>
       ${role === 'ROOMMAID' ? `<div class="mobile-cleaning-type ${room.cleaningType === 'DS' ? 'ds' : ''}">${escapeHtml(cleaningTypeLabel)} · ${escapeHtml(assignmentTypeLabel)}</div><div class="mobile-assigned-names">${escapeHtml(assignedNames)}</div>` : ''}
       ${role === 'PUBLIC' ? `<div class="mobile-public-result ${room.departureDelayed ? 'delayed' : room.roomStatus === 'CHECKED_OUT' ? 'checked-out' : ''}">${room.departureDelayed ? '퇴실지연' : room.roomStatus === 'CHECKED_OUT' ? '퇴실 확인' : room.roomStatus === 'DUE_OUT' ? '퇴실예정' : escapeHtml(roomStatus)}</div>` : ''}
       ${actions ? `<div class="mobile-actions">${actions}</div>` : ''}
@@ -5881,7 +7627,14 @@
     const safePayload = Object.assign({}, payload || {});
     if (method === 'updateMobileRoomOperation') {
       const room = (state.mobile.data?.rooms || []).find(item => item.roomNo === safePayload.roomNo);
-      if (!safePayload.expectedVersion) safePayload.expectedVersion = Number(room?.version || 0);
+      const mobileRoomAction = String(safePayload.action || '').trim().toUpperCase();
+      const roommaidCleaningAction = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase() === 'ROOMMAID'
+        && ['START', 'COMPLETE'].includes(mobileRoomAction);
+      // 룸메이드 청소시작/완료는 서버가 실제 배정자와 현재 청소상태를 잠금 상태에서 다시 검증한다.
+      // DB 이벤트 미러/정방향 동기화 사이에 version 값만 달라지는 경우가 있으므로
+      // 이 두 작업은 stale version 때문에 정상 작업이 거절되지 않도록 상태·권한 검증을 원본으로 사용한다.
+      if (roommaidCleaningAction) safePayload.expectedVersion = 0;
+      else if (!safePayload.expectedVersion) safePayload.expectedVersion = Number(room?.version || 0);
       if (!safePayload.rowNumber) safePayload.rowNumber = Number(room?.rowNumber || 0);
       if (!Object.prototype.hasOwnProperty.call(safePayload, 'qmEmployeeNo')) {
         safePayload.qmEmployeeNo = String(room?.qmEmployeeNo || '');
@@ -6159,6 +7912,66 @@
     });
   }
 
+  async function mirrorRoommaidHousemanRequestToSheet_(mirrorPayload, attempt = 0) { // (Realtime 오더 기존 이력·Telegram 백그라운드 보존)
+    try {
+      const result = await callServer('createMobileHousemanRequest', state.token, mirrorPayload);
+      if (!result?.ok) throw new Error(result?.message || '하우스맨 요청 이력 동기화에 실패했습니다.');
+      return result;
+    } catch (error) {
+      if (attempt < 3) {
+        await novaRealtimeSleep_([600, 1600, 3600, 7000][attempt] || 7000);
+        return mirrorRoommaidHousemanRequestToSheet_(mirrorPayload, attempt + 1);
+      }
+      console.error('[NOVA Realtime] 룸메이드 하우스맨 오더 Sheet 미러 실패:', error);
+      setSyncStatus('하우스맨 요청 DB 등록완료 · 기존 이력 동기화 재확인 필요');
+      throw error;
+    }
+  }
+
+  async function createRoommaidHousemanRequestFast_(payload) { // (룸메이드 오더 PostgreSQL 선확정·Sheet 후행)
+    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
+    if (role !== 'ROOMMAID') {
+      const legacy = await callServer('createMobileHousemanRequest', state.token, payload);
+      return Object.assign({}, legacy || {}, { realtime: false, mirrorPromise: Promise.resolve(legacy) });
+    }
+
+    if (!novaRealtime_.configLoaded) await initNovaRealtime_();
+    if (!novaRealtimeIsEnabled_()) {
+      const legacy = await callServer('createMobileHousemanRequest', state.token, payload);
+      return Object.assign({}, legacy || {}, { realtime: false, mirrorPromise: Promise.resolve(legacy) });
+    }
+
+    const realtimePayload = Object.assign({}, payload || {}, {
+      assignmentMode: 'UNASSIGNED',
+      assignedEmployeeNo: '',
+      requester: state.bootstrap?.user?.name || '',
+      handover: false
+    });
+    const realtime = await novaRealtimeCreateHousemanOrder_(realtimePayload);
+    const mirrorPayload = Object.assign({}, realtime.mirrorPayload || realtimePayload, {
+      realtimeOrderId: realtime.orderId || realtime.order?.orderId || '',
+      requester: state.bootstrap?.user?.name || '',
+      requestSource: 'ROOMMAID',
+      createdFrom: 'MOBILE',
+      assignmentMode: 'UNASSIGNED',
+      handover: false
+    });
+    const mirrorPromise = mirrorRoommaidHousemanRequestToSheet_(mirrorPayload);
+    // 사진이 없는 일반 등록은 Sheet/Telegram 저장을 사용자 응답과 분리한다.
+    void mirrorPromise.catch(() => null);
+    return {
+      ok: true,
+      realtime: true,
+      order: realtime.order,
+      version: Number(realtime.order?.version || realtime.version || 0),
+      timing: realtime.timing || {},
+      mirrorPayload,
+      mirrorPromise,
+      message: '하우스맨 요청을 등록했습니다.'
+    };
+  }
+  window.novaCreateRoommaidHousemanRequestFast_ = createRoommaidHousemanRequestFast_;
+
   function openMobileHousemanRequest_(roomNo) { // (모바일 하우스맨 요청 등록창)
     const parts = state.mobile.data?.codes?.orderParts || [];
     const itemSuggestions = state.mobile.data?.codes?.orderItems || [];
@@ -6173,8 +7986,31 @@
         items: [{ name: item, quantity: clampQuantity($('mobileRequestQty').value) }],
         note: $('mobileRequestNote').value.trim(), requester: state.bootstrap.user.name
       };
-      closeModal();
-      await runMobileAction_('createMobileHousemanRequest', payload, event.currentTarget);
+      const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
+      if (role !== 'ROOMMAID') {
+        closeModal();
+        await runMobileAction_('createMobileHousemanRequest', payload, event.currentTarget);
+        return;
+      }
+
+      const button = event.currentTarget;
+      const clickedAt = performance.now();
+      button.disabled = true;
+      button.textContent = '등록 중…';
+      try {
+        const result = await createRoommaidHousemanRequestFast_(payload);
+        if (!result?.ok) throw new Error(result?.message || '하우스맨 요청을 등록하지 못했습니다.');
+        closeModal();
+        const elapsed = Math.round(performance.now() - clickedAt);
+        showToast(result.message || '하우스맨 요청을 등록했습니다.');
+        setSyncStatus(`룸메이드 오더 ${result.realtime ? 'Realtime' : '기존경로'} ${elapsed}ms`);
+      } catch (error) {
+        showToast(error?.message || '하우스맨 요청 등록 오류');
+        if (button.isConnected) {
+          button.disabled = false;
+          button.textContent = '요청 등록';
+        }
+      }
     });
   }
 
@@ -6187,14 +8023,22 @@
   function scheduleMobileSync_() { // (직원별 요청시점 분산)
     if (document.hidden || !['qm', 'houseman', 'cleaning', 'public'].includes(state.activeMenu) || !state.mobile.loaded) return;
     const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').toUpperCase();
-    const base = novaRealtimeIsEnabled_() && role === 'ROOMMAID'
-      ? 30000
-      : Number(state.bootstrap.app.mobileSyncMs || 16000);
+    const roommaidRealtime = novaRealtimeIsEnabled_() && role === 'ROOMMAID' && state.activeMenu === 'cleaning';
+    const qmRealtime = novaRealtimeIsEnabled_() && role === 'QM' && state.activeMenu === 'qm';
+    const housemanRealtime = novaRealtimeIsEnabled_() && role === 'HOUSEMAN' && state.activeMenu === 'houseman';
+    let delay;
+    if (roommaidRealtime || qmRealtime || housemanRealtime) {
+      // ROOMMAID/QM/HOUSEMAN 모두 본인 배정목록만 경량조회하므로
+      // 3.0~3.7초로 분산해 정상 네트워크 기준 5초 미만 반영을 목표로 한다.
+      delay = 3000 + Math.round(Math.random() * 700);
+    } else {
+      delay = nextSyncDelay_(Number(state.bootstrap.app.mobileSyncMs || 16000));
+    }
     state.mobile.syncTimer = window.setTimeout(async () => {
       state.mobile.syncTimer = null;
       await syncMobileDelta();
       scheduleMobileSync_();
-    }, nextSyncDelay_(base));
+    }, delay);
   }
 
   function stopMobileSync() { // (모바일 동기화 중지)
@@ -6207,11 +8051,66 @@
     state.mobile.syncInFlight = true;
     try {
       const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').toUpperCase();
-      if (novaRealtimeIsEnabled_() && role === 'ROOMMAID' && state.activeMenu === 'cleaning') {
+      if (novaRealtimeIsEnabled_() && role === 'HOUSEMAN' && state.activeMenu === 'houseman') {
+        const previousY = window.scrollY;
+        const businessDate = state.mobile.businessDate || state.bootstrap.app.businessDate;
+        const site = state.mobile.site || state.bootstrap.user.defaultSite || '';
+        const dbRows = await novaRealtimeLoadHousemanOrders_(businessDate, site);
+        const existing = state.mobile.data?.orders || [];
+        const dbIds = new Set(dbRows.map(raw => String(raw.order_id ?? raw.orderId ?? '')).filter(Boolean));
+        const existingMap = new Map(existing.map(order => [String(order.orderId || ''), order]));
+
+        // DB에서 한번 확인된 Realtime 오더가 더 이상 본인 목록에 없으면 재배정된 것이므로 제거한다.
+        const kept = existing.filter(order => order.__dbAssignmentTracked !== true || dbIds.has(String(order.orderId || '')));
+        const keptMap = new Map(kept.map(order => [String(order.orderId || ''), order]));
+        dbRows.forEach(raw => {
+          const mapped = novaRealtimeMapHousemanOrder_(raw);
+          if (!mapped?.orderId) return;
+          const previous = existingMap.get(String(mapped.orderId)) || keptMap.get(String(mapped.orderId));
+          const dbUpdated = novaRealtimeUpdatedAtMs_(mapped.updatedAt);
+          const sheetUpdated = novaRealtimeUpdatedAtMs_(previous?.updatedAt);
+          let next;
+          if (previous && sheetUpdated > dbUpdated) {
+            // 접수·처리·완료 등 Sheet 액션이 DB의 배정시각보다 최신이면 그 상태를 보존한다.
+            next = Object.assign({}, previous, {
+              assignedEmployeeNo: mapped.assignedEmployeeNo || previous.assignedEmployeeNo,
+              assignedName: mapped.assignedName || previous.assignedName,
+              routeCandidateEmployeeNos: mapped.routeCandidateEmployeeNos || previous.routeCandidateEmployeeNos,
+              routeCandidateNames: mapped.routeCandidateNames || previous.routeCandidateNames,
+              routeCandidateSummary: mapped.routeCandidateSummary || previous.routeCandidateSummary,
+              routeLocked: mapped.routeLocked,
+              __dbAssignmentTracked: true,
+              __dbVersion: Number(mapped.version || 0)
+            });
+          } else {
+            next = Object.assign({}, mapped, {
+              // Apps Script updateHousemanOrder의 version은 Sheet 도메인이다. DB version을 넘기지 않는다.
+              rowNumber: Number(previous?.rowNumber || 0),
+              version: Number(previous?.version || 0),
+              __dbAssignmentTracked: true,
+              __dbVersion: Number(mapped.version || 0)
+            });
+          }
+          const idx = kept.findIndex(order => String(order.orderId || '') === String(next.orderId || ''));
+          if (idx >= 0) kept[idx] = next; else kept.push(next);
+        });
+        state.mobile.data.orders = kept;
+        sortMobileHousemanOrdersLocal_();
+        refreshHousemanMobileSummaryLocal_();
+        renderMobileSummary();
+        renderMobileList();
+        requestAnimationFrame(() => window.scrollTo({ top: previousY, behavior: 'auto' }));
+        setSyncStatus('하우스맨 DB 배정 동기화 완료');
+        return;
+      }
+
+      if (novaRealtimeIsEnabled_()
+          && ((role === 'ROOMMAID' && state.activeMenu === 'cleaning')
+            || (role === 'QM' && state.activeMenu === 'qm'))) {
         const previousY = window.scrollY;
         await novaRealtimeHydrateCurrentView_();
         requestAnimationFrame(() => window.scrollTo({ top: previousY, behavior: 'auto' }));
-        setSyncStatus('룸메이드 DB 동기화 완료');
+        setSyncStatus(role === 'QM' ? 'QM DB 배정 동기화 완료' : '룸메이드 DB 동기화 완료');
         return;
       }
 
@@ -6322,9 +8221,17 @@
     showView('loginView');
   }
 
-  function saveUiState() { // (스크롤 및 메뉴 위치 저장)
+  function saveUiState() { // (스크롤·메뉴·선택 업무일자 저장)
     sessionStorage.setItem('novaScrollY', String(window.scrollY || 0));
     sessionStorage.setItem('novaActiveMenu', state.activeMenu);
+    if (state.indicator.businessDate) sessionStorage.setItem('novaIndicatorBusinessDate', state.indicator.businessDate);
+    if (state.mobile.businessDate) sessionStorage.setItem('novaMobileBusinessDate', state.mobile.businessDate);
+    sessionStorage.setItem('novaIndicatorSite', String(state.indicator.site || ''));
+    sessionStorage.setItem('novaMobileSite', String(state.mobile.site || ''));
+    sessionStorage.setItem('novaMonthlyPeriod', String(state.monthly.period || 'DAILY'));
+    sessionStorage.setItem('novaMonthlyDate', String(state.monthly.date || ''));
+    sessionStorage.setItem('novaMonthlySite', String(state.monthly.site || ''));
+    sessionStorage.setItem('novaMonthlyType', String(state.monthly.type || 'HOUSEMAN'));
   }
 
   function showView(id) { // (단일 화면 전환)
