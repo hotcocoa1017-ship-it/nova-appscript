@@ -1,0 +1,33 @@
+name: Run Realtime Diagnostic
+
+on:
+  push:
+    branches: [diag/realtime-token-after-secret-20260829]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call production non-secret diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://script.google.com/macros/s/AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf/exec?nova_diag=p6M8v2ZqY7xC4nR9sT1uK5wF0hJ3bL'
+          curl -fsSL --retry 2 --retry-delay 2 "$URL" -o /tmp/diag.json
+          python3 - <<'PY'
+          import json
+          p='/tmp/diag.json'
+          body=json.load(open(p))
+          allowed=[
+            'ok','realtimeEnabled','apiConfigured','cloudRunHealthOk','cloudRunHealthStatus','cloudRunBuild',
+            'realtimeTokenOk','realtimeTokenStatus','supabaseProjectMatch','supabaseRootStatus','supabaseTableStatus',
+            'supabaseJwtRejected','jwtAlg','jwtRole','jwtAudience','jwtIssuer','jwtHasExpiration','jwtSiteCount',
+            'jwtSubjectLooksUuid','publishableKeyType','stage','errorCode','error','supabaseErrorCode','supabaseErrorMessage','elapsedMs'
+          ]
+          safe={k:body.get(k) for k in allowed if k in body}
+          print(json.dumps(safe, ensure_ascii=False, sort_keys=True))
+          PY
