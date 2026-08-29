@@ -1,0 +1,144 @@
+<script>
+(() => {
+  'use strict';
+
+  const hotfixState = { busy: false };
+
+  document.addEventListener('click', onOperationalStatusClick_, true);
+
+  function onOperationalStatusClick_(event) {
+    const button = event.target?.closest?.('.room-operational-status-button');
+    if (!button || !button.closest('.room-operational-status-editor')) return;
+    if (hotfixState.busy || button.disabled) return;
+
+    const modal = button.closest('.room-work-modal-card') || button.closest('.modal-card') || button.closest('#modalRoot');
+    if (!modal) return;
+
+    const active = modal.querySelector('.room-operational-status-button.active');
+    const expected = normalizeStatus_(active?.dataset?.roomOperationalStatus ?? '');
+    const requested = normalizeStatus_(button.dataset?.roomOperationalStatus ?? '');
+    if (expected === requested) return;
+
+    const roomNo = extractRoomNo_(modal);
+    const token = String(localStorage.getItem('novaToken') || '').trim();
+    const businessDate = String(document.getElementById('indicatorDate')?.value || '').trim();
+    const site = String(document.getElementById('indicatorSite')?.value || '').trim();
+
+    // 필수값을 확보한 경우에만 선점한다. 확보하지 못하면 기존 Client 흐름에 맡긴다.
+    if (!token || !roomNo || !businessDate) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    const buttons = [...modal.querySelectorAll('.room-operational-status-button')];
+    const snapshots = buttons.map(el => ({ el, disabled: el.disabled, text: el.textContent }));
+
+    hotfixState.busy = true;
+    buttons.forEach(el => { el.disabled = true; });
+    button.textContent = '처리 중…';
+    setSync_(`${roomNo}호 객실조치 저장 중`);
+
+    callSafeUpdate_(token, {
+      businessDate,
+      site,
+      roomNo,
+      expectedOperationalStatus: expected,
+      operationalStatus: requested
+    }).then(result => {
+      if (!result?.ok) throw new Error(result?.message || '객실조치 상태를 저장하지 못했습니다.');
+
+      applyModalState_(buttons, requested);
+      restoreTexts_(snapshots);
+      hotfixState.busy = false;
+
+      setSync_(`${roomNo}호 객실조치 저장 완료`);
+      showToast_(requested === 'BROKEN'
+        ? `${roomNo}호 고장 등록 완료`
+        : requested === 'ROOM_CHECK'
+          ? `${roomNo}호 객실확인 등록 완료`
+          : `${roomNo}호 객실조치 완료`);
+
+      // Client 내부 state를 최신 Sheets 값으로 다시 맞춘다.
+      window.setTimeout(() => {
+        const syncButton = document.getElementById('manualSyncButton');
+        if (syncButton && !syncButton.disabled) syncButton.click();
+      }, 80);
+    }).catch(error => {
+      restoreSnapshots_(snapshots);
+      hotfixState.busy = false;
+      setSync_('객실조치 저장 오류');
+      showToast_(error?.message || String(error || '객실조치 상태를 저장하지 못했습니다.'));
+
+      // 충돌/일시 오류 시에도 최신 상태를 즉시 재조회한다.
+      window.setTimeout(() => {
+        const syncButton = document.getElementById('manualSyncButton');
+        if (syncButton && !syncButton.disabled) syncButton.click();
+      }, 80);
+    });
+  }
+
+  function callSafeUpdate_(token, payload) {
+    return new Promise((resolve, reject) => {
+      try {
+        google.script.run
+          .withSuccessHandler(resolve)
+          .withFailureHandler(reject)
+          .updateRoomOperationalStatusSafe(token, payload);
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  function normalizeStatus_(value) {
+    const status = String(value || '').trim().toUpperCase();
+    return status === 'BROKEN' || status === 'ROOM_CHECK' ? status : '';
+  }
+
+  function extractRoomNo_(modal) {
+    const title = String(modal.querySelector('.modal-header h2')?.textContent || '').replace(/\s+/g, ' ').trim();
+    const match = title.match(/([A-Za-z0-9_-]+)호(?:\s|$)/);
+    return match ? String(match[1] || '').trim() : '';
+  }
+
+  function applyModalState_(buttons, requested) {
+    buttons.forEach(el => {
+      const status = normalizeStatus_(el.dataset?.roomOperationalStatus ?? '');
+      el.classList.toggle('active', Boolean(requested) && status === requested);
+      el.disabled = !requested && status === '';
+    });
+    if (requested) {
+      const complete = buttons.find(el => normalizeStatus_(el.dataset?.roomOperationalStatus ?? '') === '' && String(el.dataset?.roomOperationalStatus ?? '') === '');
+      if (complete) complete.disabled = false;
+    }
+  }
+
+  function restoreTexts_(snapshots) {
+    snapshots.forEach(item => {
+      if (item.el?.isConnected) item.el.textContent = item.text;
+    });
+  }
+
+  function restoreSnapshots_(snapshots) {
+    snapshots.forEach(item => {
+      if (!item.el?.isConnected) return;
+      item.el.disabled = item.disabled;
+      item.el.textContent = item.text;
+    });
+  }
+
+  function setSync_(message) {
+    const el = document.getElementById('syncStatus');
+    if (el) el.textContent = String(message || '');
+  }
+
+  function showToast_(message) {
+    const el = document.getElementById('toast');
+    if (!el) return;
+    el.textContent = String(message || '');
+    el.classList.remove('hidden');
+    window.clearTimeout(showToast_.timer);
+    showToast_.timer = window.setTimeout(() => el.classList.add('hidden'), 3600);
+  }
+})();
+</script>
