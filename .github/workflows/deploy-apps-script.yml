@@ -53,10 +53,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install clasp
-        run: npm install --global @google/clasp@3.0.6
+        run: npm install --global @google/clasp
 
       - name: Configure Apps Script authentication
         shell: bash
