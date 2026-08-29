@@ -84,3 +84,140 @@ function qmMobileBrowseRoomDto_(room) { // (QM 조회전용 최소 객실정보)
     version: Number(source.version || 0)
   };
 }
+
+function startQmMobileBrowseInspection(token, payload) { // (QM 추가탭 미배정 객실 본인확보 + 기존 체크리스트 즉시 시작)
+  return measureResponse_('startQmMobileBrowseInspection', () => {
+    const user = requireRole_(token, ['QM']);
+    const safe = payload || {};
+    const businessDate = normalizeBusinessDate_(safe.businessDate);
+    const site = String(safe.site || user.defaultSite || '').trim();
+    const roomNo = String(safe.roomNo || '').trim();
+    const view = String(safe.view || '').trim().toUpperCase();
+    if (!site || !roomNo) throw new Error('점검할 사업장과 객실번호가 필요합니다.');
+    if (!['CLEANED', 'VACANT'].includes(view)) throw new Error('지원하지 않는 QM 점검경로입니다.');
+
+    let startVersion = 0;
+    let previousCleaningStatus = '';
+    let responseSite = site;
+    let rowNumber = Number(safe.rowNumber || 0);
+    let alreadyChecking = false;
+    const lock = acquireWriteLock_(5000);
+    try {
+      const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
+      const rowInfo = findCurrentRoomRowForMobileUpdate_(sheet, businessDate, site, roomNo, rowNumber);
+      if (!rowInfo) throw new Error('현재객실현황에서 해당 객실을 찾을 수 없습니다.');
+      rowNumber = rowInfo.rowNumber;
+      responseSite = String(rowInfo.data['사업장'] || site).trim();
+
+      const roomStatus = String(rowInfo.data['객실상태'] || '').trim().toUpperCase();
+      const cleaningStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
+      const roommaidNo = String(rowInfo.data['룸메이드사번'] || '').trim();
+      const secondaryRoommaidNo = String(rowInfo.data['보조룸메이드사번'] || '').trim();
+      const currentQmNo = String(rowInfo.data['QM사번'] || '').trim();
+      const startableStatuses = new Set(['COMPLETED', 'QM_WAITING', 'QM_CHECKING']);
+      const hasRoommaid = Boolean(roommaidNo || secondaryRoommaidNo);
+
+      if (view === 'VACANT') {
+        if (roomStatus !== 'VACANT_CLEAN' || !startableStatuses.has(cleaningStatus)) {
+          throw new Error('현재 공실 점검을 시작할 수 있는 상태가 아닙니다. 목록을 새로고침해 주세요.');
+        }
+      } else if (roomStatus === 'VACANT_CLEAN' || !hasRoommaid || !startableStatuses.has(cleaningStatus)) {
+        throw new Error('현재 당일 청소완료 점검을 시작할 수 있는 상태가 아닙니다. 목록을 새로고침해 주세요.');
+      }
+
+      if (currentQmNo && currentQmNo !== user.employeeNo) {
+        throw new Error('다른 QM에게 이미 배정되었거나 점검 중인 객실입니다.');
+      }
+
+      previousCleaningStatus = cleaningStatus;
+      if (currentQmNo === user.employeeNo && cleaningStatus === 'QM_CHECKING') {
+        alreadyChecking = true;
+        startVersion = Number(rowInfo.data['마지막변경버전'] || 0);
+      } else {
+        startVersion = reserveDataVersion_({ lockHeld: true });
+        const startedAt = nowText_();
+        updateRowByHeaders_(sheet, rowInfo.rowNumber, {
+          'QM사번': user.employeeNo,
+          '청소상태': 'QM_CHECKING',
+          '마지막변경버전': startVersion,
+          '수정일시': startedAt
+        });
+        SpreadsheetApp.flush();
+        publishDataVersion_(startVersion, {
+          domains: ['ROOM'], businessDate, site: responseSite, lockHeld: true
+        });
+        appendUnifiedHistory_({
+          recordType: NOVA.RECORD_TYPES.QM,
+          businessDate,
+          site: responseSite,
+          roomNo,
+          targetEmployeeNo: user.employeeNo,
+          status: 'QM_START',
+          registeredBy: user.employeeNo,
+          startedAt,
+          version: startVersion,
+          detail: {
+            action: 'START',
+            role: 'QM',
+            source: 'QM_BROWSE_SELF_START',
+            browseView: view,
+            beforeCleaningStatus: previousCleaningStatus,
+            cleaningStatus: 'QM_CHECKING',
+            primaryEmployeeNo: roommaidNo,
+            secondaryEmployeeNo: secondaryRoommaidNo,
+            vacantSpotCheck: view === 'VACANT'
+          }
+        });
+      }
+    } finally {
+      try { lock.releaseLock(); } catch (ignore) {}
+    }
+
+    let dbRoom = null;
+    if (typeof novaRealtimeFinalEnabled_ === 'function'
+        && novaRealtimeFinalEnabled_()
+        && typeof syncNovaRealtimeRoomForAction === 'function') {
+      syncNovaRealtimeRoomForAction(token, {
+        businessDate,
+        site: responseSite,
+        roomNo,
+        action: 'QM_START'
+      });
+      if (typeof novaRealtimeFetchCurrentRoomForQmMirror_ === 'function') {
+        dbRoom = novaRealtimeFetchCurrentRoomForQmMirror_(token, businessDate, responseSite, roomNo);
+      }
+    }
+
+    const started = startQmInspection(token, {
+      businessDate,
+      site: responseSite,
+      roomNo,
+      realtimeStarted: true,
+      realtimeVersion: startVersion
+    });
+    if (!started || !started.ok) {
+      throw new Error(started && started.message ? started.message : 'QM 체크리스트를 시작하지 못했습니다.');
+    }
+
+    if (dbRoom) {
+      started.version = Number(dbRoom.version || started.version || 0);
+      started.room = Object.assign({}, started.room || {}, dbRoom, {
+        rowNumber,
+        businessDate,
+        site: responseSite,
+        roomNo,
+        qmEmployeeNo: user.employeeNo,
+        cleaningStatus: 'QM_CHECKING',
+        version: Number(dbRoom.version || 0)
+      });
+    } else if (started.room) {
+      started.room.rowNumber = rowNumber;
+    }
+
+    return Object.assign({}, started, {
+      browseView: view,
+      browseSelfStarted: true,
+      alreadyChecking
+    });
+  });
+}
