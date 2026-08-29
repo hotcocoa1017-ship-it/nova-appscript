@@ -1,0 +1,49 @@
+name: Audit Apps Script v95
+
+on:
+  push:
+    branches:
+      - audit/apps-script-v95
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install clasp
+        run: npm install --global @google/clasp
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+      - name: Clone deployed source version 95
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir recovered-v95
+          cd recovered-v95
+          clasp clone 1eBwsaCPGbbtiWINYD4IB0I0GBTGHn-2Dag3dWVHoet8weX2YD_FS5kR8 --versionNumber 95
+          echo '--- recovered files ---'
+          ls -la
+          echo '--- Client realtime routes ---'
+          grep -nE "realtimeAction|UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|UPDATE_OPERATION_FLAGS" Client.html | head -120 || true
+          echo '--- mirror action routing ---'
+          grep -nE "UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|CLEANING_START|CLEANING_COMPLETE" RealtimeDailySync.js | head -160 || true
+      - name: Upload recovered v95
+        uses: actions/upload-artifact@v4
+        with:
+          name: apps-script-v95
+          path: recovered-v95/
+          retention-days: 1
