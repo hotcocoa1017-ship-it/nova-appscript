@@ -102,4 +102,6 @@ jobs:
           set -euo pipefail
           changed="$(git diff --name-only)"
           echo "$changed"
-          test "$changed" = "RealtimeDailySync.js"
+          printf '%s\n' "$changed" | grep -qx 'HousemanUiPerformancePatch.html'
+          printf '%s\n' "$changed" | grep -qx 'RealtimeDailySync.js'
+          test "$(printf '%s\n' "$changed" | sed '/^$/d' | wc -l)" -eq 2
