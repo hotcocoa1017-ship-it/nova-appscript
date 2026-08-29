@@ -131,6 +131,22 @@ if completion_no_retry not in updated:
 else:
     print('Operational-status completion no-retry already applied.')
 
+# 5) 객실조치 완료는 현재 확인된 Cloud Run 5xx 경로를 기다리지 않고
+# 상태기반 Apps Script 안전경로로 바로 확정합니다. DB 단건 동기화는 응답 후 비동기로 처리합니다.
+# 고장/객실확인 등록은 기존 Realtime 고속경로를 그대로 사용합니다.
+completion_direct_marker = '객실조치 완료는 Cloud Run 우회 · 안전경로 직접 저장'
+if completion_direct_marker not in updated:
+    old_direct_anchor = """    delete safe.sheetExpectedVersion;\n    safe.action = mappedAction;\n"""
+    new_direct_anchor = """    const operationalStatusCompletionDirect = mappedAction === 'UPDATE_ROOM_OPERATION_STATUS'\n      && !String(safe.operationalStatus || '').trim();\n    if (operationalStatusCompletionDirect) {\n      // 객실조치 완료는 Cloud Run 우회 · 안전경로 직접 저장\n      // 화면은 이미 optimistic patch로 즉시 반영하고, 확정 저장만 안전경로 1회 호출합니다.\n      const directPayload = Object.assign({}, legacySafe, {\n        action: 'UPDATE_ROOM_OPERATION_STATUS',\n        operationalStatus: '',\n        expectedVersion: 0,\n        expectedOperationalStatus: String(safe?.expectedState?.operationalStatus || '')\n      });\n      delete directPayload.sheetExpectedVersion;\n      const directResult = await callServer('updateRoomOperationalStatusSafe', state.token, directPayload);\n      if (!directResult?.ok) throw new Error(directResult?.message || '객실조치 완료를 저장하지 못했습니다.');\n      void callServer('syncNovaRealtimeRoomForAction', state.token, {\n        businessDate: safe.businessDate,\n        site: safe.site,\n        roomNo: safe.roomNo,\n        action: 'UPDATE_ROOM_OPERATION_STATUS'\n      }).catch(syncError => {\n        console.warn('[NOVA Realtime] 객실조치 완료 후 DB 단건 재동기화는 정기 동기화로 넘깁니다.', syncError);\n      });\n      return Object.assign({}, directResult, { realtimeDirectSafePath: true });\n    }\n\n    delete safe.sheetExpectedVersion;\n    safe.action = mappedAction;\n"""
+    if old_direct_anchor not in updated:
+        print('ERROR: Could not locate Realtime room action direct-route anchor.', file=sys.stderr)
+        sys.exit(7)
+    updated = updated.replace(old_direct_anchor, new_direct_anchor, 1)
+    changed = True
+    print('Routed operational-status completion directly to safe path.')
+else:
+    print('Operational-status completion direct safe path already applied.')
+
 if changed:
     path.write_text(updated, encoding='utf-8')
     print('Client.html hotfixes written.')
