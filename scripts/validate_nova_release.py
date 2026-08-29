@@ -58,6 +58,14 @@ for action in ['ASSIGN_ROOMMAID', 'CLEANING_RESET', 'CLEAR_ASSIGNMENT', 'QM_ASSI
 forbid(index, "include_('OperationalStatusHotfix')", 'OperationalStatusHotfix excluded from Index')
 forbid(notification, "addEventListener('click',onOperationalStatusClickCapture,true)", 'Operational status capture listener disabled')
 
+# 1-1) Private Broadcast authorization / retry resilience
+require(client, 'REALTIME_SUBSCRIPTION_RESILIENCE_V1', 'Realtime subscription resilience marker')
+require(client, 'await novaRealtime_.supabase.realtime.setAuth(auth.token)', 'Realtime auth awaited before subscribe')
+require(client, 'await novaRealtime_.supabase.realtime.setAuth(next.token)', 'Realtime refresh auth awaited')
+require(client, "['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED']", 'Realtime failed subscription states handled')
+require(client, 'novaRealtime_.channels.delete(site)', 'Failed Realtime channel removed for retry')
+require(client, 'novaRealtimeEnsureSubscriptions_().catch(retryError', 'Realtime subscription retry scheduled')
+
 # 2) Roommaid assignment invariants and same-row event batching
 require(realtime, 'REALTIME_ASSIGNMENT_BATCH_MERGE_V1', 'Assignment batch merge hotfix')
 require(realtime, 'Object.assign({}, previous, item, { rowNumber })', 'Same-row field merge implementation')
@@ -167,6 +175,7 @@ require(qm_browse, '업무이력 전체 재조회 없이 현재 업무일자 객
 forbid(qm_browse, 'readMonthlyHistoryRows_', 'QM browse must not scan monthly history')
 
 # 7) Deployment repeatability / source-of-truth protection
+require(workflow, 'python3 scripts/patch_realtime_subscription_resilience.py', 'Deploy applies Realtime subscription resilience patch')
 require(workflow, 'python3 scripts/patch_roommaid_notification_bell.py', 'Deploy applies roommaid notification patch')
 require(workflow, 'python3 scripts/validate_nova_release.py', 'Deploy runs release regression gate')
 require(workflow, 'HousemanUiPerformancePatch.html', 'Generated notification source persisted')
