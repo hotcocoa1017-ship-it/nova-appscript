@@ -1,0 +1,40 @@
+name: Probe WIF Cloud Run Access
+
+on:
+  push:
+    branches: [diag/wif-cloudrun-access-20260829]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate to Google Cloud with WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Probe Cloud Run access without secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "AUTH_ACCOUNT=$(gcloud config get-value account 2>/dev/null)"
+          echo "PROJECT=project-6a8144e9-31f3-4d5c-b9b"
+          if gcloud run services describe nova-realtime-api \
+              --project=project-6a8144e9-31f3-4d5c-b9b \
+              --region=asia-southeast1 \
+              --format='value(metadata.name)' >/tmp/service_name.txt 2>/tmp/run_err.txt; then
+            echo "CLOUD_RUN_DESCRIBE=OK"
+            cat /tmp/service_name.txt
+          else
+            echo "CLOUD_RUN_DESCRIBE=DENIED"
+            sed -n '1,8p' /tmp/run_err.txt
+            exit 21
+          fi
