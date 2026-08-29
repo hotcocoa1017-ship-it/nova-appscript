@@ -26,6 +26,9 @@ jobs:
       - name: Apply stable Realtime init hotfix
         run: python3 scripts/patch_realtime_client.py
 
+      - name: Apply QM lazy browse patch
+        run: python3 scripts/patch_qm_mobile_browse.py
+
       - name: Validate full Realtime routing
         shell: bash
         run: |
@@ -37,6 +40,8 @@ jobs:
           grep -q "action === 'UPDATE_ROOM_OPERATION_STATUS'" RealtimeDailySync.js
           grep -q "action === 'QM_ASSIGN'" RealtimeDailySync.js
           grep -q "action === 'CHANGE_ROOM_STATUS'" RealtimeDailySync.js
+          grep -q "QM 추가조회 탭 · 기존 점검대상 화면 보존" Client.html
+          grep -q "function getQmMobileBrowseRooms" QmMobileBrowse.js
           if grep -q "include_('OperationalStatusHotfix')" Index.html; then
             echo "::error::OperationalStatusHotfix must not intercept the Realtime path."
             exit 2
