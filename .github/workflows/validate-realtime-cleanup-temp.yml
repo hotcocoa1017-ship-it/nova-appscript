@@ -1,0 +1,68 @@
+name: Validate Realtime Diagnostic Cleanup
+
+on:
+  push:
+    branches: [cleanup/realtime-diagnostics-20260829]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply production patch chain
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+      - name: Validate permanent release regression gate
+        run: python3 scripts/validate_nova_release.py
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check 04_Api.js
+          node --check RealtimeDailySync.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for source,target in [('Client.html','/tmp/NovaClient.js'),('HousemanUiPerformancePatch.html','/tmp/NovaNotification.js')]:
+              text=Path(source).read_text(encoding='utf-8')
+              scripts=re.findall(r'<script[^>]*>(.*?)</script>',text,flags=re.S|re.I)
+              if not scripts: raise SystemExit(f'No script block in {source}')
+              Path(target).write_text('\n'.join(scripts),encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+          node --check /tmp/NovaNotification.js
+      - name: Verify diagnostic surfaces are gone
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -f RealtimeDiagnostics.js
+          ! grep -R -n --exclude-dir=.git --exclude='validate-realtime-cleanup-temp.yml' 'nova_diag\|nova_api_host\|runNovaRealtimeLiveDiagnostic_\|NOVA-RT-HOST-20260829' .
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js | sha256sum | awk '{print $1}')"
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          after="$(sha256sum Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
