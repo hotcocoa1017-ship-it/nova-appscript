@@ -32,18 +32,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir recovered-v95
-          cd recovered-v95
+          rm -rf /tmp/nova-v95
+          mkdir -p /tmp/nova-v95
+          cd /tmp/nova-v95
           clasp clone 1eBwsaCPGbbtiWINYD4IB0I0GBTGHn-2Dag3dWVHoet8weX2YD_FS5kR8 95
           echo '--- recovered files ---'
           ls -la
           echo '--- Client realtime routes ---'
-          grep -nE "realtimeAction|UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|UPDATE_OPERATION_FLAGS" Client.html | head -160 || true
+          grep -nE "realtimeAction|UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|UPDATE_OPERATION_FLAGS" Client.html | head -180 || true
           echo '--- mirror action routing ---'
-          grep -nE "UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|CLEANING_START|CLEANING_COMPLETE" RealtimeDailySync.js | head -220 || true
+          grep -nE "UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|CLEANING_START|CLEANING_COMPLETE|QM_START|QM_COMPLETE|QM_REWORK" RealtimeDailySync.js | head -260 || true
       - name: Upload recovered v95
         uses: actions/upload-artifact@v4
         with:
           name: apps-script-v95
-          path: recovered-v95/
+          path: /tmp/nova-v95/
           retention-days: 1
