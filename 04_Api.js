@@ -10,6 +10,14 @@ function doGet(e) { // (웹앱 진입)
       .setMimeType(ContentService.MimeType.JSON);
   }
 
+  // TEMP 2026-08-29: Apps Script가 실제로 참조하는 공개 Cloud Run 호스트 비교용.
+  const apiHostDiagnosticKey = 'NOVA-RT-HOST-20260829-k9x7p2';
+  if (e && e.parameter && String(e.parameter.nova_api_host || '') === apiHostDiagnosticKey) {
+    const apiBase = String(PropertiesService.getScriptProperties().getProperty('NOVA_REALTIME_API_BASE') || '').trim().replace(/\/+$/, '');
+    const host = apiBase.replace(/^https?:\/\//i, '').split('/')[0];
+    return ContentService.createTextOutput(JSON.stringify({ ok: Boolean(host), host: host })).setMimeType(ContentService.MimeType.JSON);
+  }
+
   const template = HtmlService.createTemplateFromFile('Index');
   template.appName = NOVA.APP_NAME;
   template.version = NOVA.VERSION;
