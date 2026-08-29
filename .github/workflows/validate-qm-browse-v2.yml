@@ -1,0 +1,67 @@
+name: Validate QM Browse V2
+
+on:
+  push:
+    branches: [fix/qm-browse-filter-inspection-20260829]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate patch Python syntax
+        run: |
+          python3 -m py_compile scripts/patch_realtime_client.py
+          python3 -m py_compile scripts/patch_qm_mobile_browse.py
+          python3 -m py_compile scripts/patch_qm_mobile_browse_v2.py
+
+      - name: Apply patches in dry-run workspace
+        run: |
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+
+      - name: Validate generated QM client structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "QM 추가조회 탭 · 기존 점검대상 화면 보존" Client.html
+          grep -q "QM 추가탭 동·층 필터 + 안전 즉시점검" Client.html
+          grep -q "qmBrowseLocationFilters" Client.html
+          grep -q "data-qm-browse-inspect" Client.html
+          grep -q "function startQmBrowseInspection_" Client.html
+          grep -q "function startQmMobileBrowseInspection" QmMobileBrowse.js
+          test "$(grep -c "function renderQmBrowseLocationFilters_" Client.html)" -eq 1
+          test "$(grep -c "function startQmBrowseInspection_" Client.html)" -eq 1
+          test "$(grep -c "function startQmMobileBrowseInspection" QmMobileBrowse.js)" -eq 1
+          grep -q "API 설정과 보조 Realtime 연결을 분리해 고속 API 유지" Client.html
+          grep -q "updateRoomOperationalStatusSafe" Client.html
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('Client.html').read_text(encoding='utf-8')
+          if '<script>' not in text or '</script>' not in text:
+              raise SystemExit('Client script block not found')
+          js = text.split('<script>', 1)[1].rsplit('</script>', 1)[0]
+          Path('/tmp/nova-client.js').write_text(js, encoding='utf-8')
+          PY
+          node --check /tmp/nova-client.js
+          node --check QmMobileBrowse.js
+
+      - name: Confirm dry-run changed only generated Client
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only)"
+          echo "$changed"
+          test "$changed" = "Client.html"
