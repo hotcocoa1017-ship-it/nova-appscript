@@ -34,30 +34,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/nova-v95 /tmp/current-main /tmp/nova-diff
-          mkdir -p /tmp/nova-v95 /tmp/current-main /tmp/nova-diff
+          rm -rf /tmp/nova-v95 /tmp/current-main-full /tmp/nova-diff
+          mkdir -p /tmp/nova-v95 /tmp/current-main-full /tmp/nova-diff
           cd /tmp/nova-v95
           clasp clone 1eBwsaCPGbbtiWINYD4IB0I0GBTGHn-2Dag3dWVHoet8weX2YD_FS5kR8 95
-      - name: Capture current main and diff
+      - name: Capture full current main and diff
         shell: bash
         run: |
           set -euo pipefail
           git fetch origin main
-          for f in Client.html RealtimeDailySync.js RealtimeBridge.js Index.html; do
-            git show origin/main:"$f" > "/tmp/current-main/$f"
+          git archive origin/main | tar -x -C /tmp/current-main-full
+          for f in Client.html RealtimeDailySync.js RealtimeBridge.js 06_Indicator.js 07_Houseman.js 10_Mobile.js 11_Monthly.js 16_QmChecklist.js 19_RoommaidCloseJournal.js HousemanRequestPhoto.js HousemanRequestPhotoClient.html Index.html; do
+            if [[ -f "/tmp/current-main-full/$f" && -f "/tmp/nova-v95/$f" ]]; then
+              safe="${f//\//_}"
+              diff -u "/tmp/current-main-full/$f" "/tmp/nova-v95/$f" > "/tmp/nova-diff/${safe}.main_to_v95.diff" || true
+            fi
           done
-          diff -u /tmp/current-main/Client.html /tmp/nova-v95/Client.html > /tmp/nova-diff/Client.main_to_v95.diff || true
-          diff -u /tmp/current-main/RealtimeDailySync.js /tmp/nova-v95/RealtimeDailySync.js > /tmp/nova-diff/RealtimeDailySync.main_to_v95.diff || true
-          echo '--- route diff summary ---'
-          grep -nE "realtimeAction|UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|UPDATE_OPERATION_FLAGS|CLEAR_ASSIGNMENT|QM_START|QM_COMPLETE|QM_REWORK" /tmp/nova-diff/Client.main_to_v95.diff | head -260 || true
-          echo '--- mirror diff summary ---'
-          grep -nE "UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|CLEANING_START|CLEANING_COMPLETE|QM_START|QM_COMPLETE|QM_REWORK|CLEAR_ASSIGNMENT|UPDATE_OPERATION_FLAGS" /tmp/nova-diff/RealtimeDailySync.main_to_v95.diff | head -320 || true
+          echo '--- changed files summary ---'
+          for f in /tmp/nova-v95/*; do
+            base="$(basename "$f")"
+            [[ -f "/tmp/current-main-full/$base" ]] || continue
+            if ! cmp -s "$f" "/tmp/current-main-full/$base"; then
+              printf '%-34s current=%-9s v95=%-9s\n' "$base" "$(wc -c < "/tmp/current-main-full/$base")" "$(wc -c < "$f")"
+            fi
+          done
       - name: Upload audit bundle
         uses: actions/upload-artifact@v4
         with:
-          name: apps-script-v95-main-diff
+          name: apps-script-v95-full-main-diff
           path: |
             /tmp/nova-v95/
-            /tmp/current-main/
+            /tmp/current-main-full/
             /tmp/nova-diff/
           retention-days: 1
