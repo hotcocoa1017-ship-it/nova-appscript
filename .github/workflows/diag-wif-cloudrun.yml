@@ -1,4 +1,4 @@
-name: Probe WIF Cloud Run Access
+name: Activate Verified Realtime Revision
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   id-token: write
 
 jobs:
-  probe:
+  activate:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -21,56 +21,63 @@ jobs:
           service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
-      - name: Inspect latest created and ready revisions
+      - name: Route 100 percent traffic to verified revision
         shell: bash
         run: |
           set -euo pipefail
           PROJECT='project-6a8144e9-31f3-4d5c-b9b'
           REGION='asia-southeast1'
           SERVICE='nova-realtime-api'
-          gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" --format=json > /tmp/service.json
+          REV='nova-realtime-api-rtfix133009'
+          gcloud run revisions describe "$REV" --project="$PROJECT" --region="$REGION" --format=json > /tmp/rev.json
           python3 - <<'PY'
-          import json
-          s=json.load(open('/tmp/service.json'))
-          st=s.get('status') or {}
-          print('LATEST_CREATED='+str(st.get('latestCreatedRevisionName','')))
-          print('LATEST_READY='+str(st.get('latestReadyRevisionName','')))
-          for t in st.get('traffic') or []:
-              print('TRAFFIC='+str(t.get('revisionName') or t.get('type') or 'LATEST')+':'+str(t.get('percent',0)))
-          PY
-          CREATED=$(python3 - <<'PY'
-          import json
-          print((json.load(open('/tmp/service.json')).get('status') or {}).get('latestCreatedRevisionName') or '')
-          PY
-          )
-          READY=$(python3 - <<'PY'
-          import json
-          print((json.load(open('/tmp/service.json')).get('status') or {}).get('latestReadyRevisionName') or '')
-          PY
-          )
-          for REV in "$CREATED" "$READY"; do
-            [ -n "$REV" ] || continue
-            echo "--- REVISION=$REV ---"
-            gcloud run revisions describe "$REV" --project="$PROJECT" --region="$REGION" --format=json > /tmp/rev.json
-            python3 - <<'PY'
-          import json
+          import json,sys
           r=json.load(open('/tmp/rev.json'))
           st=r.get('status') or {}
-          for c in st.get('conditions') or []:
-              print('CONDITION='+str(c.get('type',''))+':'+str(c.get('status',''))+':'+str(c.get('reason',''))+':'+str(c.get('message','')).replace('\n',' ')[:500])
+          ready=any(c.get('type')=='Ready' and str(c.get('status'))=='True' for c in st.get('conditions') or [])
           spec=r.get('spec') or {}
           containers=spec.get('containers') or []
           envs=(containers[0].get('env') or []) if containers else []
           by={str(e.get('name','')):e for e in envs}
-          for name in ['SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET']:
+          required=['SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET']
+          missing=[]
+          for name in required:
               e=by.get(name)
-              if not e: state='MISSING'
-              elif e.get('valueFrom') or e.get('valueSource'): state='SECRET_REF'
-              elif str(e.get('value','')).strip(): state='SET'
-              else: state='EMPTY'
-              print(name+'='+state)
-          if containers:
-              image=str(containers[0].get('image',''))
-              print('IMAGE='+image)
+              present=bool(e and (e.get('valueFrom') or e.get('valueSource') or str(e.get('value','')).strip()))
+              if not present: missing.append(name)
+          print('REV_READY='+str(ready))
+          print('MISSING_REQUIRED='+(','.join(missing) if missing else 'NONE'))
+          if not ready or missing:
+              sys.exit(20)
           PY
-          done
+          gcloud run services update-traffic "$SERVICE" \
+            --project="$PROJECT" --region="$REGION" \
+            --to-revisions="$REV=100" --quiet
+          gcloud run services describe "$SERVICE" --project="$PROJECT" --region="$REGION" --format=json > /tmp/service.json
+          python3 - <<'PY'
+          import json,sys
+          s=json.load(open('/tmp/service.json'))
+          st=s.get('status') or {}
+          ok=False
+          for t in st.get('traffic') or []:
+              print('TRAFFIC='+str(t.get('revisionName') or '')+':'+str(t.get('percent',0)))
+              if t.get('revisionName')=='nova-realtime-api-rtfix133009' and int(t.get('percent') or 0)==100:
+                  ok=True
+          print('LATEST_READY='+str(st.get('latestReadyRevisionName','')))
+          if not ok: sys.exit(21)
+          PY
+          URL=$(python3 - <<'PY'
+          import json
+          print((json.load(open('/tmp/service.json')).get('status') or {}).get('url') or '')
+          PY
+          )
+          CODE=$(curl -sS -o /tmp/health.json -w '%{http_code}' "$URL/health")
+          echo "HEALTH_HTTP=$CODE"
+          python3 - <<'PY'
+          import json
+          try: b=json.load(open('/tmp/health.json'))
+          except Exception: b={}
+          print('HEALTH_OK='+str(bool(b.get('ok'))))
+          print('HEALTH_BUILD='+str(b.get('build') or b.get('version') or ''))
+          PY
+          [ "$CODE" = "200" ]
