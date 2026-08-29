@@ -25,20 +25,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate required secrets
+      - name: Validate Google Cloud credential
         shell: bash
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
-          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
         run: |
           set -euo pipefail
           if [ -z "${GCP_SA_KEY:-}" ]; then
             echo "::error::Missing repository secret GCP_SA_KEY"
             exit 10
-          fi
-          if [ -z "${SUPABASE_JWT_SECRET:-}" ]; then
-            echo "::error::Missing repository secret SUPABASE_JWT_SECRET"
-            exit 11
           fi
           python3 - <<'PY'
           import os, json
@@ -91,7 +86,6 @@ jobs:
           if not region:
               print('Cloud Run region could not be discovered', file=sys.stderr)
               raise SystemExit(21)
-          print(f'PROJECT_ID={os.environ.get("PROJECT_ID_OVERRIDE", "")}') if False else None
           print('REGION='+region)
           print('SERVICE_URL='+url)
           PY
@@ -103,6 +97,7 @@ jobs:
           echo "NOVA Cloud Run service discovered in region: $REGION"
 
       - name: Inspect Realtime environment variable presence
+        id: inspect
         shell: bash
         env:
           PROJECT_ID: ${{ steps.discover.outputs.project_id }}
@@ -110,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           gcloud run services describe "$CLOUD_RUN_SERVICE" --platform=managed --project="$PROJECT_ID" --region="$REGION" --format=json > /tmp/service-before.json
-          python3 - <<'PY'
+          python3 - <<'PY' > /tmp/env-presence.txt
           import json
           s=json.load(open('/tmp/service-before.json'))
           spec=s.get('spec') or {}
@@ -121,22 +116,41 @@ jobs:
           names={str(e.get('name','')) for e in envs}
           for key in ['SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET']:
               print(key, 'PRESENT' if key in names else 'MISSING')
+          print('JWT_PRESENT=' + ('true' if 'SUPABASE_JWT_SECRET' in names else 'false'))
           PY
+          cat /tmp/env-presence.txt | grep -v '^JWT_PRESENT='
+          echo "jwt_present=$(grep '^JWT_PRESENT=' /tmp/env-presence.txt | cut -d= -f2)" >> "$GITHUB_OUTPUT"
 
       - name: Update Realtime environment variables
         shell: bash
         env:
           PROJECT_ID: ${{ steps.discover.outputs.project_id }}
           REGION: ${{ steps.discover.outputs.region }}
+          JWT_PRESENT: ${{ steps.inspect.outputs.jwt_present }}
           SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
         run: |
           set -euo pipefail
-          gcloud run services update "$CLOUD_RUN_SERVICE" \
-            --platform=managed \
-            --project="$PROJECT_ID" \
-            --region="$REGION" \
-            --update-env-vars="SUPABASE_URL=$SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY=$SUPABASE_PUBLISHABLE_KEY,SUPABASE_JWT_SECRET=$SUPABASE_JWT_SECRET" \
-            --quiet
+          if [ "$JWT_PRESENT" = "true" ]; then
+            echo "Existing Cloud Run JWT secret will be preserved."
+            gcloud run services update "$CLOUD_RUN_SERVICE" \
+              --platform=managed \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --update-env-vars="SUPABASE_URL=$SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY=$SUPABASE_PUBLISHABLE_KEY" \
+              --quiet
+          else
+            if [ -z "${SUPABASE_JWT_SECRET:-}" ]; then
+              echo "::error::Cloud Run is missing SUPABASE_JWT_SECRET and repository secret SUPABASE_JWT_SECRET is not configured."
+              exit 12
+            fi
+            echo "Cloud Run JWT secret is missing; restoring it from the repository secret."
+            gcloud run services update "$CLOUD_RUN_SERVICE" \
+              --platform=managed \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --update-env-vars="SUPABASE_URL=$SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY=$SUPABASE_PUBLISHABLE_KEY,SUPABASE_JWT_SECRET=$SUPABASE_JWT_SECRET" \
+              --quiet
+          fi
 
       - name: Verify new revision and health
         shell: bash
@@ -147,7 +161,7 @@ jobs:
           set -euo pipefail
           gcloud run services describe "$CLOUD_RUN_SERVICE" --platform=managed --project="$PROJECT_ID" --region="$REGION" --format=json > /tmp/service-after.json
           python3 - <<'PY'
-          import json,sys
+          import json
           s=json.load(open('/tmp/service-after.json'))
           status=s.get('status') or {}
           url=str(status.get('url') or '').strip()
