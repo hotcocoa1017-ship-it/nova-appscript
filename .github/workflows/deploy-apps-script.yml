@@ -41,6 +41,9 @@ jobs:
       - name: Apply QM notification bell patch
         run: python3 scripts/patch_qm_notification_bell.py
 
+      - name: Apply Realtime assignment batch merge patch
+        run: python3 scripts/patch_realtime_assignment_batch_merge.py
+
       - name: Validate full Realtime routing
         shell: bash
         run: |
@@ -52,6 +55,7 @@ jobs:
           grep -q "action === 'UPDATE_ROOM_OPERATION_STATUS'" RealtimeDailySync.js
           grep -q "action === 'QM_ASSIGN'" RealtimeDailySync.js
           grep -q "action === 'CHANGE_ROOM_STATUS'" RealtimeDailySync.js
+          grep -q "REALTIME_ASSIGNMENT_BATCH_MERGE_V1" RealtimeDailySync.js
           grep -q "QM 추가조회 탭 · 기존 점검대상 화면 보존" Client.html
           grep -q "QM 추가탭 동·층 필터 + 안전 즉시점검" Client.html
           grep -q "QM 추가탭 체크리스트 즉시노출 v1" Client.html
