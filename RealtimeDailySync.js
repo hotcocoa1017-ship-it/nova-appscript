@@ -946,8 +946,14 @@ function novaRealtimeFinalBatchUpdateCurrentRows_(sheet, updates) { // (Realtime
     throw new Error('현재객실현황 Realtime 반영 열을 찾을 수 없습니다.');
   }
 
-  const latestByRow = new Map();
-  updates.forEach(item => latestByRow.set(Number(item.rowNumber), item));
+  const latestByRow = new Map(); // REALTIME_ASSIGNMENT_BATCH_MERGE_V1
+  updates.forEach(item => {
+    const rowNumber = Number(item.rowNumber);
+    const previous = latestByRow.get(rowNumber) || {};
+    // 같은 1분 배치의 ASSIGN -> START -> COMPLETE가 이어져도 앞 이벤트의 배정 필드를 보존합니다.
+    // 뒤 이벤트는 자신이 명시한 필드만 덮어쓰며, RESET/CLEAR처럼 빈 값을 명시한 경우에는 정상적으로 초기화됩니다.
+    latestByRow.set(rowNumber, Object.assign({}, previous, item, { rowNumber }));
+  });
   const rows = Array.from(latestByRow.keys()).filter(row => row >= 2).sort((a, b) => a - b);
   if (!rows.length) return;
   const firstRow = rows[0];
