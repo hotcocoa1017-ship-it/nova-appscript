@@ -541,7 +541,7 @@
           const realtimeRoom = novaRealtimeMapPartialRoom_(rawRoom);
           const key = `${realtimeRoom.site}|${realtimeRoom.roomNo}`;
           const legacyRoom = legacyMap.get(key);
-          if (legacyRoom) return novaRealtimeMergeRoom_(legacyRoom, realtimeRoom);
+          if (legacyRoom) return preserveQmMobileRoommaidNames_(legacyRoom, novaRealtimeMergeRoom_(legacyRoom, realtimeRoom));
 
           const primaryNo = String(realtimeRoom.roommaidEmployeeNo || '').trim();
           const secondaryNo = String(realtimeRoom.secondaryRoommaidEmployeeNo || '').trim();
@@ -639,6 +639,25 @@
       || null;
   }
 
+  function preserveQmMobileRoommaidNames_(previousRoom, mergedRoom) { // (QM 점검대상 정비자 이름 보존 v1)
+    if (String(state.mobile.data?.role || '').trim().toUpperCase() !== 'QM' || !previousRoom || !mergedRoom) return mergedRoom;
+    const next = Object.assign({}, mergedRoom);
+    const previousPrimaryNo = String(previousRoom.roommaidEmployeeNo || '').trim();
+    const nextPrimaryNo = String(next.roommaidEmployeeNo || '').trim();
+    const previousSecondaryNo = String(previousRoom.secondaryRoommaidEmployeeNo || '').trim();
+    const nextSecondaryNo = String(next.secondaryRoommaidEmployeeNo || '').trim();
+
+    // Realtime DB에는 사번만 있으므로 같은 배정자라면 Sheet 스냅샷의 표시명을 유지합니다.
+    // 배정 사번이 실제로 변경된 경우에는 기존 이름을 절대 이월하지 않습니다.
+    if (nextPrimaryNo && previousPrimaryNo === nextPrimaryNo && String(previousRoom.roommaidName || '').trim()) {
+      next.roommaidName = String(previousRoom.roommaidName || '').trim();
+    }
+    if (nextSecondaryNo && previousSecondaryNo === nextSecondaryNo && String(previousRoom.secondaryRoommaidName || '').trim()) {
+      next.secondaryRoommaidName = String(previousRoom.secondaryRoommaidName || '').trim();
+    }
+    return next;
+  }
+
   function novaRealtimeHandleBroadcast_(payload) {
     const raw = novaRealtimeBroadcastRow_(payload);
     // 같은 Realtime 채널을 공유하는 하우스맨 INSERT는 객실 변경으로 해석하지 않습니다.
@@ -659,7 +678,8 @@
     const mobileRooms = state.mobile.data?.rooms || [];
     const mobileIndex = mobileRooms.findIndex(item => item.site === room.site && item.roomNo === room.roomNo);
     if (mobileIndex >= 0) {
-      mobileRooms[mobileIndex] = novaRealtimeMergeRoom_(mobileRooms[mobileIndex], room);
+      const previousMobileRoom = mobileRooms[mobileIndex];
+      mobileRooms[mobileIndex] = preserveQmMobileRoommaidNames_(previousMobileRoom, novaRealtimeMergeRoom_(previousMobileRoom, room));
       if (state.activeMenu === 'cleaning' && state.mobile.data?.role === 'ROOMMAID') {
         refreshRoommaidMobileSummaryLocal_();
         renderMobileSummary();
@@ -6830,7 +6850,8 @@
     const index = rooms.findIndex(item => String(item.roomNo || '') === String(roomNo || ''));
     if (index < 0 || !realtimeRoom) return null;
     const mapped = novaRealtimeMapRow_(realtimeRoom);
-    rooms[index] = novaRealtimeMergeRoom_(rooms[index], mapped);
+    const previousRoom = rooms[index];
+    rooms[index] = preserveQmMobileRoommaidNames_(previousRoom, novaRealtimeMergeRoom_(previousRoom, mapped));
     if (state.activeMenu === 'qm') {
       renderMobileSummary();
       renderMobileList();
