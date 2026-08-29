@@ -26,13 +26,25 @@ jobs:
       - name: Apply stable Realtime init hotfix
         run: python3 scripts/patch_realtime_client.py
 
-      - name: Validate operational status hotfix
+      - name: Validate full Realtime routing
         shell: bash
         run: |
           set -euo pipefail
-          grep -q "include_('OperationalStatusHotfix')" Index.html
-          grep -q "updateRoomOperationalStatusSafe" OperationalStatusHotfix.html
           grep -q "API 설정과 보조 Realtime 연결을 분리해 고속 API 유지" Client.html
+          grep -q "'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'" Client.html
+          grep -q "updateRoomOperationalStatusSafe" Client.html
+          grep -q "action === 'ASSIGN_ROOMMAID'" RealtimeDailySync.js
+          grep -q "action === 'UPDATE_ROOM_OPERATION_STATUS'" RealtimeDailySync.js
+          grep -q "action === 'QM_ASSIGN'" RealtimeDailySync.js
+          grep -q "action === 'CHANGE_ROOM_STATUS'" RealtimeDailySync.js
+          if grep -q "include_('OperationalStatusHotfix')" Index.html; then
+            echo "::error::OperationalStatusHotfix must not intercept the Realtime path."
+            exit 2
+          fi
+          if grep -q "addEventListener('click',onOperationalStatusClickCapture,true)" HousemanUiPerformancePatch.html; then
+            echo "::error::Houseman UI patch must not intercept operational-status clicks."
+            exit 2
+          fi
 
       - name: Persist generated Client hotfix to main
         shell: bash
