@@ -7310,6 +7310,7 @@
         </div>
         <div id="mobileShiftInfo" class="mobile-shift-info"></div>
         <div id="mobileSummary" class="mobile-summary"></div>
+        <div id="qmBrowseTabs" class="mobile-filters" hidden></div>
         <div id="mobileFilters" class="mobile-filters"></div>
         <div id="mobileList" class="mobile-list"><div class="mobile-loading">업무를 불러오고 있습니다.</div></div>
       </section>`;
@@ -7321,6 +7322,9 @@
       state.mobile.building = '';
       state.mobile.floor = '';
       state.mobile.version = 0;
+      state.mobile.qmView = 'TARGETS';
+      state.mobile.qmBrowseData = null;
+      state.mobile.qmBrowseLimit = 50;
       loadMobileSnapshot();
     });
     $('mobileSite').addEventListener('change', event => {
@@ -7329,6 +7333,9 @@
       state.mobile.building = '';
       state.mobile.floor = '';
       state.mobile.version = 0;
+      state.mobile.qmView = 'TARGETS';
+      state.mobile.qmBrowseData = null;
+      state.mobile.qmBrowseLimit = 50;
       loadMobileSnapshot();
     });
     $('mobileBuilding').addEventListener('change', event => {
@@ -7347,7 +7354,12 @@
       state.mobile.search = event.target.value.trim();
       scheduleUiRender_('mobile-search', renderMobileList, 80);
     });
-    $('mobileSyncButton').addEventListener('click', () => loadMobileSnapshot({ force: true }));
+    $('mobileSyncButton').addEventListener('click', async () => {
+      await loadMobileSnapshot({ force: true });
+      if (state.mobile.data?.role === 'QM' && qmMobileBrowseView_() !== 'TARGETS') {
+        await loadQmMobileBrowse_({ force: true });
+      }
+    });
     $('mobileList').addEventListener('click', handleMobileListClick);
   }
 
@@ -7414,6 +7426,7 @@
     const dateInput = $('mobileDate');
     if (dateInput) dateInput.value = state.mobile.businessDate || state.bootstrap.app.businessDate;
     renderMobileLocationFilters_();
+    renderQmBrowseTabs_();
     renderMobileSummary();
     renderMobileFilters();
     renderMobileList();
@@ -7464,10 +7477,122 @@
     floorSelect.value = state.mobile.floor;
   }
 
+  function qmMobileBrowseView_() { // (QM 추가조회 탭 · 기존 점검대상 화면 보존)
+    const role = String(state.mobile.data?.role || '').trim().toUpperCase();
+    if (role !== 'QM') return 'TARGETS';
+    const view = String(state.mobile.qmView || 'TARGETS').trim().toUpperCase();
+    return ['TARGETS', 'CLEANED', 'VACANT'].includes(view) ? view : 'TARGETS';
+  }
+
+  function qmMobileBrowseKey_(view) { // (QM 추가조회 선택범위 캐시키)
+    return [
+      state.mobile.businessDate || state.bootstrap.app.businessDate || '',
+      state.mobile.site || '',
+      String(view || qmMobileBrowseView_()).toUpperCase()
+    ].join('|');
+  }
+
+  function renderQmBrowseTabs_() { // (QM 점검대상·당일청소완료·공실 탭)
+    const panel = $('qmBrowseTabs');
+    if (!panel) return;
+    const isQm = String(state.mobile.data?.role || '').trim().toUpperCase() === 'QM';
+    panel.hidden = !isQm;
+    if (!isQm) {
+      panel.innerHTML = '';
+      return;
+    }
+    const view = qmMobileBrowseView_();
+    const tabs = [
+      ['TARGETS', '점검대상'],
+      ['CLEANED', '당일 청소완료'],
+      ['VACANT', '공실']
+    ];
+    panel.innerHTML = tabs.map(([code, label]) => `<button type="button" class="mobile-filter${view === code ? ' active' : ''}" data-qm-browse-view="${escapeAttr(code)}">${escapeHtml(label)}</button>`).join('');
+    panel.querySelectorAll('[data-qm-browse-view]').forEach(button => button.addEventListener('click', async () => {
+      const nextView = String(button.dataset.qmBrowseView || 'TARGETS').toUpperCase();
+      if (nextView === qmMobileBrowseView_()) return;
+      state.mobile.qmView = nextView;
+      state.mobile.qmBrowseLimit = 50;
+      renderQmBrowseTabs_();
+      renderMobileSummary();
+      renderMobileFilters();
+      if (nextView === 'TARGETS') {
+        renderMobileList();
+        return;
+      }
+      await loadQmMobileBrowse_();
+    }));
+  }
+
+  async function loadQmMobileBrowse_(options = {}) { // (QM 추가목록 탭 선택 시에만 지연조회)
+    if (String(state.mobile.data?.role || '').trim().toUpperCase() !== 'QM') return;
+    const view = qmMobileBrowseView_();
+    if (view === 'TARGETS') return;
+    const key = qmMobileBrowseKey_(view);
+    const cached = state.mobile.qmBrowseData;
+    if (!options.force && cached?.key === key && Array.isArray(cached.rooms)) {
+      renderMobileSummary();
+      renderMobileList();
+      return;
+    }
+    const container = $('mobileList');
+    if (container) container.innerHTML = '<div class="mobile-loading">객실을 불러오고 있습니다.</div>';
+    try {
+      const result = await callServer('getQmMobileBrowseRooms', state.token, {
+        businessDate: state.mobile.businessDate || state.bootstrap.app.businessDate,
+        site: state.mobile.site,
+        view
+      });
+      if (!result?.ok) throw new Error(result?.message || 'QM 객실목록을 불러오지 못했습니다.');
+      if (view !== qmMobileBrowseView_()) return;
+      state.mobile.qmBrowseData = {
+        key,
+        view,
+        rooms: Array.isArray(result.rooms) ? result.rooms : [],
+        summary: result.summary || {},
+        serverTime: result.serverTime || ''
+      };
+      renderMobileSummary();
+      renderMobileList();
+      setSyncStatus(`QM ${view === 'CLEANED' ? '당일 청소완료' : '공실'} 조회 · ${state.mobile.qmBrowseData.rooms.length}실`);
+    } catch (error) {
+      if (container) container.innerHTML = `<div class="mobile-empty">${escapeHtml(error?.message || 'QM 객실목록을 불러오지 못했습니다.')}</div>`;
+      setSyncStatus(`QM 추가조회 오류 · ${error?.message || '조회 실패'}`);
+    }
+  }
+
+  function renderQmBrowseRoomCard_(room, view) { // (QM 추가탭 조회전용 카드 · 기존 점검권한 변경 없음)
+    const roomStatus = codeLabel_(state.mobile.data?.codes?.roomStatuses, room.roomStatus);
+    const cleaningStatus = codeLabel_(state.mobile.data?.codes?.cleaningStatuses, room.cleaningStatus);
+    const assignedNames = [room.roommaidName, room.secondaryRoommaidName].filter(Boolean).join(' · ') || '-';
+    const qmName = String(room.qmName || '').trim();
+    const operationBadges = [
+      room.preassigned ? '<span class="mobile-operation-badge preassigned">선배정</span>' : '',
+      room.vip ? '<span class="mobile-operation-badge vip">VIP</span>' : '',
+      room.importantRoom ? '<span class="mobile-operation-badge important">중요</span>' : ''
+    ].filter(Boolean).join('');
+    const viewLabel = view === 'CLEANED' ? '당일 청소완료' : '공실';
+    return `<article class="mobile-room-card qm-browse-readonly">
+      <div class="mobile-card-top"><strong>${escapeHtml(room.roomNo)}</strong><span>${escapeHtml([room.building, room.floor ? `${room.floor}층` : ''].filter(Boolean).join(' · '))}</span></div>
+      ${operationBadges ? `<div class="mobile-operation-badges">${operationBadges}</div>` : ''}
+      <div class="mobile-room-status"><b>${escapeHtml(assignedNames)}</b><span>${escapeHtml(cleaningStatus || roomStatus)}</span></div>
+      <div class="mobile-cleaning-type"><span>${escapeHtml(viewLabel)}</span>${qmName ? ` · QM ${escapeHtml(qmName)}` : ''}</div>
+    </article>`;
+  }
+
   function renderMobileSummary() { // (직무별 모바일 요약)
     const data = state.mobile.data;
     const summary = data?.summary || {};
     const role = data?.role;
+    if (role === 'QM' && qmMobileBrowseView_() !== 'TARGETS') {
+      const view = qmMobileBrowseView_();
+      const browse = state.mobile.qmBrowseData;
+      const key = qmMobileBrowseKey_(view);
+      const count = browse?.key === key && Array.isArray(browse.rooms) ? browse.rooms.length : 0;
+      const label = view === 'CLEANED' ? '당일 청소완료' : '공실';
+      $('mobileSummary').innerHTML = `<div class="mobile-summary-card"><span>${escapeHtml(label)}</span><strong>${count}</strong></div>`;
+      return;
+    }
     if (role === 'HOUSEMAN' && $('mobileShiftInfo')) {
       const labels = (data.shift?.shifts || []).map(shift => `${shift.label} ${shift.start}~${shift.end}`);
       $('mobileShiftInfo').textContent = labels.length ? `내 근무조: ${labels.join(' · ')}` : '오늘 등록된 근무조가 없습니다.';
@@ -7493,6 +7618,12 @@
 
   function renderMobileFilters() { // (직무별 모바일 필터)
     const role = state.mobile.data?.role;
+    const filterPanel = $('mobileFilters');
+    if (role === 'QM' && qmMobileBrowseView_() !== 'TARGETS') {
+      if (filterPanel) { filterPanel.hidden = true; filterPanel.innerHTML = ''; }
+      return;
+    }
+    if (filterPanel) filterPanel.hidden = false;
     const filters = role === 'PUBLIC'
       ? [['DELAYED', '퇴실지연'], ['DUE_OUT', '퇴실예정'], ['CHECKED_OUT', '퇴실'], ['ALL', '전체']]
       : role === 'HOUSEMAN'
@@ -7512,6 +7643,32 @@
     const container = $('mobileList');
     if (!data || !container) return;
     const query = state.mobile.search.toLowerCase();
+    if (data.role === 'QM' && qmMobileBrowseView_() !== 'TARGETS') {
+      const view = qmMobileBrowseView_();
+      const key = qmMobileBrowseKey_(view);
+      const browse = state.mobile.qmBrowseData;
+      if (!browse || browse.key !== key || !Array.isArray(browse.rooms)) {
+        container.innerHTML = '<div class="mobile-loading">객실을 불러오고 있습니다.</div>';
+        return;
+      }
+      const filtered = browse.rooms.filter(room => {
+        if (!query) return true;
+        return [room.roomNo, room.building, room.floor ? `${room.floor}층` : '', room.roomStatus, room.cleaningStatus, room.roommaidName, room.secondaryRoommaidName, room.qmName]
+          .join(' ').toLowerCase().includes(query);
+      });
+      const limit = Math.max(50, Number(state.mobile.qmBrowseLimit || 50));
+      const visible = filtered.slice(0, limit);
+      const remaining = Math.max(0, filtered.length - visible.length);
+      container.innerHTML = visible.length
+        ? visible.map(room => renderQmBrowseRoomCard_(room, view)).join('') + (remaining ? `<button type="button" class="secondary-button" data-qm-browse-more>더 보기 · ${remaining}실 남음</button>` : '')
+        : '<div class="mobile-empty">표시할 객실이 없습니다.</div>';
+      const moreButton = container.querySelector('[data-qm-browse-more]');
+      if (moreButton) moreButton.addEventListener('click', () => {
+        state.mobile.qmBrowseLimit = limit + 50;
+        renderMobileList();
+      });
+      return;
+    }
     if (data.role === 'HOUSEMAN') {
       const orders = (data.orders || []).filter(order => filterMobileOrder_(order, query));
       container.innerHTML = orders.length ? orders.map(renderMobileOrderCard_).join('') : '<div class="mobile-empty">표시할 오더가 없습니다.</div>';
