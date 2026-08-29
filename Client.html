@@ -1142,6 +1142,31 @@
       return callServer(legacyMethod, state.token, legacySafe);
     }
 
+    const operationalStatusCompletionDirect = mappedAction === 'UPDATE_ROOM_OPERATION_STATUS'
+      && !String(safe.operationalStatus || '').trim();
+    if (operationalStatusCompletionDirect) {
+      // 객실조치 완료는 Cloud Run 우회 · 안전경로 직접 저장
+      // 화면은 이미 optimistic patch로 즉시 반영하고, 확정 저장만 안전경로 1회 호출합니다.
+      const directPayload = Object.assign({}, legacySafe, {
+        action: 'UPDATE_ROOM_OPERATION_STATUS',
+        operationalStatus: '',
+        expectedVersion: 0,
+        expectedOperationalStatus: String(safe?.expectedState?.operationalStatus || '')
+      });
+      delete directPayload.sheetExpectedVersion;
+      const directResult = await callServer('updateRoomOperationalStatusSafe', state.token, directPayload);
+      if (!directResult?.ok) throw new Error(directResult?.message || '객실조치 완료를 저장하지 못했습니다.');
+      void callServer('syncNovaRealtimeRoomForAction', state.token, {
+        businessDate: safe.businessDate,
+        site: safe.site,
+        roomNo: safe.roomNo,
+        action: 'UPDATE_ROOM_OPERATION_STATUS'
+      }).catch(syncError => {
+        console.warn('[NOVA Realtime] 객실조치 완료 후 DB 단건 재동기화는 정기 동기화로 넘깁니다.', syncError);
+      });
+      return Object.assign({}, directResult, { realtimeDirectSafePath: true });
+    }
+
     delete safe.sheetExpectedVersion;
     safe.action = mappedAction;
     safe.requestId = safe.requestId || novaRealtimeRequestId_(mappedAction, safe.roomNo);
