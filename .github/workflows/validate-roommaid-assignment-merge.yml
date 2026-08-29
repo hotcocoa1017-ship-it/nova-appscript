@@ -1,0 +1,105 @@
+name: Validate Roommaid Assignment Merge
+
+on:
+  push:
+    branches: [fix/realtime-roommaid-assignment-merge-20260829]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate patch syntax
+        run: |
+          python3 -m py_compile scripts/patch_realtime_client.py
+          python3 -m py_compile scripts/patch_qm_mobile_browse.py
+          python3 -m py_compile scripts/patch_qm_mobile_browse_v2.py
+          python3 -m py_compile scripts/patch_qm_immediate_checklist.py
+          python3 -m py_compile scripts/patch_qm_roommaid_name_display.py
+          python3 -m py_compile scripts/patch_qm_notification_bell.py
+          python3 -m py_compile scripts/patch_realtime_assignment_batch_merge.py
+
+      - name: Apply production patch chain
+        run: |
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+
+      - name: Validate assignment merge semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "REALTIME_ASSIGNMENT_BATCH_MERGE_V1" RealtimeDailySync.js
+          node <<'NODE'
+          function merge(updates) {
+            const latestByRow = new Map();
+            updates.forEach(item => {
+              const rowNumber = Number(item.rowNumber);
+              const previous = latestByRow.get(rowNumber) || {};
+              latestByRow.set(rowNumber, Object.assign({}, previous, item, { rowNumber }));
+            });
+            return latestByRow;
+          }
+          const normal = merge([
+            {rowNumber:100,cleaningStatus:'ASSIGNED',cleaningType:'NORMAL',assignmentType:'PAIR',roommaidEmployeeNo:'11055',secondaryRoommaidEmployeeNo:'11058',version:1},
+            {rowNumber:100,cleaningStatus:'CLEANING',version:2},
+            {rowNumber:100,cleaningStatus:'COMPLETED',version:3}
+          ]).get(100);
+          if (normal.cleaningStatus !== 'COMPLETED' || normal.roommaidEmployeeNo !== '11055' || normal.secondaryRoommaidEmployeeNo !== '11058' || normal.assignmentType !== 'PAIR') {
+            throw new Error('ASSIGN -> START -> COMPLETE must preserve roommaid assignment fields');
+          }
+          const reset = merge([
+            {rowNumber:200,cleaningStatus:'ASSIGNED',cleaningType:'NORMAL',assignmentType:'SOLO',roommaidEmployeeNo:'308628',secondaryRoommaidEmployeeNo:'',version:1},
+            {rowNumber:200,cleaningStatus:'WAITING',cleaningType:'',assignmentType:'',roommaidEmployeeNo:'',secondaryRoommaidEmployeeNo:'',qmEmployeeNo:'',version:2}
+          ]).get(200);
+          if (reset.cleaningStatus !== 'WAITING' || reset.roommaidEmployeeNo !== '' || reset.assignmentType !== '' || reset.cleaningType !== '') {
+            throw new Error('RESET/CLEAR must still explicitly clear assignment fields');
+          }
+          console.log('Assignment merge semantics OK');
+          NODE
+
+      - name: Validate generated JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check RealtimeDailySync.js
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('Client.html').read_text(encoding='utf-8')
+          js = text.split('<script>', 1)[1].rsplit('</script>', 1)[0]
+          Path('/tmp/Client.js').write_text(js, encoding='utf-8')
+          PY
+          node --check /tmp/Client.js
+
+      - name: Preserve existing production paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "API 설정과 보조 Realtime 연결을 분리해 고속 API 유지" Client.html
+          grep -q "QM 추가탭 체크리스트 즉시노출 v1" Client.html
+          grep -q "QM 점검대상 정비자 이름 보존 v1" Client.html
+          grep -q "QM_NOTIFICATION_BELL_V1" HousemanUiPerformancePatch.html
+          grep -q "action === 'CLEANING_RESET'" RealtimeDailySync.js
+          grep -q "action === 'CLEAR_ASSIGNMENT'" RealtimeDailySync.js
+          if grep -q "addEventListener('click',onOperationalStatusClickCapture,true)" HousemanUiPerformancePatch.html; then
+            echo "::error::Operational-status capture listener must remain disabled."
+            exit 2
+          fi
+
+      - name: Confirm generated diff scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only)"
+          echo "$changed"
+          test "$changed" = "RealtimeDailySync.js"
