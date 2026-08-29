@@ -71,7 +71,7 @@ else:
     print('Realtime init hotfix already applied.')
 
 # 2) 객실조치 상태(BROKEN/ROOM_CHECK/완료)는 공용 DB version과 분리합니다.
-# 이벤트 미러/5분 정방향 동기화가 DB version을 재정렬해도 객실조치 완료가
+# 이벤트 미러/정방향 동기화가 DB version을 재정렬해도 객실조치 완료가
 # 가짜 VERSION_CONFLICT로 거절되지 않아야 합니다. 실제 충돌 판정은
 # 기존 expectedState.operationalStatus 및 서버의 상태검증을 그대로 사용합니다.
 old_expected_version = "expectedVersion: action === 'CLEAR_ASSIGNMENT' ? 0 : Number(room.version || 0),"
@@ -86,6 +86,50 @@ elif old_expected_version in updated:
 else:
     print('ERROR: Could not locate operational-status expectedVersion line.', file=sys.stderr)
     sys.exit(3)
+
+# 3) 객실조치 '완료'(operationalStatus='')에서 Cloud Run 5xx/네트워크 오류가 나면
+# 오류 알림으로 끝내지 않고 상태기반 Apps Script 안전경로로 즉시 확정합니다.
+# 고장/객실확인 등록 및 다른 Realtime 액션은 기존 DB 우선 경로를 그대로 유지합니다.
+completion_failover_marker = '객실조치 완료 Realtime 실패 · 안전경로로 자동 전환'
+if completion_failover_marker not in updated:
+    old_catch = """    } catch (error) {\n      const code = String(error?.code || '').trim().toUpperCase();\n\n      // 권한/상태 오류는 DB 보정으로 해결되지 않으므로 느린 Sheets JIT 동기화를 실행하지 않습니다.\n"""
+    new_catch = """    } catch (error) {\n      const code = String(error?.code || '').trim().toUpperCase();\n      const errorStatus = Number(error?.status || 0);\n      const operationalStatusCompletion = mappedAction === 'UPDATE_ROOM_OPERATION_STATUS'\n        && !String(safe.operationalStatus || '').trim();\n\n      // 객실조치 완료 Realtime 실패 · 안전경로로 자동 전환\n      // 완료는 빈 상태값('')을 보내므로 Cloud Run 런타임이 5xx/네트워크 오류를 반환해도\n      // 실제 직전 객실조치 상태만 비교하는 Apps Script 안전경로로 확정하고,\n      // 성공 후 해당 1객실만 DB에 즉시 재동기화합니다. 4xx 권한/상태 오류는 우회하지 않습니다.\n      if (operationalStatusCompletion && (errorStatus === 0 || errorStatus >= 500)) {\n        console.warn('[NOVA Realtime] 객실조치 완료 API 실패 · 안전경로로 전환합니다.', error);\n        const fallbackPayload = Object.assign({}, legacySafe, {\n          action: 'UPDATE_ROOM_OPERATION_STATUS',\n          operationalStatus: '',\n          expectedVersion: 0,\n          expectedOperationalStatus: String(safe?.expectedState?.operationalStatus || '')\n        });\n        delete fallbackPayload.sheetExpectedVersion;\n        const fallbackResult = await callServer('updateRoomOperationalStatusSafe', state.token, fallbackPayload);\n        if (!fallbackResult?.ok) throw new Error(fallbackResult?.message || '객실조치 완료를 저장하지 못했습니다.');\n        void callServer('syncNovaRealtimeRoomForAction', state.token, {\n          businessDate: safe.businessDate,\n          site: safe.site,\n          roomNo: safe.roomNo,\n          action: 'UPDATE_ROOM_OPERATION_STATUS'\n        }).catch(syncError => {\n          console.warn('[NOVA Realtime] 객실조치 완료 후 DB 단건 재동기화는 정기 동기화로 넘깁니다.', syncError);\n        });\n        return Object.assign({}, fallbackResult, { realtimeFallback: true, realtimeFallbackReason: 'OPERATION_STATUS_COMPLETE_5XX' });\n      }\n\n      // 권한/상태 오류는 DB 보정으로 해결되지 않으므로 느린 Sheets JIT 동기화를 실행하지 않습니다.\n"""
+    if old_catch not in updated:
+        print('ERROR: Could not locate Realtime action catch block for completion failover.', file=sys.stderr)
+        sys.exit(4)
+    updated = updated.replace(old_catch, new_catch, 1)
+    changed = True
+    print('Applied operational-status completion failover to Client.html.')
+else:
+    print('Operational-status completion failover already applied.')
+
+# 4) 완료 처리의 Cloud Run 오류는 재시도 3회로 지연시키지 않습니다.
+# 다른 API는 기존 retry 정책을 유지합니다.
+no_retry_marker = "options.noRetry !== true"
+if no_retry_marker not in updated:
+    old_retryable = "const retryable = response.status === 429 || response.status >= 500;"
+    new_retryable = "const retryable = (response.status === 429 || response.status >= 500) && options.noRetry !== true;"
+    if old_retryable not in updated:
+        print('ERROR: Could not locate Realtime retry policy.', file=sys.stderr)
+        sys.exit(5)
+    updated = updated.replace(old_retryable, new_retryable, 1)
+    changed = True
+    print('Applied optional no-retry support to Realtime fetch.')
+else:
+    print('Realtime no-retry support already applied.')
+
+completion_no_retry = "noRetry: mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' && !String(safe.operationalStatus || '').trim(),"
+if completion_no_retry not in updated:
+    old_send = """    const send = () => novaRealtimeFetch_(`/v1/rooms/${encodeURIComponent(String(safe.roomNo || ''))}/action`, {\n      method: 'POST',\n      headers: { 'X-Request-Id': safe.requestId },\n      body: JSON.stringify(safe)\n    });\n"""
+    new_send = """    const send = () => novaRealtimeFetch_(`/v1/rooms/${encodeURIComponent(String(safe.roomNo || ''))}/action`, {\n      method: 'POST',\n      headers: { 'X-Request-Id': safe.requestId },\n      noRetry: mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' && !String(safe.operationalStatus || '').trim(),\n      body: JSON.stringify(safe)\n    });\n"""
+    if old_send not in updated:
+        print('ERROR: Could not locate Realtime room action sender.', file=sys.stderr)
+        sys.exit(6)
+    updated = updated.replace(old_send, new_send, 1)
+    changed = True
+    print('Disabled repeated 5xx retry for operational-status completion only.')
+else:
+    print('Operational-status completion no-retry already applied.')
 
 if changed:
     path.write_text(updated, encoding='utf-8')
