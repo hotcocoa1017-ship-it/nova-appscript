@@ -2,14 +2,6 @@
  * 웹앱 진입 및 공통 초기 API
  */
 function doGet(e) { // (웹앱 진입)
-  // TEMP 2026-08-29: 상용화 전 Realtime 인증진단. 결과 확인 즉시 제거합니다.
-  const diagnosticKey = 'wFD1aDNE34M-06nAc50DNW-q4pf3D__p3P8vF9xEGd0';
-  if (e && e.parameter && String(e.parameter.nova_diag || '') === diagnosticKey) {
-    return ContentService
-      .createTextOutput(JSON.stringify(runNovaRealtimeLiveDiagnostic_()))
-      .setMimeType(ContentService.MimeType.JSON);
-  }
-
   const template = HtmlService.createTemplateFromFile('Index');
   template.appName = NOVA.APP_NAME;
   template.version = NOVA.VERSION;
