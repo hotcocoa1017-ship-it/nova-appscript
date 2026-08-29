@@ -1,0 +1,200 @@
+name: Restore verified Realtime v95
+
+on:
+  push:
+    branches:
+      - fix/realtime-full-restore-20260829
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install clasp
+        run: npm install --global @google/clasp
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo "::error::Apps Script OAuth secret is missing."
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+      - name: Recover verified deployed version 95
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/nova-v95
+          mkdir -p /tmp/nova-v95
+          cd /tmp/nova-v95
+          clasp clone 1eBwsaCPGbbtiWINYD4IB0I0GBTGHn-2Dag3dWVHoet8weX2YD_FS5kR8 95
+      - name: Restore Realtime and performance code only
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in \
+            06_Indicator.js \
+            07_Houseman.js \
+            09_RoomStatusUpload.js \
+            10_Mobile.js \
+            11_Monthly.js \
+            14_DailyClose.js \
+            16_QmChecklist.js \
+            19_RoommaidCloseJournal.js \
+            HousemanRequestPhoto.js \
+            HousemanRequestPhotoClient.html \
+            RealtimeDailySync.js \
+            Styles.html; do
+            cp "/tmp/nova-v95/$f" "$f"
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+
+          v95 = Path('/tmp/nova-v95/Client.html').read_text(encoding='utf-8')
+          current = subprocess.check_output(['git', 'show', 'origin/main:Client.html'], text=True)
+
+          def function_span(text, name):
+              match = re.search(r'(?m)^\s*(?:async\s+)?function\s+' + re.escape(name) + r'\s*\(', text)
+              if not match:
+                  raise RuntimeError(f'function not found: {name}')
+              start = match.start()
+              brace = text.find('{', match.end())
+              depth = 0
+              i = brace
+              quote = None
+              escaped = False
+              line_comment = False
+              block_comment = False
+              while i < len(text):
+                  ch = text[i]
+                  nxt = text[i + 1] if i + 1 < len(text) else ''
+                  if line_comment:
+                      if ch == '\n':
+                          line_comment = False
+                  elif block_comment:
+                      if ch == '*' and nxt == '/':
+                          block_comment = False
+                          i += 1
+                  elif quote:
+                      if escaped:
+                          escaped = False
+                      elif ch == '\\':
+                          escaped = True
+                      elif ch == quote:
+                          quote = None
+                  else:
+                      if ch == '/' and nxt == '/':
+                          line_comment = True
+                          i += 1
+                      elif ch == '/' and nxt == '*':
+                          block_comment = True
+                          i += 1
+                      elif ch in ('\'', '"', '`'):
+                          quote = ch
+                      elif ch == '{':
+                          depth += 1
+                      elif ch == '}':
+                          depth -= 1
+                          if depth == 0:
+                              return start, i + 1
+                  i += 1
+              raise RuntimeError(f'unclosed function: {name}')
+
+          def replace_function(target, source, name):
+              ts, te = function_span(target, name)
+              ss, se = function_span(source, name)
+              return target[:ts] + source[ss:se] + target[te:]
+
+          # @95 전체 Realtime 구조를 기준으로 하되 이후 검증된 연결 안정화 두 함수는 유지합니다.
+          client = v95
+          for function_name in ('initNovaRealtime_', 'novaRealtimeRoomChangesFetch_'):
+              client = replace_function(client, current, function_name)
+
+          # Realtime이 명시적으로 비활성인 비상 상황에만 안전한 Sheets 조치상태 저장을 fallback으로 사용합니다.
+          old = """    if (!novaRealtimeIsEnabled_()) {\n      return callServer(legacyMethod, state.token, legacySafe);\n    }"""
+          new = """    if (!novaRealtimeIsEnabled_()) {\n      if (mappedAction === 'UPDATE_ROOM_OPERATION_STATUS') {\n        const safeOperationalPayload = Object.assign({}, legacySafe, {\n          expectedOperationalStatus: String(legacySafe?.expectedState?.operationalStatus || '')\n        });\n        return callServer('updateRoomOperationalStatusSafe', state.token, safeOperationalPayload);\n      }\n      return callServer(legacyMethod, state.token, legacySafe);\n    }"""
+          if client.count(old) != 1:
+              raise RuntimeError('Realtime legacy fallback block mismatch')
+          client = client.replace(old, new, 1)
+          Path('Client.html').write_text(client, encoding='utf-8')
+
+          # 동기 Sheets 선저장을 제거하고 Client의 DB Realtime 경로가 첫 번째 클릭을 처리하게 합니다.
+          index = Path('Index.html').read_text(encoding='utf-8')
+          index = index.replace("  <?!= include_('OperationalStatusHotfix'); ?>\n", '')
+          Path('Index.html').write_text(index, encoding='utf-8')
+
+          patch_path = Path('HousemanUiPerformancePatch.html')
+          patch = patch_path.read_text(encoding='utf-8')
+          listener = "document.addEventListener('DOMContentLoaded',init);document.addEventListener('submit',onSubmit,true);document.addEventListener('click',onOperationalStatusClickCapture,true);document.addEventListener('click',onDocClick,true);"
+          replacement = "document.addEventListener('DOMContentLoaded',init);document.addEventListener('submit',onSubmit,true);document.addEventListener('click',onDocClick,true);"
+          if patch.count(listener) != 1:
+              raise RuntimeError('operational status capture listener mismatch')
+          patch_path.write_text(patch.replace(listener, replacement, 1), encoding='utf-8')
+
+          # 자동배포 검증도 복구된 구조를 기준으로 바꿉니다.
+          deploy_path = Path('.github/workflows/deploy-apps-script.yml')
+          deploy = deploy_path.read_text(encoding='utf-8')
+          old_validation = '''      - name: Validate operational status hotfix\n        shell: bash\n        run: |\n          set -euo pipefail\n          grep -q "include_('OperationalStatusHotfix')" Index.html\n          grep -q "updateRoomOperationalStatusSafe" OperationalStatusHotfix.html\n          grep -q "API 설정과 보조 Realtime 연결을 분리해 고속 API 유지" Client.html\n'''
+          new_validation = '''      - name: Validate full Realtime routing\n        shell: bash\n        run: |\n          set -euo pipefail\n          grep -q "API 설정과 보조 Realtime 연결을 분리해 고속 API 유지" Client.html\n          grep -q "'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'" Client.html\n          grep -q "updateRoomOperationalStatusSafe" Client.html\n          grep -q "action === 'ASSIGN_ROOMMAID'" RealtimeDailySync.js\n          grep -q "action === 'UPDATE_ROOM_OPERATION_STATUS'" RealtimeDailySync.js\n          grep -q "action === 'QM_ASSIGN'" RealtimeDailySync.js\n          if grep -q "include_('OperationalStatusHotfix')" Index.html; then\n            echo "::error::OperationalStatusHotfix must not intercept the Realtime path."\n            exit 2\n          fi\n          if grep -q "addEventListener('click',onOperationalStatusClickCapture,true)" HousemanUiPerformancePatch.html; then\n            echo "::error::Houseman UI patch must not intercept operational-status clicks."\n            exit 2\n          fi\n'''
+          if old_validation not in deploy:
+              raise RuntimeError('deploy validation block mismatch')
+          deploy_path.write_text(deploy.replace(old_validation, new_validation, 1), encoding='utf-8')
+          PY
+      - name: Static verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'" Client.html
+          grep -q "action === 'ASSIGN_ROOMMAID'" RealtimeDailySync.js
+          grep -q "action === 'QM_ASSIGN'" RealtimeDailySync.js
+          grep -q "action === 'UPDATE_ROOM_OPERATION_STATUS'" RealtimeDailySync.js
+          grep -q "action === 'CHANGE_ROOM_STATUS'" RealtimeDailySync.js
+          grep -q "updateRoomOperationalStatusSafe" Client.html
+          ! grep -q "include_('OperationalStatusHotfix')" Index.html
+          ! grep -q "addEventListener('click',onOperationalStatusClickCapture,true)" HousemanUiPerformancePatch.html
+          for f in 06_Indicator.js 07_Houseman.js 09_RoomStatusUpload.js 10_Mobile.js 11_Monthly.js 14_DailyClose.js 16_QmChecklist.js 19_RoommaidCloseJournal.js HousemanRequestPhoto.js RealtimeDailySync.js RoomOperationalStatusFix.js; do
+            node --check "$f"
+          done
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess, tempfile
+          for file_name in ['Client.html', 'HousemanRequestPhotoClient.html', 'HousemanUiPerformancePatch.html']:
+              text = Path(file_name).read_text(encoding='utf-8')
+              scripts = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', text, flags=re.S | re.I)
+              for index, script in enumerate(scripts):
+                  tmp = Path(f'/tmp/{file_name.replace(".", "_")}_{index}.js')
+                  tmp.write_text(script, encoding='utf-8')
+                  subprocess.run(['node', '--check', str(tmp)], check=True)
+          PY
+      - name: Commit verified recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/restore-realtime-v95.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git status --short
+          git commit -m "Restore full Realtime routing from verified Apps Script v95 [skip ci]"
+          git push origin HEAD:fix/realtime-full-restore-20260829
