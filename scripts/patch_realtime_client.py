@@ -4,18 +4,18 @@ import sys
 
 path = Path('Client.html')
 text = path.read_text(encoding='utf-8')
+updated = text
+changed = False
 
+# 1) Realtime 설정 조회 성공과 Supabase 보조 연결 성공을 분리합니다.
 stable_marker = 'API 설정과 보조 Realtime 연결을 분리해 고속 API 유지'
-if stable_marker in text:
-    print('Realtime init hotfix already applied.')
-    sys.exit(0)
+if stable_marker not in updated:
+    pattern = re.compile(
+        r"  async function initNovaRealtime_\(\) \{.*?\n  \}\n\n  function novaRealtimeMapRow_",
+        re.S,
+    )
 
-pattern = re.compile(
-    r"  async function initNovaRealtime_\(\) \{.*?\n  \}\n\n  function novaRealtimeMapRow_",
-    re.S,
-)
-
-replacement = r'''  async function initNovaRealtime_() { // (API 설정과 보조 Realtime 연결을 분리해 고속 API 유지)
+    replacement = r'''  async function initNovaRealtime_() { // (API 설정과 보조 Realtime 연결을 분리해 고속 API 유지)
     if (!state.token) return false;
     if (!novaRealtime_.configLoaded) {
       try {
@@ -60,10 +60,35 @@ replacement = r'''  async function initNovaRealtime_() { // (API 설정과 보�
 
   function novaRealtimeMapRow_'''
 
-updated, count = pattern.subn(replacement, text, count=1)
-if count != 1:
-    print('ERROR: Could not locate exactly one initNovaRealtime_ block.', file=sys.stderr)
-    sys.exit(2)
+    next_text, count = pattern.subn(replacement, updated, count=1)
+    if count != 1:
+        print('ERROR: Could not locate exactly one initNovaRealtime_ block.', file=sys.stderr)
+        sys.exit(2)
+    updated = next_text
+    changed = True
+    print('Applied stable Realtime init hotfix to Client.html.')
+else:
+    print('Realtime init hotfix already applied.')
 
-path.write_text(updated, encoding='utf-8')
-print('Applied stable Realtime init hotfix to Client.html.')
+# 2) 객실조치 상태(BROKEN/ROOM_CHECK/완료)는 공용 DB version과 분리합니다.
+# 이벤트 미러/5분 정방향 동기화가 DB version을 재정렬해도 객실조치 완료가
+# 가짜 VERSION_CONFLICT로 거절되지 않아야 합니다. 실제 충돌 판정은
+# 기존 expectedState.operationalStatus 및 서버의 상태검증을 그대로 사용합니다.
+old_expected_version = "expectedVersion: action === 'CLEAR_ASSIGNMENT' ? 0 : Number(room.version || 0),"
+new_expected_version = "expectedVersion: ['CLEAR_ASSIGNMENT', 'UPDATE_ROOM_OPERATION_STATUS'].includes(action) ? 0 : Number(room.version || 0),"
+
+if new_expected_version in updated:
+    print('Operational-status version-domain hotfix already applied.')
+elif old_expected_version in updated:
+    updated = updated.replace(old_expected_version, new_expected_version, 1)
+    changed = True
+    print('Applied operational-status version-domain hotfix to Client.html.')
+else:
+    print('ERROR: Could not locate operational-status expectedVersion line.', file=sys.stderr)
+    sys.exit(3)
+
+if changed:
+    path.write_text(updated, encoding='utf-8')
+    print('Client.html hotfixes written.')
+else:
+    print('Client.html already up to date.')
