@@ -34,13 +34,13 @@ jobs:
           set -euo pipefail
           mkdir recovered-v95
           cd recovered-v95
-          clasp clone 1eBwsaCPGbbtiWINYD4IB0I0GBTGHn-2Dag3dWVHoet8weX2YD_FS5kR8 --versionNumber 95
+          clasp clone 1eBwsaCPGbbtiWINYD4IB0I0GBTGHn-2Dag3dWVHoet8weX2YD_FS5kR8 95
           echo '--- recovered files ---'
           ls -la
           echo '--- Client realtime routes ---'
-          grep -nE "realtimeAction|UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|UPDATE_OPERATION_FLAGS" Client.html | head -120 || true
+          grep -nE "realtimeAction|UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|UPDATE_OPERATION_FLAGS" Client.html | head -160 || true
           echo '--- mirror action routing ---'
-          grep -nE "UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|CLEANING_START|CLEANING_COMPLETE" RealtimeDailySync.js | head -160 || true
+          grep -nE "UPDATE_ROOM_OPERATION_STATUS|ASSIGN_ROOMMAID|QM_ASSIGN|CHANGE_ROOM_STATUS|CLEANING_START|CLEANING_COMPLETE" RealtimeDailySync.js | head -220 || true
       - name: Upload recovered v95
         uses: actions/upload-artifact@v4
         with:
