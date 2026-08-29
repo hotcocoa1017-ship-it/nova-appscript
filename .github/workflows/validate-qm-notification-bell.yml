@@ -1,0 +1,77 @@
+name: Validate QM Notification Bell
+
+on:
+  push:
+    branches: [fix/qm-notification-bell-20260829]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate patch syntax
+        run: |
+          python3 -m py_compile scripts/patch_realtime_client.py
+          python3 -m py_compile scripts/patch_qm_mobile_browse.py
+          python3 -m py_compile scripts/patch_qm_mobile_browse_v2.py
+          python3 -m py_compile scripts/patch_qm_immediate_checklist.py
+          python3 -m py_compile scripts/patch_qm_roommaid_name_display.py
+          python3 -m py_compile scripts/patch_qm_notification_bell.py
+
+      - name: Apply production patch chain
+        run: |
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+
+      - name: Validate QM bell behavior markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "QM_NOTIFICATION_BELL_V1" HousemanUiPerformancePatch.html
+          grep -q "data-mobile-menu=\"qm\"" HousemanUiPerformancePatch.html
+          grep -q "S.mode='QM'" HousemanUiPerformancePatch.html
+          grep -q "S.mode==='QM'" HousemanUiPerformancePatch.html
+          grep -q "function qmItem" HousemanUiPerformancePatch.html
+          grep -q "function qmSummaryCount" HousemanUiPerformancePatch.html
+          grep -q "점검대기" HousemanUiPerformancePatch.html
+          grep -q "점검중" HousemanUiPerformancePatch.html
+          grep -q "QM 추가탭 체크리스트 즉시노출 v1" Client.html
+          grep -q "QM 점검대상 정비자 이름 보존 v1" Client.html
+          grep -q "API 설정과 보조 Realtime 연결을 분리해 고속 API 유지" Client.html
+          if grep -q "addEventListener('click',onOperationalStatusClickCapture,true)" HousemanUiPerformancePatch.html; then
+            echo "::error::Operational-status capture listener must remain disabled."
+            exit 2
+          fi
+
+      - name: Validate generated JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          for name in ['Client.html', 'HousemanUiPerformancePatch.html']:
+              text = Path(name).read_text(encoding='utf-8')
+              js = text.split('<script>', 1)[1].rsplit('</script>', 1)[0]
+              out = '/tmp/' + name.replace('.html', '.js')
+              Path(out).write_text(js, encoding='utf-8')
+          PY
+          node --check /tmp/Client.js
+          node --check /tmp/HousemanUiPerformancePatch.js
+
+      - name: Confirm generated diff scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-only
+          git diff --name-only | grep -qx 'HousemanUiPerformancePatch.html'
+          test "$(git diff --name-only | wc -l)" -eq 1
