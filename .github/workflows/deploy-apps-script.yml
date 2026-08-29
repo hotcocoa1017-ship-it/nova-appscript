@@ -38,6 +38,9 @@ jobs:
       - name: Apply QM roommaid display-name patch
         run: python3 scripts/patch_qm_roommaid_name_display.py
 
+      - name: Apply QM notification bell patch
+        run: python3 scripts/patch_qm_notification_bell.py
+
       - name: Validate full Realtime routing
         shell: bash
         run: |
@@ -57,6 +60,9 @@ jobs:
           grep -q "function startQmMobileBrowseInspection" QmMobileBrowse.js
           grep -q "data-qm-browse-inspect" Client.html
           grep -q "qmBrowseLocationFilters" Client.html
+          grep -q "QM_NOTIFICATION_BELL_V1" HousemanUiPerformancePatch.html
+          grep -q "S.mode==='QM'" HousemanUiPerformancePatch.html
+          grep -q "function qmItem" HousemanUiPerformancePatch.html
           if grep -q "include_('OperationalStatusHotfix')" Index.html; then
             echo "::error::OperationalStatusHotfix must not intercept the Realtime path."
             exit 2
