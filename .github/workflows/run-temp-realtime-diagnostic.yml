@@ -1,0 +1,39 @@
+name: Run Temporary Realtime Diagnostic
+
+on:
+  push:
+    branches: [diag/live-realtime-token-20260829]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call production diagnostic once
+        shell: bash
+        env:
+          DIAG_URL: https://script.google.com/macros/s/AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf/exec?nova_diag=wFD1aDNE34M-06nAc50DNW-q4pf3D__p3P8vF9xEGd0
+        run: |
+          set -euo pipefail
+          result=''
+          for attempt in 1 2 3 4; do
+            if result="$(curl -fsSL --max-time 45 "$DIAG_URL")"; then
+              break
+            fi
+            sleep 3
+          done
+          test -n "$result"
+          python3 - "$result" <<'PY'
+          import json, sys
+          data=json.loads(sys.argv[1])
+          allowed=[
+            'ok','realtimeEnabled','apiConfigured','cloudRunHealthOk','cloudRunHealthStatus','cloudRunBuild',
+            'realtimeTokenOk','realtimeTokenStatus','supabaseProjectMatch','supabaseRootStatus','supabaseTableStatus',
+            'supabaseJwtRejected','jwtAlg','jwtRole','jwtAudience','jwtIssuer','jwtHasExpiration','jwtSiteCount',
+            'jwtSubjectLooksUuid','publishableKeyType','stage','errorCode','error','supabaseErrorCode','supabaseErrorMessage','elapsedMs'
+          ]
+          print(json.dumps({k:data.get(k) for k in allowed if k in data}, ensure_ascii=False, sort_keys=True))
+          PY
