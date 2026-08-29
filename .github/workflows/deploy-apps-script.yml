@@ -1,0 +1,93 @@
+name: Deploy NOVA Apps Script
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nova-apps-script-production
+  cancel-in-progress: false
+
+env:
+  APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply stable Realtime init hotfix
+        run: python3 scripts/patch_realtime_client.py
+
+      - name: Validate operational status hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "include_('OperationalStatusHotfix')" Index.html
+          grep -q "updateRoomOperationalStatusSafe" OperationalStatusHotfix.html
+          grep -q "API 설정과 보조 Realtime 연결을 분리해 고속 API 유지" Client.html
+
+      - name: Persist generated Client hotfix to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Client.html; then
+            echo "Client.html already contains the stable Realtime init path."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Client.html
+          git commit -m "Fix Realtime config initialization fallback [skip ci]"
+          if ! git push origin HEAD:main; then
+            echo "::warning::Could not push generated Client.html back to main. Deployment will continue with the patched workspace."
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp@3.0.6
+
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo "::error::Apps Script OAuth secret is missing. Add repository secret CLASPRC_JSON (or CLASPRC_JSON_B64)."
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+
+      - name: Push source to Apps Script
+        run: clasp push --force
+
+      - name: Update existing web app deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp create-deployment \
+            --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" \
+            --description "NOVA automated deploy ${GITHUB_SHA::12}"
+
+      - name: Deployment summary
+        run: |
+          echo "NOVA Apps Script source pushed and existing web app deployment updated."
+          echo "Commit: $GITHUB_SHA"
