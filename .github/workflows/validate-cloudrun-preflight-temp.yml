@@ -1,0 +1,78 @@
+name: Validate Cloud Run Realtime Preflight Temp
+
+on:
+  push:
+    branches: [feat/permanent-cloudrun-preflight-20260829]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+      GCP_REGION: asia-southeast1
+      CLOUD_RUN_REALTIME_SERVICE: nova-realtime-api
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate Google Cloud preflight
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+      - name: Setup gcloud preflight
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Validate Cloud Run Realtime production preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_REALTIME_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/nova-cloudrun-service.json
+          ACTIVE_REV="$(python3 - <<'PY'
+          import json, sys
+          s=json.load(open('/tmp/nova-cloudrun-service.json'))
+          active=[]
+          for t in (s.get('status') or {}).get('traffic') or []:
+              pct=int(t.get('percent') or 0); rev=str(t.get('revisionName') or '')
+              if pct>0: active.append((rev,pct))
+          if len(active)!=1 or active[0][1]!=100 or not active[0][0]: sys.exit(20)
+          print(active[0][0])
+          PY
+          )"
+          echo "ACTIVE_REV=$ACTIVE_REV"
+          gcloud run revisions describe "$ACTIVE_REV" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/nova-cloudrun-revision.json
+          python3 - <<'PY'
+          import json,sys
+          r=json.load(open('/tmp/nova-cloudrun-revision.json'))
+          ready=any(c.get('type')=='Ready' and str(c.get('status'))=='True' for c in (r.get('status') or {}).get('conditions') or [])
+          if not ready: sys.exit(21)
+          envs=(((r.get('spec') or {}).get('containers') or [{}])[0].get('env') or [])
+          by={str(e.get('name','')):e for e in envs}
+          for name in ['SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET']:
+              e=by.get(name); present=bool(e and (e.get('valueFrom') or e.get('valueSource') or str(e.get('value','')).strip()))
+              print(name+'='+('CONFIGURED' if present else 'MISSING'))
+              if not present: sys.exit(22)
+          print('CLOUD_RUN_REALTIME_ENV=OK')
+          PY
+          SERVICE_URL="$(python3 - <<'PY'
+          import json
+          print((json.load(open('/tmp/nova-cloudrun-service.json')).get('status') or {}).get('url') or '')
+          PY
+          )"
+          HTTP="$(curl -sS --retry 2 --retry-delay 1 -o /tmp/health.json -w '%{http_code}' "$SERVICE_URL/health")"
+          echo "HEALTH_HTTP=$HTTP"
+          test "$HTTP" = "200"
+          python3 - <<'PY'
+          import json,sys
+          b=json.load(open('/tmp/health.json'))
+          if b.get('ok') is not True or not str(b.get('build') or b.get('version') or ''): sys.exit(23)
+          print('HEALTH_BUILD='+str(b.get('build') or b.get('version')))
+          print('CLOUD_RUN_REALTIME_PREFLIGHT=OK')
+          PY
+      - name: Validate workflow contains permanent gate markers
+        run: |
+          grep -q "Validate Cloud Run Realtime production preflight" .github/workflows/deploy-apps-script.yml
+          grep -q "SUPABASE_JWT_SECRET" .github/workflows/deploy-apps-script.yml
+          grep -q "CLOUD_RUN_REALTIME_PREFLIGHT=OK" .github/workflows/deploy-apps-script.yml
