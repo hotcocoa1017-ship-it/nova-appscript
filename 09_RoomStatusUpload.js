@@ -118,24 +118,31 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
       throw new Error('미리보기 이후 객실마스터가 변경되었습니다. 파일을 다시 검증하세요.');
     }
 
+    const applyStartedMs = Date.now();
+    const lockRequestedMs = Date.now();
     const lock = acquireWriteLock_(30000);
+    const lockAcquiredMs = Date.now();
     try {
       const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
       const headerMap = getHeaderMap_(sheet);
       const lastColumn = sheet.getLastColumn();
+      // 업무일자는 실제 셀값(Date)이 아니라 yyyy-MM-dd 표시값으로 읽어야
+      // 동일 업무일자·사업장 기존행을 정확히 찾아 교체할 수 있다.
       const existingRows = sheet.getLastRow() > 1
-        ? sheet.getRange(2, 1, sheet.getLastRow() - 1, lastColumn).getValues()
+        ? sheet.getRange(2, 1, sheet.getLastRow() - 1, lastColumn).getDisplayValues()
         : [];
       const existingForTarget = {};
       const keptRows = [];
+      const targetRowNumbers = [];
       let removedTargetRowCount = 0;
 
-      existingRows.forEach(row => {
+      existingRows.forEach((row, index) => {
         const data = rowObjectFromValues_(row, headerMap);
         const isTarget = String(data['업무일자'] || '').trim() === preview.businessDate
           && String(data['사업장'] || '').trim() === preview.site;
         if (isTarget) {
           removedTargetRowCount += 1;
+          targetRowNumbers.push(index + 2);
           const roomNo = normalizeRoomNo_(data['객실번호']);
           if (roomNo) existingForTarget[roomNo] = data;
         } else {
@@ -206,18 +213,43 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
         assertResetRoomUploadAssignments_(newRows, headerMap, appliedAssignments);
       }
 
-      const allRows = keptRows.concat(newRows);
-      if (sheet.getLastRow() > 1) {
-        sheet.getRange(2, 1, sheet.getLastRow() - 1, lastColumn).clearContent();
+      const currentWriteStartedMs = Date.now();
+      const targetRowsContiguous = targetRowNumbers.length === newRows.length
+        && targetRowNumbers.length > 0
+        && targetRowNumbers.every((rowNumber, index) => rowNumber === targetRowNumbers[0] + index);
+      let roomWriteMode = 'FULL_REWRITE';
+      let firstWrittenRow = keptRows.length + 2;
+
+      if (targetRowsContiguous) {
+        // 정상 운영 업로드는 동일 업무일자·사업장 객실 블록을 제자리에서 한 번만 교체합니다.
+        // 다른 업무일자/사업장 행을 clear+setValues로 다시 쓰지 않아 대용량 누적 시트의 지연을 제거합니다.
+        firstWrittenRow = targetRowNumbers[0];
+        ensureSheetRowCapacity_(sheet, firstWrittenRow + newRows.length - 1);
+        sheet.getRange(firstWrittenRow, 1, newRows.length, lastColumn).setValues(newRows);
+        roomWriteMode = 'IN_PLACE_BLOCK';
+      } else {
+        // 행수 변화·비연속 블록·최초 업로드 등 예외 상황은 기존 안전한 전체 교체 방식을 유지합니다.
+        const allRows = keptRows.concat(newRows);
+        if (sheet.getLastRow() > 1) {
+          sheet.getRange(2, 1, sheet.getLastRow() - 1, lastColumn).clearContent();
+        }
+        if (allRows.length) {
+          ensureSheetRowCapacity_(sheet, allRows.length + 1);
+          sheet.getRange(2, 1, allRows.length, lastColumn).setValues(allRows);
+        }
+        firstWrittenRow = keptRows.length + 2;
       }
-      if (allRows.length) {
-        ensureSheetRowCapacity_(sheet, allRows.length + 1);
-        sheet.getRange(2, 1, allRows.length, lastColumn).setValues(allRows);
-      }
+      const currentWriteMs = Date.now() - currentWriteStartedMs;
+
+      const maintenanceStartedMs = Date.now();
       const maintenanceReset = resetExisting
         ? resetRoomMaintenanceHistoryForUpload_(preview.businessDate, preview.site, updatedAt)
         : createRoomMaintenanceResetSummary_();
+      const maintenanceMs = Date.now() - maintenanceStartedMs;
+
+      const flushStartedMs = Date.now();
       SpreadsheetApp.flush();
+      const flushMs = Date.now() - flushStartedMs;
       publishDataVersion_(version, {
         domains: resetExisting ? ['ROOM', 'REPORT'] : ['ROOM'],
         businessDate: preview.businessDate,
@@ -289,7 +321,7 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
 
       const roomObjects = newRows.map((row, index) => currentRoomObject_(
         rowObjectFromValues_(row, headerMap),
-        keptRows.length + index + 2,
+        firstWrittenRow + index,
         {},
         usersByEmployeeNo
       ));
@@ -314,6 +346,14 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
         resetExisting,
         removedTargetRowCount,
         maintenanceReset,
+        timing: {
+          totalMs: Date.now() - applyStartedMs,
+          lockWaitMs: lockAcquiredMs - lockRequestedMs,
+          currentWriteMs,
+          maintenanceMs,
+          flushMs,
+          roomWriteMode
+        },
         message: buildRoomStatusUploadApplyMessage_(preview, newRows.length, appliedAssignments.length, skippedAssignments.length, resetExisting, removedTargetRowCount, maintenanceReset)
       };
     } finally {
@@ -418,17 +458,16 @@ function resetRoomMaintenanceHistoryForUpload_(businessDate, site, updatedAt) { 
   ].filter(item => item[0]));
 
   const rowCount = historySheet.getLastRow() - 1;
-  const typeValues = historySheet.getRange(2, typeColumn, rowCount, 1).getDisplayValues();
-  const dateValues = historySheet.getRange(2, dateColumn, rowCount, 1).getDisplayValues();
-  const siteValues = historySheet.getRange(2, siteColumn, rowCount, 1).getDisplayValues();
-  const deletedValues = historySheet.getRange(2, deletedColumn, rowCount, 1).getDisplayValues();
+  // 업무이력 4개 열을 각각 원격조회하지 않고 한 번의 일괄조회로 판정합니다.
+  const historyValues = historySheet.getRange(2, 1, rowCount, historySheet.getLastColumn()).getDisplayValues();
   const matchedRows = [];
 
   for (let index = 0; index < rowCount; index += 1) {
-    if (String(dateValues[index][0] || '').trim() !== businessDate) continue;
-    if (String(siteValues[index][0] || '').trim() !== site) continue;
-    if (String(deletedValues[index][0] || 'N').trim().toUpperCase() === 'Y') continue;
-    const recordType = String(typeValues[index][0] || '').trim();
+    const row = historyValues[index];
+    if (String(row[dateColumn - 1] || '').trim() !== businessDate) continue;
+    if (String(row[siteColumn - 1] || '').trim() !== site) continue;
+    if (String(row[deletedColumn - 1] || 'N').trim().toUpperCase() === 'Y') continue;
+    const recordType = String(row[typeColumn - 1] || '').trim();
     const summaryKey = resetTypes.get(recordType);
     if (!summaryKey) continue;
     matchedRows.push(index + 2);

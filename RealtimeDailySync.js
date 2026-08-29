@@ -60,6 +60,101 @@ function syncNovaRealtimeRoomForAction(token, payload) { // (룸메이드 작업
   });
 }
 
+
+function novaRealtimeFetchCurrentRoomForQmMirror_(token, businessDate, site, roomNo) { // (QM 배정 직후 DB 현재객실 직접확인)
+  const props = PropertiesService.getScriptProperties();
+  const apiBase = String(props.getProperty('NOVA_REALTIME_API_BASE') || '').trim().replace(/\/+$/, '');
+  if (!apiBase) throw new Error('Realtime API 주소를 확인할 수 없습니다.');
+
+  const query = [
+    `businessDate=${encodeURIComponent(String(businessDate || ''))}`,
+    `site=${encodeURIComponent(String(site || ''))}`
+  ].join('&');
+  const response = UrlFetchApp.fetch(`${apiBase}/v1/rooms?${query}`, {
+    method: 'get',
+    headers: { Authorization: `Bearer ${String(token || '').trim()}` },
+    muteHttpExceptions: true,
+    followRedirects: true
+  });
+  const status = Number(response.getResponseCode() || 0);
+  let body = {};
+  try { body = JSON.parse(response.getContentText() || '{}'); } catch (error) { body = {}; }
+  if (status < 200 || status >= 300 || !body.ok) {
+    throw new Error(String(body.message || body.error || `Realtime 객실확인 실패 (${status})`));
+  }
+
+  const targetRoomNo = String(roomNo || '').trim();
+  const room = (Array.isArray(body.rooms) ? body.rooms : [])
+    .find(item => String(item && item.roomNo || '').trim() === targetRoomNo);
+  if (!room) throw new Error(`${targetRoomNo}호를 Realtime 현재객실에서 찾을 수 없습니다.`);
+  return room;
+}
+
+function syncNovaRealtimeQmAssignmentMirror(token, payload) { // (QM 배정 DB 확정값을 해당 Sheet 1행에 즉시 반영·검증)
+  const user = requireRole_(token, ['ADMIN', 'ORDER']);
+  const safe = payload || {};
+  const businessDate = novaRealtimeFinalBusinessDate_(safe.businessDate);
+  const site = String(safe.site || user.defaultSite || '').trim();
+  const roomNo = String(safe.roomNo || '').trim();
+  const expectedQmEmployeeNo = String(safe.employeeNo || '').trim();
+  if (!site || !roomNo || !expectedQmEmployeeNo) {
+    throw new Error('QM 배정 즉시동기화에 사업장·객실번호·QM 사번이 필요합니다.');
+  }
+
+  // 전체 이벤트 큐를 먼저 미러하지 않는다. 방금 배정한 객실의 DB 현재값만 직접 확인한다.
+  // 이력/Telegram 보존은 기존 예약 이벤트 미러가 후행 처리한다.
+  const dbRoom = novaRealtimeFetchCurrentRoomForQmMirror_(token, businessDate, site, roomNo);
+  const currentQmEmployeeNo = String(dbRoom.qmEmployeeNo || '').trim();
+  if (currentQmEmployeeNo !== expectedQmEmployeeNo) {
+    throw new Error('QM 배정 중 더 최신 배정이 확인되었습니다. 화면을 다시 불러온 뒤 확인하세요.');
+  }
+  const dbCleaningStatus = String(dbRoom.cleaningStatus || 'QM_WAITING').trim().toUpperCase() || 'QM_WAITING';
+
+  const lock = acquireWriteLock_(5000);
+  try {
+    const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
+    const rowInfo = findCurrentRoomRow_(sheet, businessDate, site, roomNo);
+    if (!rowInfo) throw new Error(`${roomNo}호를 현재객실현황에서 찾을 수 없습니다.`);
+
+    const sheetQmEmployeeNo = String(rowInfo.data['QM사번'] || '').trim();
+    const sheetCleaningStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
+    let version = Number(rowInfo.data['마지막변경버전'] || 0);
+    let updated = false;
+
+    if (sheetQmEmployeeNo !== currentQmEmployeeNo || sheetCleaningStatus !== dbCleaningStatus) {
+      version = reserveDataVersion_({ lockHeld: true });
+      updateRowByHeaders_(sheet, rowInfo.rowNumber, {
+        'QM사번': currentQmEmployeeNo,
+        '청소상태': dbCleaningStatus,
+        '마지막변경버전': version,
+        '수정일시': nowText_()
+      });
+      SpreadsheetApp.flush();
+      publishDataVersion_(version, {
+        domains: ['ROOM'],
+        businessDate,
+        site: String(rowInfo.data['사업장'] || site).trim(),
+        lockHeld: true
+      });
+      updated = true;
+    }
+
+    return {
+      ok: true,
+      mirror: { ok: true, direct: true, source: 'REALTIME_CURRENT_ROOM', updated },
+      businessDate,
+      site: String(rowInfo.data['사업장'] || site).trim(),
+      roomNo,
+      qmEmployeeNo: currentQmEmployeeNo,
+      cleaningStatus: dbCleaningStatus,
+      version,
+      dbRoomVersion: Number(dbRoom.version || 0)
+    };
+  } finally {
+    try { lock.releaseLock(); } catch (ignore) {}
+  }
+}
+
 function novaRealtimeScheduledFinalSync() { // (1분 최종 통합: 이벤트 미러 + 5분 간격 정방향)
   if (!novaRealtimeFinalEnabled_()) return { ok: true, skipped: true, reason: 'REALTIME_DISABLED' };
   const mirror = mirrorNovaRealtimeEventsToSheets_();
@@ -128,6 +223,8 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
   const roomUpdates = [];
   const historyPayloads = [];
   const qmNotifications = [];
+  const assignmentNotifications = [];
+  const qmAssignmentNotifications = [];
   let finalCursorTime = cursorTime;
   let finalCursorRequestId = cursorRequestId;
 
@@ -168,6 +265,550 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
       const eventBusinessDate = novaRealtimeFinalBusinessDate_(event.businessDate);
       const eventSite = String(event.site || rowInfo.data['사업장'] || '').trim();
       const eventRoomNo = String(event.roomNo || '').trim();
+
+      if (action === 'ASSIGN_ROOMMAID') {
+        const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const assignedCleaningType = String(eventDetail.cleaningType || NOVA.CLEANING_TYPES.NORMAL).trim().toUpperCase();
+        const assignedAssignmentType = String(eventDetail.assignmentType || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO).trim().toUpperCase();
+        const assignedPrimaryNo = String(eventDetail.primaryEmployeeNo || '').trim();
+        const assignedSecondaryNo = String(eventDetail.secondaryEmployeeNo || '').trim();
+        if (!assignedPrimaryNo) throw new Error(`DB 배정 이벤트에 주담당 사번이 없습니다. (${eventSite} ${eventRoomNo}호)`);
+
+        roomUpdates.push({
+          rowNumber: rowInfo.rowNumber,
+          cleaningStatus: 'ASSIGNED',
+          cleaningType: assignedCleaningType,
+          assignmentType: assignedAssignmentType,
+          roommaidEmployeeNo: assignedPrimaryNo,
+          secondaryRoommaidEmployeeNo: assignedSecondaryNo,
+          version,
+          updatedAt: nowText_()
+        });
+
+        rowInfo.data['청소상태'] = 'ASSIGNED';
+        rowInfo.data['정비유형'] = assignedCleaningType;
+        rowInfo.data['배정유형'] = assignedAssignmentType;
+        rowInfo.data['룸메이드사번'] = assignedPrimaryNo;
+        rowInfo.data['보조룸메이드사번'] = assignedSecondaryNo;
+
+        historyPayloads.push({
+          recordType: NOVA.RECORD_TYPES.CLEANING,
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          targetEmployeeNo: assignedPrimaryNo,
+          status: 'ASSIGN_ROOMMAID',
+          detail: {
+            requestId,
+            realtime: true,
+            action: 'ASSIGN_ROOMMAID',
+            role: String(eventDetail.role || 'ORDER').trim().toUpperCase(),
+            previousRoomStatus: String(rowInfo.data['객실상태'] || '').trim().toUpperCase(),
+            roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+            cleaningStatus: 'ASSIGNED',
+            cleaningType: assignedCleaningType,
+            assignmentType: assignedAssignmentType,
+            primaryEmployeeNo: assignedPrimaryNo,
+            secondaryEmployeeNo: assignedSecondaryNo,
+            dbRoomVersion: Number(event.roomVersion || 0),
+            dbEventTime: String(event.eventTime || '')
+          },
+          registeredBy: employeeNo,
+          version
+        });
+
+        const telegramBase = {
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+          cleaningType: assignedCleaningType,
+          cleaningStatus: 'ASSIGNED',
+          assignmentType: assignedAssignmentType,
+          preassigned: normalizeYesNo_(rowInfo.data['선배정여부']) === 'Y',
+          vip: normalizeYesNo_(rowInfo.data['VIP여부']) === 'Y',
+          importantRoom: normalizeYesNo_(rowInfo.data['중요객실여부']) === 'Y',
+          registeredBy: employeeNo,
+          version
+        };
+        if (usersByEmployeeNo[assignedPrimaryNo]) {
+          assignmentNotifications.push(Object.assign({}, telegramBase, {
+            targetUser: usersByEmployeeNo[assignedPrimaryNo], assignmentRole: 'PRIMARY'
+          }));
+        }
+        if (assignedSecondaryNo && usersByEmployeeNo[assignedSecondaryNo]) {
+          assignmentNotifications.push(Object.assign({}, telegramBase, {
+            targetUser: usersByEmployeeNo[assignedSecondaryNo], assignmentRole: 'SECONDARY'
+          }));
+        }
+
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
+      if (action === 'QM_ASSIGN') {
+        const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const assignedQmNo = String(eventDetail.qmEmployeeNo || '').trim();
+        if (!assignedQmNo) throw new Error(`DB QM 배정 이벤트에 QM 사번이 없습니다. (${eventSite} ${eventRoomNo}호)`);
+
+        roomUpdates.push({
+          rowNumber: rowInfo.rowNumber,
+          cleaningStatus: 'QM_WAITING',
+          qmEmployeeNo: assignedQmNo,
+          version,
+          updatedAt: nowText_()
+        });
+        rowInfo.data['청소상태'] = 'QM_WAITING';
+        rowInfo.data['QM사번'] = assignedQmNo;
+
+        historyPayloads.push({
+          recordType: NOVA.RECORD_TYPES.QM,
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          targetEmployeeNo: assignedQmNo,
+          status: 'QM_ASSIGN',
+          detail: {
+            requestId,
+            realtime: true,
+            action: 'QM_ASSIGN',
+            role: String(eventDetail.role || 'ORDER').trim().toUpperCase(),
+            previousRoomStatus: String(rowInfo.data['객실상태'] || '').trim().toUpperCase(),
+            roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+            cleaningStatus: 'QM_WAITING',
+            cleaningType,
+            assignmentType,
+            primaryEmployeeNo: roommaidNo,
+            secondaryEmployeeNo: secondaryRoommaidNo,
+            qmEmployeeNo: assignedQmNo,
+            dbRoomVersion: Number(event.roomVersion || 0),
+            dbEventTime: String(event.eventTime || '')
+          },
+          registeredBy: employeeNo,
+          version
+        });
+
+        if (usersByEmployeeNo[assignedQmNo]) {
+          qmAssignmentNotifications.push({
+            businessDate: eventBusinessDate,
+            site: eventSite,
+            roomNo: eventRoomNo,
+            targetUser: usersByEmployeeNo[assignedQmNo],
+            preassigned: normalizeYesNo_(rowInfo.data['선배정여부']) === 'Y',
+            vip: normalizeYesNo_(rowInfo.data['VIP여부']) === 'Y',
+            importantRoom: normalizeYesNo_(rowInfo.data['중요객실여부']) === 'Y',
+            registeredBy: employeeNo,
+            version
+          });
+        }
+
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
+      if (action === 'CLEANING_RESET') {
+        const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const previousRoomStatus = String(rowInfo.data['객실상태'] || '').trim().toUpperCase();
+        const previousCleaningStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
+        const previousCleaningType = String(rowInfo.data['정비유형'] || '').trim().toUpperCase();
+        const previousAssignmentType = String(rowInfo.data['배정유형'] || '').trim().toUpperCase();
+        const previousPrimaryEmployeeNo = String(rowInfo.data['룸메이드사번'] || '').trim();
+        const previousSecondaryEmployeeNo = String(rowInfo.data['보조룸메이드사번'] || '').trim();
+        const previousQmEmployeeNo = String(rowInfo.data['QM사번'] || '').trim();
+
+        // 이미 Sheet에 기록된 완료실적은 기존 CLEANING_RESET과 동일하게 소프트삭제한다.
+        const historySheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
+        const persistedCompletions = findIndicatorRoomActiveCleaningCompletions_(
+          historySheet,
+          eventBusinessDate,
+          eventSite,
+          eventRoomNo
+        );
+
+        // COMPLETE와 RESET이 같은 1분 미러 배치에 함께 들어온 경우,
+        // 아직 Sheet에 쓰지 않은 완료이력은 historyPayloads에서 제거해 처음부터 실적에 포함시키지 않는다.
+        const pendingCompletions = [];
+        for (let index = historyPayloads.length - 1; index >= 0; index -= 1) {
+          const item = historyPayloads[index] || {};
+          if (String(item.recordType || '').trim() !== NOVA.RECORD_TYPES.CLEANING) continue;
+          if (String(item.businessDate || '').trim() !== eventBusinessDate) continue;
+          if (String(item.site || '').trim() !== eventSite) continue;
+          if (String(item.roomNo || '').trim() !== eventRoomNo) continue;
+          if (!['CLEANING_COMPLETE', 'ROOMMAID_COMPLETE'].includes(String(item.status || '').trim().toUpperCase())) continue;
+          pendingCompletions.unshift(item);
+          historyPayloads.splice(index, 1);
+        }
+
+        // 같은 배치에서 COMPLETE가 만든 QM 알림도 RESET 뒤에는 발송하지 않는다.
+        for (let index = qmNotifications.length - 1; index >= 0; index -= 1) {
+          const item = qmNotifications[index] || {};
+          if (String(item.businessDate || '').trim() === eventBusinessDate
+              && String(item.site || '').trim() === eventSite
+              && String(item.roomNo || '').trim() === eventRoomNo) {
+            qmNotifications.splice(index, 1);
+          }
+        }
+
+        const resetAt = nowText_();
+        if (persistedCompletions.length) {
+          markIndicatorRoomCleaningCompletionsDeleted_(historySheet, persistedCompletions, resetAt);
+        }
+
+        const removedCompletionRecordIds = persistedCompletions.map(item => item.recordId).filter(Boolean);
+        const removedEmployeeNos = Array.from(new Set(
+          persistedCompletions.flatMap(item => [
+            item.targetEmployeeNo,
+            item.primaryEmployeeNo,
+            item.secondaryEmployeeNo
+          ]).concat(
+            pendingCompletions.flatMap(item => [
+              item.targetEmployeeNo,
+              item.detail && item.detail.primaryEmployeeNo,
+              item.detail && item.detail.secondaryEmployeeNo
+            ])
+          ).map(value => String(value || '').trim()).filter(Boolean)
+        ));
+        const removedCompletionCount = persistedCompletions.length + pendingCompletions.length;
+
+        roomUpdates.push({
+          rowNumber: rowInfo.rowNumber,
+          cleaningStatus: 'WAITING',
+          cleaningType: '',
+          assignmentType: '',
+          roommaidEmployeeNo: '',
+          secondaryRoommaidEmployeeNo: '',
+          qmEmployeeNo: '',
+          version,
+          updatedAt: resetAt
+        });
+        rowInfo.data['청소상태'] = 'WAITING';
+        rowInfo.data['정비유형'] = '';
+        rowInfo.data['배정유형'] = '';
+        rowInfo.data['룸메이드사번'] = '';
+        rowInfo.data['보조룸메이드사번'] = '';
+        rowInfo.data['QM사번'] = '';
+
+        historyPayloads.push({
+          recordType: NOVA.RECORD_TYPES.CLEANING,
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          targetEmployeeNo: '',
+          status: 'CLEANING_RESET',
+          detail: {
+            requestId,
+            realtime: true,
+            action: 'CLEANING_RESET',
+            resetScope: String(eventDetail.resetScope || 'ALL_ACTIVE_COMPLETIONS_FOR_ROOM_DATE_SITE'),
+            previousRoomStatus,
+            roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+            previousCleaningStatus,
+            cleaningStatus: 'WAITING',
+            previousCleaningType,
+            previousAssignmentType,
+            previousPrimaryEmployeeNo,
+            previousSecondaryEmployeeNo,
+            previousQmEmployeeNo,
+            removedCompletionCount,
+            removedCompletionRecordIds,
+            removedEmployeeNos,
+            resetBy: employeeNo,
+            resetAt,
+            dbRoomVersion: Number(event.roomVersion || 0),
+            dbEventTime: String(event.eventTime || '')
+          },
+          registeredBy: employeeNo,
+          version
+        });
+
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
+      if (action === 'CLEAR_ASSIGNMENT') {
+        const previousRoomStatus = String(rowInfo.data['객실상태'] || '').trim().toUpperCase();
+        const previousCleaningStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
+        const previousCleaningType = String(rowInfo.data['정비유형'] || '').trim().toUpperCase();
+        const previousAssignmentType = String(rowInfo.data['배정유형'] || '').trim().toUpperCase();
+        const previousPrimaryEmployeeNo = String(rowInfo.data['룸메이드사번'] || '').trim();
+        const previousSecondaryEmployeeNo = String(rowInfo.data['보조룸메이드사번'] || '').trim();
+        const previousQmEmployeeNo = String(rowInfo.data['QM사번'] || '').trim();
+        const previousOperationalStatus = normalizeIndicatorRoomOperationalStatus_(
+          rowInfo.data[indicatorRoomOperationalStatusHeader_()]
+        );
+
+        const updates = {
+          '정비유형': '',
+          '배정유형': '',
+          '룸메이드사번': '',
+          '보조룸메이드사번': '',
+          'QM사번': '',
+          '청소상태': 'WAITING',
+          '수정일시': nowText_(),
+          '마지막변경버전': version
+        };
+        updateRowByHeaders_(sheet, rowInfo.rowNumber, updates);
+        Object.assign(rowInfo.data, updates);
+
+        historyPayloads.push({
+          recordType: NOVA.RECORD_TYPES.CLEANING,
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          targetEmployeeNo: '',
+          status: 'CLEAR_ASSIGNMENT',
+          detail: {
+            requestId,
+            realtime: true,
+            action: 'CLEAR_ASSIGNMENT',
+            previousRoomStatus,
+            roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+            previousCleaningStatus,
+            cleaningStatus: 'WAITING',
+            previousCleaningType,
+            cleaningType: '',
+            previousAssignmentType,
+            assignmentType: '',
+            previousPrimaryEmployeeNo,
+            previousSecondaryEmployeeNo,
+            previousQmEmployeeNo,
+            primaryEmployeeNo: '',
+            secondaryEmployeeNo: '',
+            qmEmployeeNo: '',
+            preassigned: normalizeYesNo_(rowInfo.data['선배정여부']) === 'Y',
+            vip: normalizeYesNo_(rowInfo.data['VIP여부']) === 'Y',
+            importantRoom: normalizeYesNo_(rowInfo.data['중요객실여부']) === 'Y',
+            previousOperationalStatus,
+            operationalStatus: previousOperationalStatus,
+            dbRoomVersion: Number(event.roomVersion || 0),
+            dbEventTime: String(event.eventTime || '')
+          },
+          registeredBy: employeeNo,
+          version
+        });
+
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
+      if (action === 'UPDATE_OPERATION_FLAGS') {
+        const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const preassigned = eventDetail.preassigned === true;
+        const vip = eventDetail.vip === true;
+        const importantRoom = eventDetail.importantRoom === true;
+
+        ensureRoomOperationalFlagHeaders_();
+        const updates = {
+          '선배정여부': preassigned ? 'Y' : 'N',
+          'VIP여부': vip ? 'Y' : 'N',
+          '중요객실여부': importantRoom ? 'Y' : 'N',
+          '수정일시': nowText_(),
+          '마지막변경버전': version
+        };
+        updateRowByHeaders_(sheet, rowInfo.rowNumber, updates);
+        Object.assign(rowInfo.data, updates);
+
+        historyPayloads.push({
+          recordType: NOVA.RECORD_TYPES.ADMIN_SETTING,
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          targetEmployeeNo: '',
+          status: 'UPDATE_OPERATION_FLAGS',
+          detail: {
+            requestId,
+            realtime: true,
+            action: 'UPDATE_OPERATION_FLAGS',
+            roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+            cleaningStatus: String(rowInfo.data['청소상태'] || '').trim(),
+            cleaningType: String(rowInfo.data['정비유형'] || NOVA.CLEANING_TYPES.NORMAL).trim().toUpperCase(),
+            assignmentType: String(rowInfo.data['배정유형'] || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO).trim().toUpperCase(),
+            primaryEmployeeNo: String(rowInfo.data['룸메이드사번'] || '').trim(),
+            secondaryEmployeeNo: String(rowInfo.data['보조룸메이드사번'] || '').trim(),
+            creditUnit: getRoommaidCleaningCreditUnit_(rowInfo.data['정비유형'] || NOVA.CLEANING_TYPES.NORMAL),
+            preassigned,
+            vip,
+            importantRoom,
+            previousOperationalStatus: normalizeIndicatorRoomOperationalStatus_(rowInfo.data[indicatorRoomOperationalStatusHeader_()]),
+            operationalStatus: normalizeIndicatorRoomOperationalStatus_(rowInfo.data[indicatorRoomOperationalStatusHeader_()]),
+            dbRoomVersion: Number(event.roomVersion || 0),
+            dbEventTime: String(event.eventTime || '')
+          },
+          registeredBy: employeeNo,
+          version
+        });
+
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
+      if (action === 'UPDATE_ROOM_OPERATION_STATUS') {
+        const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const rawOperationalStatus = String(
+          Object.prototype.hasOwnProperty.call(eventDetail, 'operationalStatus')
+            ? eventDetail.operationalStatus
+            : event.afterStatus || ''
+        ).trim();
+        const requestedOperationalStatus = normalizeIndicatorRoomOperationalStatus_(rawOperationalStatus);
+        if (rawOperationalStatus && !requestedOperationalStatus) {
+          throw new Error(`DB 객실 조치상태 이벤트 값이 올바르지 않습니다. (${eventSite} ${eventRoomNo}호)`);
+        }
+
+        ensureIndicatorRoomOperationalStatusHeader_();
+        const previousOperationalStatus = normalizeIndicatorRoomOperationalStatus_(
+          rowInfo.data[indicatorRoomOperationalStatusHeader_()]
+        );
+        const updates = {
+          '수정일시': nowText_(),
+          '마지막변경버전': version
+        };
+        updates[indicatorRoomOperationalStatusHeader_()] = requestedOperationalStatus;
+        updateRowByHeaders_(sheet, rowInfo.rowNumber, updates);
+        Object.assign(rowInfo.data, updates);
+
+        historyPayloads.push({
+          recordType: NOVA.RECORD_TYPES.ADMIN_SETTING,
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          targetEmployeeNo: '',
+          status: 'UPDATE_ROOM_OPERATION_STATUS',
+          detail: {
+            requestId,
+            realtime: true,
+            action: 'UPDATE_ROOM_OPERATION_STATUS',
+            roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+            cleaningStatus: String(rowInfo.data['청소상태'] || '').trim(),
+            cleaningType: String(rowInfo.data['정비유형'] || NOVA.CLEANING_TYPES.NORMAL).trim().toUpperCase(),
+            assignmentType: String(rowInfo.data['배정유형'] || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO).trim().toUpperCase(),
+            primaryEmployeeNo: String(rowInfo.data['룸메이드사번'] || '').trim(),
+            secondaryEmployeeNo: String(rowInfo.data['보조룸메이드사번'] || '').trim(),
+            creditUnit: getRoommaidCleaningCreditUnit_(rowInfo.data['정비유형'] || NOVA.CLEANING_TYPES.NORMAL),
+            preassigned: normalizeYesNo_(rowInfo.data['선배정여부']) === 'Y',
+            vip: normalizeYesNo_(rowInfo.data['VIP여부']) === 'Y',
+            importantRoom: normalizeYesNo_(rowInfo.data['중요객실여부']) === 'Y',
+            previousOperationalStatus,
+            operationalStatus: requestedOperationalStatus,
+            dbRoomVersion: Number(event.roomVersion || 0),
+            dbEventTime: String(event.eventTime || '')
+          },
+          registeredBy: employeeNo,
+          version
+        });
+
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
+      if (action === 'CHANGE_ROOM_STATUS') {
+        const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const requestedRoomStatus = String(eventDetail.roomStatus || event.afterStatus || '').trim().toUpperCase();
+        if (!requestedRoomStatus) {
+          throw new Error(`DB 객실상태 변경 이벤트에 상태값이 없습니다. (${eventSite} ${eventRoomNo}호)`);
+        }
+
+        const previousRoomStatus = String(rowInfo.data['객실상태'] || '').trim().toUpperCase();
+        const updates = {
+          '수정일시': nowText_(),
+          '마지막변경버전': version
+        };
+
+        if (isNovaRoomCleaningTargetStatus_(requestedRoomStatus)) {
+          Object.assign(updates, buildIndicatorPreviousCycleArchiveUpdates_(rowInfo.data));
+        }
+        updates['객실상태'] = requestedRoomStatus;
+        updates[indicatorLastRoomStatusHeader_()] = resolveIndicatorLastRoomStatusAfterChange_(requestedRoomStatus, rowInfo.data);
+        if (requestedRoomStatus === 'VACANT_CLEAN') {
+          indicatorPreviousCycleHeaders_().forEach(header => { updates[header] = ''; });
+        }
+        Object.assign(updates, resolveManualRoomStatusState_(requestedRoomStatus, rowInfo.data));
+
+        updateRowByHeaders_(sheet, rowInfo.rowNumber, updates);
+        Object.assign(rowInfo.data, updates);
+
+        historyPayloads.push({
+          recordType: NOVA.RECORD_TYPES.ROOM_STATUS_CHANGE,
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          targetEmployeeNo: '',
+          status: 'CHANGE_ROOM_STATUS',
+          detail: {
+            requestId,
+            realtime: true,
+            action: 'CHANGE_ROOM_STATUS',
+            previousRoomStatus,
+            roomStatus: requestedRoomStatus,
+            specialDepartureStarted: isNovaSpecialDepartureStatus_(requestedRoomStatus)
+              && requestedRoomStatus !== previousRoomStatus,
+            cleaningStatus: String(rowInfo.data['청소상태'] || '').trim(),
+            cleaningType: String(rowInfo.data['정비유형'] || NOVA.CLEANING_TYPES.NORMAL).trim().toUpperCase(),
+            assignmentType: String(rowInfo.data['배정유형'] || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO).trim().toUpperCase(),
+            primaryEmployeeNo: String(rowInfo.data['룸메이드사번'] || '').trim(),
+            secondaryEmployeeNo: String(rowInfo.data['보조룸메이드사번'] || '').trim(),
+            creditUnit: getRoommaidCleaningCreditUnit_(rowInfo.data['정비유형'] || NOVA.CLEANING_TYPES.NORMAL),
+            preassigned: normalizeYesNo_(rowInfo.data['선배정여부']) === 'Y',
+            vip: normalizeYesNo_(rowInfo.data['VIP여부']) === 'Y',
+            importantRoom: normalizeYesNo_(rowInfo.data['중요객실여부']) === 'Y',
+            previousOperationalStatus: normalizeIndicatorRoomOperationalStatus_(rowInfo.data[indicatorRoomOperationalStatusHeader_()]),
+            operationalStatus: normalizeIndicatorRoomOperationalStatus_(rowInfo.data[indicatorRoomOperationalStatusHeader_()]),
+            dbRoomVersion: Number(event.roomVersion || 0),
+            dbEventTime: String(event.eventTime || '')
+          },
+          registeredBy: employeeNo,
+          version
+        });
+
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
+      if (['QM_START', 'QM_COMPLETE', 'QM_REWORK'].includes(action)) {
+        roomUpdates.push({
+          rowNumber: rowInfo.rowNumber,
+          cleaningStatus: afterStatus,
+          version,
+          updatedAt: nowText_()
+        });
+        rowInfo.data['청소상태'] = afterStatus;
+        rowInfo.data['마지막변경버전'] = version;
+        if (action === 'QM_START') {
+          historyPayloads.push({
+            recordType: NOVA.RECORD_TYPES.QM,
+            businessDate: eventBusinessDate,
+            site: eventSite,
+            roomNo: eventRoomNo,
+            targetEmployeeNo: employeeNo,
+            status: 'QM_START',
+            registeredBy: employeeNo,
+            startedAt: String(event.eventTime || '').trim() || nowText_(),
+            version,
+            detail: {
+              requestId,
+              realtime: true,
+              action: 'START',
+              role: 'QM',
+              beforeCleaningStatus: beforeStatus,
+              cleaningStatus: afterStatus,
+              primaryEmployeeNo: String(rowInfo.data['룸메이드사번'] || '').trim(),
+              secondaryEmployeeNo: String(rowInfo.data['보조룸메이드사번'] || '').trim(),
+              qmEmployeeNo: employeeNo,
+              dbRoomVersion: Number(event.roomVersion || 0),
+              dbEventTime: String(event.eventTime || '')
+            }
+          });
+        }
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
 
       roomUpdates.push({
         rowNumber: rowInfo.rowNumber,
@@ -228,6 +869,8 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
     if (roomUpdates.length) novaRealtimeFinalBatchUpdateCurrentRows_(sheet, roomUpdates);
     if (historyPayloads.length) novaRealtimeFinalAppendHistoryBatch_(historyPayloads);
     qmNotifications.forEach(payload => queueQmReadyTelegram_(payload));
+    assignmentNotifications.forEach(payload => queueCleaningAssignmentTelegram_(payload));
+    qmAssignmentNotifications.forEach(payload => queueQmAssignmentTelegram_(payload));
 
     if (version) {
       const affectedDates = Array.from(new Set(historyPayloads.map(item => item.businessDate).filter(Boolean)));
@@ -274,21 +917,35 @@ function novaRealtimeFinalCurrentRoomIndex_(sheet) { // (현재객실현황을 �
     const site = String(data['사업장'] || '').trim();
     const roomNo = String(data['객실번호'] || '').trim();
     if (!businessDate || !site || !roomNo) return;
-    // 아래쪽 행을 최신행으로 간주한다.
-    result.set(`${businessDate}|${site}|${roomNo}`, { rowNumber: offset + 2, data });
+    const key = `${businessDate}|${site}|${roomNo}`;
+    const candidate = { rowNumber: offset + 2, data };
+    const current = result.get(key);
+    // Indicator/QM 단건조회와 동일하게 version -> 수정일시 -> 행번호 순으로
+    // 최신 원본을 선택해 Realtime 미러와 legacy 경로가 같은 행을 보게 한다.
+    if (!current || compareCurrentRoomRowsForDisplay_(candidate, current) > 0) {
+      result.set(key, candidate);
+    }
   });
   return result;
 }
 
-function novaRealtimeFinalBatchUpdateCurrentRows_(sheet, updates) { // (청소상태·버전·수정일시를 열 단위 일괄기록)
+function novaRealtimeFinalBatchUpdateCurrentRows_(sheet, updates) { // (Realtime 객실상태·배정·버전 일괄기록)
   if (!updates.length) return;
   const headerMap = getHeaderMap_(sheet);
-  const cleaningCol = Number(headerMap['청소상태'] || 0);
-  const versionCol = Number(headerMap['마지막변경버전'] || 0);
-  const updatedCol = Number(headerMap['수정일시'] || 0);
-  if (!cleaningCol || !versionCol || !updatedCol) throw new Error('현재객실현황 Realtime 반영 열을 찾을 수 없습니다.');
+  const columns = {
+    cleaningStatus: Number(headerMap['청소상태'] || 0),
+    cleaningType: Number(headerMap['정비유형'] || 0),
+    assignmentType: Number(headerMap['배정유형'] || 0),
+    roommaidEmployeeNo: Number(headerMap['룸메이드사번'] || 0),
+    secondaryRoommaidEmployeeNo: Number(headerMap['보조룸메이드사번'] || 0),
+    qmEmployeeNo: Number(headerMap['QM사번'] || 0),
+    version: Number(headerMap['마지막변경버전'] || 0),
+    updatedAt: Number(headerMap['수정일시'] || 0)
+  };
+  if (Object.values(columns).some(value => !value)) {
+    throw new Error('현재객실현황 Realtime 반영 열을 찾을 수 없습니다.');
+  }
 
-  // 동일 객실 START/COMPLETE가 같은 배치에 있으면 마지막 이벤트만 현재상태에 기록한다.
   const latestByRow = new Map();
   updates.forEach(item => latestByRow.set(Number(item.rowNumber), item));
   const rows = Array.from(latestByRow.keys()).filter(row => row >= 2).sort((a, b) => a - b);
@@ -297,19 +954,20 @@ function novaRealtimeFinalBatchUpdateCurrentRows_(sheet, updates) { // (청소�
   const lastRow = rows[rows.length - 1];
   const count = lastRow - firstRow + 1;
 
-  const cleaningValues = sheet.getRange(firstRow, cleaningCol, count, 1).getValues();
-  const versionValues = sheet.getRange(firstRow, versionCol, count, 1).getValues();
-  const updatedValues = sheet.getRange(firstRow, updatedCol, count, 1).getValues();
+  const valuesByKey = {};
+  Object.entries(columns).forEach(([key, column]) => {
+    valuesByKey[key] = sheet.getRange(firstRow, column, count, 1).getValues();
+  });
   rows.forEach(rowNumber => {
     const item = latestByRow.get(rowNumber);
     const offset = rowNumber - firstRow;
-    cleaningValues[offset][0] = item.cleaningStatus;
-    versionValues[offset][0] = item.version;
-    updatedValues[offset][0] = item.updatedAt;
+    Object.keys(columns).forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(item, key)) valuesByKey[key][offset][0] = item[key];
+    });
   });
-  sheet.getRange(firstRow, cleaningCol, count, 1).setValues(cleaningValues);
-  sheet.getRange(firstRow, versionCol, count, 1).setValues(versionValues);
-  sheet.getRange(firstRow, updatedCol, count, 1).setValues(updatedValues);
+  Object.entries(columns).forEach(([key, column]) => {
+    sheet.getRange(firstRow, column, count, 1).setValues(valuesByKey[key]);
+  });
 }
 
 function novaRealtimeFinalAppendHistoryBatch_(payloads) { // (업무이력을 한 번의 setValues로 추가)

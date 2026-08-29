@@ -31,8 +31,128 @@ function getMonthlyHistory(token, filters) { // (월별 이력 페이지 조회)
         pageCount
       },
       items: pageItems,
-      close: buildDailyCloseOverviewForRequest_(request),
+      close: request.type === 'CLEANING' ? buildDailyCloseOverviewForRequest_(request) : {},
       serverTime: nowText_()
+    };
+  });
+}
+
+function deleteMonthlyHousemanOrder(token, payload) { // (월별조회 직접등록 하우스맨 오더 소프트삭제)
+  return measureResponse_('deleteMonthlyHousemanOrder', () => {
+    const user = requireRole_(token, ['ADMIN', 'ORDER']);
+    const safe = payload || {};
+    const orderId = String(safe.orderId || '').trim();
+    if (!orderId) throw new Error('삭제할 오더 번호가 없습니다.');
+
+    const lock = LockService.getScriptLock();
+    lock.waitLock(10000);
+    try {
+      const sheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
+      const found = findHousemanOrderRow_(sheet, orderId, Number(safe.rowNumber || 0));
+      if (!found) throw new Error('하우스맨 오더를 찾을 수 없습니다.');
+      if (String(found.data['삭제여부'] || 'N').trim().toUpperCase() === 'Y') {
+        return { ok: true, orderId, alreadyDeleted: true, message: '이미 삭제된 오더입니다.' };
+      }
+      if (String(found.data['기록구분'] || '').trim() !== NOVA.RECORD_TYPES.HOUSEMAN_ORDER) {
+        throw new Error('하우스맨 오더만 삭제할 수 있습니다.');
+      }
+
+      let detail = {};
+      try { detail = JSON.parse(String(found.data['세부내용JSON'] || '{}')); } catch (error) { detail = {}; }
+      if (String(detail.requestSource || '').trim().toUpperCase() !== 'MONTHLY_HISTORY') {
+        throw new Error('월별조회에서 직접 등록한 오더만 여기서 삭제할 수 있습니다.');
+      }
+
+      const statusCode = String(found.data['처리상태'] || '').trim().toUpperCase();
+      if (!['REGISTERED', 'ASSIGNED'].includes(statusCode)) {
+        throw new Error('이미 접수 또는 처리가 시작된 오더는 삭제할 수 없습니다.');
+      }
+      if (String(found.data['접수일시'] || '').trim() || String(found.data['처리시작일시'] || '').trim()) {
+        throw new Error('이미 접수 또는 처리가 시작된 오더는 삭제할 수 없습니다.');
+      }
+
+      const users = getUserIndex_().byEmployeeNo;
+      const statusCodeMap = {};
+      getCodes_('하우스맨상태').forEach(code => { statusCodeMap[code.code] = code.label; });
+      const current = housemanOrderObject_(found.data, found.rowNumber, users, statusCodeMap);
+      const version = reserveDataVersion_({ lockHeld: true });
+      const now = nowText_();
+
+      updateRowByHeaders_(sheet, found.rowNumber, {
+        '삭제여부': 'Y',
+        '수정일시': now,
+        '변경버전': version
+      });
+
+      const auditRow = buildHousemanAuditRow_(sheet, current, 'DELETED', user.employeeNo, version, {
+        source: 'MONTHLY_HISTORY',
+        reason: 'ORDER_REGISTRATION_CANCELLED'
+      });
+      const auditRowNumber = sheet.getLastRow() + 1;
+      ensureSheetRowCapacity_(sheet, auditRowNumber);
+      sheet.getRange(auditRowNumber, 1, 1, auditRow.length).setValues([auditRow]);
+      SpreadsheetApp.flush();
+
+      publishDataVersion_(version, {
+        domains: ['ORDER'],
+        businessDate: String(found.data['업무일자'] || '').trim(),
+        site: String(found.data['사업장'] || '').trim(),
+        lockHeld: true
+      });
+
+      return {
+        ok: true,
+        orderId,
+        version,
+        message: `${String(found.data['객실번호'] || '').trim()}호 오더 등록을 취소했습니다.`
+      };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+
+function getMonthlyHousemanAutoAssignment(token, payload) { // (월별조회 자동배정 후보 사전확정)
+  return measureResponse_('getMonthlyHousemanAutoAssignment', () => {
+    requireRole_(token, ['ADMIN', 'ORDER']);
+    const safe = payload || {};
+    const businessDate = normalizeBusinessDate_(safe.businessDate);
+    const site = String(safe.site || '').trim();
+    const roomNo = String(safe.roomNo || '').trim();
+    if (!businessDate || !site || !roomNo) {
+      throw new Error('자동배정 확인에 필요한 업무일자·사업장·객실번호가 없습니다.');
+    }
+    const assignment = resolveHousemanAutoAssignee_(businessDate, site, roomNo);
+    return {
+      ok: true,
+      businessDate,
+      site,
+      roomNo,
+      assignment
+    };
+  });
+}
+
+function getMonthlyHousemanOrderOptions(token) { // (월별조회 하우스맨 등록창 코드옵션 직접 조회)
+  return measureResponse_('getMonthlyHousemanOrderOptions', () => {
+    requireRole_(token, ['ADMIN', 'ORDER']);
+    let codeIndex = getCodeIndex_();
+    let orderParts = Array.isArray(codeIndex['하우스맨파트']) ? codeIndex['하우스맨파트'] : [];
+    let orderItems = Array.isArray(codeIndex['하우스맨품목']) ? codeIndex['하우스맨품목'] : [];
+
+    if (!orderParts.length || !orderItems.length) {
+      CacheService.getScriptCache().remove('NOVA_CODE_INDEX_V2');
+      codeIndex = getCodeIndex_();
+      orderParts = Array.isArray(codeIndex['하우스맨파트']) ? codeIndex['하우스맨파트'] : [];
+      orderItems = Array.isArray(codeIndex['하우스맨품목']) ? codeIndex['하우스맨품목'] : [];
+    }
+
+    return {
+      ok: true,
+      orderParts,
+      orderItems,
+      sites: getMonthlyConfiguredSites_()
     };
   });
 }
@@ -149,8 +269,21 @@ function normalizeMonthlyDate_(value, fallbackYear, fallbackMonth) { // (일별 
   return `${String(fallbackYear).padStart(4, '0')}-${String(fallbackMonth).padStart(2, '0')}-01`;
 }
 
+function monthlyRecordTypesForType_(type) { // (월별조회 소분류별 실제 조회 기록구분)
+  const normalized = String(type || 'ALL').trim().toUpperCase();
+  if (normalized === 'HOUSEMAN') return [NOVA.RECORD_TYPES.HOUSEMAN_ORDER];
+  if (normalized === 'CLEANING') return [NOVA.RECORD_TYPES.CLEANING];
+  if (normalized === 'QM') return [NOVA.RECORD_TYPES.QM, NOVA.RECORD_TYPES.QM_CHECKLIST];
+  return [
+    NOVA.RECORD_TYPES.CLEANING,
+    NOVA.RECORD_TYPES.QM,
+    NOVA.RECORD_TYPES.QM_CHECKLIST,
+    NOVA.RECORD_TYPES.HOUSEMAN_ORDER
+  ];
+}
+
 function buildMonthlyHistoryBundle_(request) { // (월별 이력 조회·필터·집계)
-  const rawRows = readMonthlyHistoryRows_(request);
+  const rawRows = readMonthlyHistoryRows_(request, monthlyRecordTypesForType_(request.type));
   const users = getUserIndex_().byEmployeeNo;
   const orderStatusMap = {};
   getCodes_('하우스맨상태').forEach(code => { orderStatusMap[code.code] = code.label; });
@@ -162,6 +295,13 @@ function buildMonthlyHistoryBundle_(request) { // (월별 이력 조회·필터�
     .filter(item => !request.search || monthlyItemSearchText_(item).includes(request.search));
 
   const options = buildMonthlyOptions_(typedItems, users);
+  options.sites = Array.from(new Set([...(options.sites || []), ...getMonthlyConfiguredSites_()]))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'ko'));
+  if (request.type === 'HOUSEMAN') {
+    options.orderParts = getCodes_('하우스맨파트');
+    options.orderItems = getCodes_('하우스맨품목');
+  }
   const scopedItems = typedItems
     .filter(item => !request.site || item.site === request.site)
     .filter(item => !request.employeeNo || item.employeeNos.includes(request.employeeNo));
@@ -173,7 +313,9 @@ function buildMonthlyHistoryBundle_(request) { // (월별 이력 조회·필터�
     items: filtered,
     summary: buildMonthlySummary_(filtered),
     staffSummary: buildMonthlyStaffSummary_(filtered, users),
-    qmQuality: buildQmQualityAnalyticsFromHistoryRows_(rawRows.map(row => row.data), users, request),
+    qmQuality: request.type === 'QM'
+      ? buildQmQualityAnalyticsFromHistoryRows_(rawRows.map(row => row.data), users, request)
+      : {},
     options
   };
 }
@@ -292,6 +434,18 @@ function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업�
 
   let detail = {};
   try { detail = JSON.parse(String(data['세부내용JSON'] || '{}')); } catch (error) { detail = {}; }
+  const photos = typeCode === 'HOUSEMAN' && Array.isArray(detail.photos)
+    ? detail.photos
+        .filter(photo => photo && photo.fileId)
+        .slice(0, NOVA_HOUSEMAN_REQUEST_PHOTO.MAX_PHOTOS_PER_ORDER)
+        .map(photo => ({
+          fileId: String(photo.fileId || ''),
+          name: String(photo.name || ''),
+          mimeType: String(photo.mimeType || 'image/jpeg'),
+          size: Number(photo.size || 0),
+          uploadedAt: String(photo.uploadedAt || '')
+        }))
+    : [];
   const targetEmployeeNo = String(data['대상사번'] || '').trim();
   const assignedEmployeeNo = String(data['배정사번'] || '').trim();
   const processorEmployeeNo = String(data['처리자사번'] || '').trim();
@@ -331,6 +485,10 @@ function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업�
     employeeDisplay: primaryUser ? `${primaryUser.name} (${primaryEmployeeNo})` : (primaryEmployeeNo || '-'),
     statusCode,
     statusLabel,
+    requestSource: String(detail.requestSource || '').trim(),
+    canDelete: typeCode === 'HOUSEMAN'
+      && String(detail.requestSource || '').trim().toUpperCase() === 'MONTHLY_HISTORY'
+      && ['REGISTERED', 'ASSIGNED'].includes(statusCode),
     detailText: monthlyDetailText_(typeCode, data, detail, statusLabel),
     registeredAt,
     acceptedAt,
@@ -344,6 +502,8 @@ function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업�
     part: String(data['파트'] || '').trim(),
     itemSummary: String(data['품목'] || '').trim(),
     requester: String(data['요청자'] || detail.requester || '').trim(),
+    photos,
+    photoCount: photos.length,
     important: String(data['중요여부'] || '').trim().toUpperCase() === 'Y',
     handover: String(data['인수인계여부'] || '').trim().toUpperCase() === 'Y'
   };
@@ -379,6 +539,35 @@ function monthlyItemSearchText_(item) { // (월별 검색 문자열)
     item.businessDate, item.typeLabel, item.site, item.roomNo, item.employeeDisplay,
     item.statusLabel, item.cleaningTypeLabel, item.detailText, item.part, item.itemSummary, item.requester
   ].join(' ').toLowerCase();
+}
+
+function getMonthlyConfiguredSites_() { // (이력 유무와 무관한 객실 사업장 목록)
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'NOVA_MONTHLY_CONFIGURED_SITES_V79';
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (error) { /* 캐시 손상 시 재구성 */ }
+  }
+
+  const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  const headerMap = getHeaderMap_(sheet);
+  const siteColumn = headerMap['사업장'];
+  if (!siteColumn) return [];
+
+  const sites = Array.from(new Set(
+    sheet.getRange(2, siteColumn, lastRow - 1, 1)
+      .getDisplayValues()
+      .map(row => String(row[0] || '').trim())
+      .filter(Boolean)
+  )).sort((a, b) => a.localeCompare(b, 'ko'));
+
+  try { cache.put(cacheKey, JSON.stringify(sites), 300); } catch (error) { /* 캐시 저장 실패 무시 */ }
+  return sites;
 }
 
 function buildMonthlyOptions_(items, users) { // (월별 필터 선택 목록)

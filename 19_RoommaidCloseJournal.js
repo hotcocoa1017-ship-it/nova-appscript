@@ -3,7 +3,7 @@
  * 현재객실현황·업무이력·객실마스터를 기준으로 마감표와 개인별 타입 실적을 구성합니다.
  */
 const NOVA_ROOMMAID_CLOSE = Object.freeze({
-  SCHEMA_VERSION: 26,
+  SCHEMA_VERSION: 28,
   DEFAULT_MAINTENANCE_TYPES: Object.freeze(['F', 'T', 'R', 'G']),
   REPORT_MAINTENANCE_TYPES: Object.freeze(['F', 'T', 'R', 'G']),
   CONVERSION_GROUPS: Object.freeze({
@@ -72,6 +72,9 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
     const useSaved = Boolean(saved && !isStale && savedHasJournal && !hasAttendanceOverride);
     const selected = useSaved ? saved : liveSnapshot;
     const journal = selected.roommaidCloseJournal || liveSnapshot.roommaidCloseJournal;
+    const baseWarning = journal && journal.initialStatusDetailAvailable
+      ? ''
+      : '해당 업무일자의 객실현황 업로드가 RC6.4 이전에 적용되어 최초 재고·퇴실의 객실별 상세가 없습니다. 현재 상태를 기준으로 보정 표시됩니다.';
 
     return {
       ok: true,
@@ -87,9 +90,7 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
       attendanceEmployeeNos: uniqueEmployeeNos_(journal && journal.attendanceEmployeeNos || attendanceEmployeeNos),
       attendanceOptions: buildRoommaidCloseAttendanceOptions_(users, preferredSite, inferredAttendance, journal && journal.attendanceEmployeeNos || attendanceEmployeeNos, employmentIndex),
       journal,
-      warning: journal && journal.initialStatusDetailAvailable
-        ? ''
-        : '해당 업무일자의 객실현황 업로드가 RC6.4 이전에 적용되어 최초 재고·퇴실의 객실별 상세가 없습니다. 현재 상태를 기준으로 보정 표시됩니다.',
+      warning: baseWarning,
       message: saved
         ? (isStale ? '마감 이후 객실 또는 정비실적이 수정되었습니다. 수정 후 재마감이 필요합니다.' : '저장된 마감자료입니다.')
         : '실시간 미마감 자료입니다.'
@@ -990,8 +991,15 @@ function buildRoommaidCloseCurrentDepartureSnapshot_(currentRows, master, site, 
     const visible = resolveRoommaidCloseVisibleDepartureEvents_(roomNo, status, workloadEvents);
     visible.events.forEach(event => incrementCycle(event));
 
-    // 이력 누락 등으로 현재 퇴실주기를 workloadEvents에서 찾지 못해도 현재 객실상태 1건은 보장합니다.
-    if (!visible.currentEvent) {
+    // 전일재고가 완료 전 퇴실상태로 재분류된 것이라면 같은 정비주기이므로 금일퇴실을 추가하지 않는다.
+    const openingStockCycle = [...(workloadEvents || [])].reverse().find(event =>
+      event && event.initialStock && !event.manualInitialStock && !event.canceled
+      && normalizeRoomNo_(event.roomNo) === roomNo
+      && String(event.openingStockReclassifiedTo || '').trim().toUpperCase() === status
+    ) || null;
+
+    // 이력 누락 등으로 현재 퇴실주기를 workloadEvents에서 찾지 못한 경우에만 현재 객실상태 1건을 보장한다.
+    if (!visible.currentEvent && !openingStockCycle) {
       incrementCycle(null, { roomNo, bucket: visible.currentBucket || roommaidCloseSpecialBucket_(status) || 'BUILDING' });
     }
   });
@@ -1255,18 +1263,33 @@ function buildRoommaidCloseWorkloadEvents_(initialMap, historyRows, completionEv
       const isDeparture = NOVA_ROOMMAID_CLOSE.DEPARTURE_STATUSES.includes(nextStatus);
       const isManualInitialStock = NOVA_ROOMMAID_CLOSE.INITIAL_STOCK_STATUSES.includes(nextStatus)
         && previousStatus === 'VACANT_CLEAN';
+      const isOpeningStockReturn = NOVA_ROOMMAID_CLOSE.INITIAL_STOCK_STATUSES.includes(nextStatus)
+        && ['STAY', 'RECHECKIN'].includes(previousStatus);
 
       if (isDeparture) {
         // 아직 청소완료되지 않은 재고/퇴실 정비대상에서 일반↔R/C↔H/U 또는 재고→퇴실로 바뀌면
         // 신규 작업을 더하지 않고 같은 정비주기의 최종 분류만 변경한다.
         if (active && !active.completed && !active.canceled && (active.initialStock || active.departure)) {
-          active.initialStock = false;
-          active.manualInitialStock = false;
-          active.departure = true;
-          active.bucket = nextBucket;
-          active.sourceStatus = nextStatus;
-          active.reclassifiedVersion = item.version;
-          active.reclassifiedAt = item.eventAt;
+          const openingInitialStock = Boolean(active.initialStock && !active.manualInitialStock);
+          if (openingInitialStock) {
+            // 최종 업로드에서 시작한 전일재고는 같은 미완료 정비주기에서 퇴실상태로 바뀌어도
+            // 전일재고의 원래 일반/RC/HU 분류를 그대로 유지한다.
+            // 현재 퇴실상태는 같은 정비주기의 표시상태로만 기억하고 금일퇴실을 새로 1건 만들지 않는다.
+            active.initialStock = true;
+            active.departure = false;
+            active.openingStockReclassifiedTo = nextStatus;
+            active.openingStockReclassifiedVersion = item.version;
+            active.openingStockReclassifiedAt = item.eventAt;
+          } else {
+            // 당일 수동 재고 또는 기존 퇴실주기는 기존 동작대로 최종 퇴실분류를 따른다.
+            active.initialStock = false;
+            active.manualInitialStock = false;
+            active.departure = true;
+            active.bucket = nextBucket;
+            active.sourceStatus = nextStatus;
+            active.reclassifiedVersion = item.version;
+            active.reclassifiedAt = item.eventAt;
+          }
         } else {
           // 업로드 당시 재고가 아니라 당일 VACANT_CLEAN → STOCK_* 로 생성된 임시 재고가
           // 청소완료 후 STOCK_* → CHECKED_OUT_* 로 전환되면 이전 재고주기를 전일재고에 남기지 않는다.
@@ -1290,6 +1313,24 @@ function buildRoommaidCloseWorkloadEvents_(initialMap, historyRows, completionEv
             startedVersion: item.version,
             startedAt: item.eventAt
           });
+        }
+      } else if (isOpeningStockReturn) {
+        // 업로드 당시 전일재고가 STAY/RECHECKIN으로 잠시 취소된 뒤
+        // 같은 STOCK/RC/HU 상태로 돌아오면 새 작업을 만들지 않고 원래 전일재고 주기를 복구한다.
+        // 예: STOCK -> STAY -> STOCK -> 청소완료.
+        const restoredOpeningStock = [...(eventsByRoom[roomNo] || [])].reverse().find(event =>
+          event && event.initialStock && !event.manualInitialStock
+          && !event.completed && event.canceled
+          && ['STAY', 'RECHECKIN'].includes(String(event.cancelReason || '').trim().toUpperCase())
+          && normalizeRoommaidCloseRoomStatus_(event.sourceStatus, statusNormalizer) === nextStatus
+        ) || null;
+        if (restoredOpeningStock) {
+          restoredOpeningStock.canceled = false;
+          restoredOpeningStock.cancelReason = '';
+          restoredOpeningStock.restoredAfterStatus = previousStatus;
+          restoredOpeningStock.restoredVersion = item.version;
+          restoredOpeningStock.restoredAt = item.eventAt;
+          activeByRoom[roomNo] = restoredOpeningStock;
         }
       } else if (isManualInitialStock) {
         if (active && !active.completed && !active.canceled && (active.initialStock || active.departure)) {
@@ -1345,6 +1386,14 @@ function buildRoommaidCloseWorkloadEvents_(initialMap, historyRows, completionEv
         !event.completed && !event.canceled
         && (!sourceRecognized || String(event.bucket || 'BUILDING').trim().toUpperCase() === desiredBucket)
       ) || null;
+      // 전일재고가 완료 전 퇴실/RC/HU 상태로 바뀐 경우에도 같은 정비주기의 완료로 연결한다.
+      // 이때 전일재고의 원래 분류는 유지하여 전일재고 숫자와 완료 차감 기준이 서로 어긋나지 않게 한다.
+      if (!target && sourceRecognized) {
+        target = [...roomEvents].reverse().find(event =>
+          !event.completed && !event.canceled && event.initialStock && !event.manualInitialStock
+          && String(event.openingStockReclassifiedTo || '').trim().toUpperCase() === sourceStatus
+        ) || null;
+      }
       if (!target && !sourceRecognized) {
         target = [...roomEvents].reverse().find(event => !event.completed && !event.canceled) || null;
       }
@@ -1954,9 +2003,20 @@ function validateRoommaidCloseIntegrityForSave_(businessDate, site, currentRows,
     const desiredBucket = roommaidCloseSpecialBucket_(status) || 'BUILDING';
     const matched = (workloadEvents || []).some(event => {
       if (!event || event.canceled || normalizeRoomNo_(event.roomNo) !== roomNo) return false;
-      if (String(event.bucket || 'BUILDING').trim().toUpperCase() !== desiredBucket) return false;
-      if (normalizeRoommaidCloseRoomStatus_(event.sourceStatus, statusNormalizer) !== status) return false;
-      return isInitialStock ? Boolean(event.initialStock) : Boolean(event.departure);
+      if (isInitialStock) {
+        if (String(event.bucket || 'BUILDING').trim().toUpperCase() !== desiredBucket) return false;
+        if (normalizeRoommaidCloseRoomStatus_(event.sourceStatus, statusNormalizer) !== status) return false;
+        return Boolean(event.initialStock);
+      }
+      if (isDeparture) {
+        const normalDeparture = Boolean(event.departure)
+          && String(event.bucket || 'BUILDING').trim().toUpperCase() === desiredBucket
+          && normalizeRoommaidCloseRoomStatus_(event.sourceStatus, statusNormalizer) === status;
+        const openingStockReclassification = Boolean(event.initialStock && !event.manualInitialStock)
+          && String(event.openingStockReclassifiedTo || '').trim().toUpperCase() === status;
+        return normalDeparture || openingStockReclassification;
+      }
+      return false;
     });
     if (!matched) {
       issues.push(`${roomNo}호 — 현재 ${status} 상태에 대응하는 정비주기 이력이 없습니다. 직접 시트 수정 또는 누락된 상태변경 이력을 확인하세요.`);

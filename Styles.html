@@ -56,7 +56,7 @@
 
   /* 통합 인디케이터 */
   .indicator-page { min-width: 980px; }
-  .indicator-controls { display: grid; grid-template-columns: 148px 150px minmax(190px, 1fr) auto auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .indicator-controls { display: grid; grid-template-columns: 190px 150px minmax(190px, 1fr) auto auto; gap: 8px; align-items: center; margin-bottom: 8px; }
   .indicator-controls .control-group { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 6px; align-items: center; }
   .indicator-controls .control-label { font-size: 12px; font-weight: 700; color: #4b5563; white-space: nowrap; }
   .indicator-summary { display: flex; justify-content: flex-end; gap: 6px; font-size: 12px; white-space: nowrap; }
@@ -2050,6 +2050,37 @@
     min-width: 0;
     padding: 0 8px;
   }
+}
+
+
+
+/* NOVA v60 — QM 모바일 점검 가독성·미니멀 UI */
+.qm-checklist-modal.rc3 .modal-header h2{font-size:20px;line-height:1.3}
+.qm-checklist-modal.rc3 .modal-header p{font-size:14px;line-height:1.45}
+.qm-checklist-modal.rc3 .qm-checklist-guide{padding:10px 2px;margin-bottom:8px;background:#fff;border-radius:0;font-size:14px;line-height:1.55}
+.qm-checklist-modal.rc3 .qm-checklist-guide>span{font-size:14px;color:#475569}
+.qm-checklist-modal.rc3 .qm-checklist-place-list{gap:8px}
+.qm-checklist-modal.rc3 .qm-inspection-place{background:#fff;border-radius:9px}
+.qm-checklist-modal.rc3 .qm-inspection-place>summary{padding:14px 12px}
+.qm-checklist-modal.rc3 .qm-inspection-place>summary strong{font-size:18px;line-height:1.3}
+.qm-checklist-modal.rc3 .qm-inspection-place>summary span{font-size:13px;font-weight:700}
+.qm-checklist-modal.rc3 .qm-place-items,.qm-checklist-modal.rc3 .qm-custom-defects{gap:8px;padding:8px 10px 12px}
+.qm-checklist-modal.rc3 .qm-checklist-inspection-item.rc3{grid-template-columns:1fr;gap:10px;padding:14px;border-radius:8px}
+.qm-checklist-modal.rc3 .qm-checklist-inspection-heading{gap:7px}
+.qm-checklist-modal.rc3 .qm-checklist-inspection-heading strong{font-size:17px;line-height:1.45}
+.qm-checklist-modal.rc3 .qm-checklist-inspection-heading span{font-size:12px;padding:4px 7px}
+.qm-checklist-modal.rc3 .qm-checklist-inspection-item label,.qm-checklist-modal.rc3 .qm-custom-defect label{font-size:14px;gap:7px;font-weight:700;color:#475569}
+.qm-checklist-modal.rc3 .qm-checklist-inspection-item select,.qm-checklist-modal.rc3 .qm-checklist-inspection-item textarea,.qm-checklist-modal.rc3 .qm-checklist-inspection-item input,.qm-checklist-modal.rc3 .qm-custom-defect textarea{font-size:16px;min-height:48px;padding:11px 12px;border-radius:8px}
+.qm-checklist-modal.rc3 .qm-checklist-inspection-item textarea,.qm-checklist-modal.rc3 .qm-custom-defect textarea{min-height:76px;line-height:1.5}
+.qm-checklist-modal.rc3 .qm-photo-control{gap:8px}
+.qm-checklist-modal.rc3 .qm-add-defect{min-height:46px;font-size:15px}
+.qm-checklist-modal.rc3 .modal-actions.sticky{gap:8px;padding-top:10px}
+.qm-checklist-modal.rc3 .modal-actions.sticky button{min-height:52px;font-size:16px;font-weight:800}
+@media(max-width:760px){
+  .qm-checklist-modal.rc3{width:calc(100vw - 6px);max-height:calc(100vh - 6px)}
+  .qm-checklist-modal.rc3 .modal-body{padding-left:10px;padding-right:10px}
+  .qm-checklist-modal.rc3 .qm-inspection-place>summary{align-items:center}
+  .qm-checklist-modal.rc3 .qm-photo-control label{font-size:14px}
 }
 
 </style>
