@@ -7311,6 +7311,10 @@
         <div id="mobileShiftInfo" class="mobile-shift-info"></div>
         <div id="mobileSummary" class="mobile-summary"></div>
         <div id="qmBrowseTabs" class="mobile-filters" hidden></div>
+        <div id="qmBrowseLocationFilters" class="mobile-location-filters" hidden>
+          <label><span>동</span><select id="qmBrowseBuilding"><option value="">전체 동</option></select></label>
+          <label><span>층</span><select id="qmBrowseFloor"><option value="">전체 층</option></select></label>
+        </div>
         <div id="mobileFilters" class="mobile-filters"></div>
         <div id="mobileList" class="mobile-list"><div class="mobile-loading">업무를 불러오고 있습니다.</div></div>
       </section>`;
@@ -7325,6 +7329,8 @@
       state.mobile.qmView = 'TARGETS';
       state.mobile.qmBrowseData = null;
       state.mobile.qmBrowseLimit = 50;
+      state.mobile.qmBrowseBuilding = '';
+      state.mobile.qmBrowseFloor = '';
       loadMobileSnapshot();
     });
     $('mobileSite').addEventListener('change', event => {
@@ -7336,6 +7342,8 @@
       state.mobile.qmView = 'TARGETS';
       state.mobile.qmBrowseData = null;
       state.mobile.qmBrowseLimit = 50;
+      state.mobile.qmBrowseBuilding = '';
+      state.mobile.qmBrowseFloor = '';
       loadMobileSnapshot();
     });
     $('mobileBuilding').addEventListener('change', event => {
@@ -7348,6 +7356,18 @@
     $('mobileFloor').addEventListener('change', event => {
       state.mobile.floor = event.target.value;
       renderMobileSummary();
+      renderMobileList();
+    });
+    $('qmBrowseBuilding').addEventListener('change', event => {
+      state.mobile.qmBrowseBuilding = event.target.value;
+      state.mobile.qmBrowseFloor = '';
+      state.mobile.qmBrowseLimit = 50;
+      renderQmBrowseLocationFilters_();
+      renderMobileList();
+    });
+    $('qmBrowseFloor').addEventListener('change', event => {
+      state.mobile.qmBrowseFloor = event.target.value;
+      state.mobile.qmBrowseLimit = 50;
       renderMobileList();
     });
     $('mobileSearch').addEventListener('input', event => {
@@ -7427,6 +7447,7 @@
     if (dateInput) dateInput.value = state.mobile.businessDate || state.bootstrap.app.businessDate;
     renderMobileLocationFilters_();
     renderQmBrowseTabs_();
+    renderQmBrowseLocationFilters_();
     renderMobileSummary();
     renderMobileFilters();
     renderMobileList();
@@ -7477,7 +7498,7 @@
     floorSelect.value = state.mobile.floor;
   }
 
-  function qmMobileBrowseView_() { // (QM 추가조회 탭 · 기존 점검대상 화면 보존)
+  function qmMobileBrowseView_() { // (QM 추가조회 탭 · 기존 점검대상 화면 보존 · QM 추가탭 동·층 필터 + 안전 즉시점검)
     const role = String(state.mobile.data?.role || '').trim().toUpperCase();
     if (role !== 'QM') return 'TARGETS';
     const view = String(state.mobile.qmView || 'TARGETS').trim().toUpperCase();
@@ -7513,7 +7534,10 @@
       if (nextView === qmMobileBrowseView_()) return;
       state.mobile.qmView = nextView;
       state.mobile.qmBrowseLimit = 50;
+      state.mobile.qmBrowseBuilding = '';
+      state.mobile.qmBrowseFloor = '';
       renderQmBrowseTabs_();
+      renderQmBrowseLocationFilters_();
       renderMobileSummary();
       renderMobileFilters();
       if (nextView === 'TARGETS') {
@@ -7531,6 +7555,7 @@
     const key = qmMobileBrowseKey_(view);
     const cached = state.mobile.qmBrowseData;
     if (!options.force && cached?.key === key && Array.isArray(cached.rooms)) {
+      renderQmBrowseLocationFilters_();
       renderMobileSummary();
       renderMobileList();
       return;
@@ -7552,6 +7577,7 @@
         summary: result.summary || {},
         serverTime: result.serverTime || ''
       };
+      renderQmBrowseLocationFilters_();
       renderMobileSummary();
       renderMobileList();
       setSyncStatus(`QM ${view === 'CLEANED' ? '당일 청소완료' : '공실'} 조회 · ${state.mobile.qmBrowseData.rooms.length}실`);
@@ -7561,22 +7587,65 @@
     }
   }
 
-  function renderQmBrowseRoomCard_(room, view) { // (QM 추가탭 조회전용 카드 · 기존 점검권한 변경 없음)
+  function renderQmBrowseLocationFilters_() { // (QM 추가탭 동·층 클라이언트 필터 · 서버 재조회 없음)
+    const panel = $('qmBrowseLocationFilters');
+    const buildingSelect = $('qmBrowseBuilding');
+    const floorSelect = $('qmBrowseFloor');
+    if (!panel || !buildingSelect || !floorSelect) return;
+    const role = String(state.mobile.data?.role || '').trim().toUpperCase();
+    const view = qmMobileBrowseView_();
+    const visible = role === 'QM' && view !== 'TARGETS';
+    panel.hidden = !visible;
+    if (!visible) return;
+
+    const key = qmMobileBrowseKey_(view);
+    const browse = state.mobile.qmBrowseData;
+    const rooms = browse?.key === key && Array.isArray(browse.rooms) ? browse.rooms : [];
+    const buildings = [...new Set(rooms.map(room => String(room.building || '').trim()).filter(Boolean))]
+      .sort((a, b) => Number(a.replace(/\D/g, '')) - Number(b.replace(/\D/g, '')) || a.localeCompare(b, 'ko'));
+    if (state.mobile.qmBrowseBuilding && !buildings.includes(state.mobile.qmBrowseBuilding)) state.mobile.qmBrowseBuilding = '';
+    buildingSelect.innerHTML = '<option value="">전체 동</option>' + buildings.map(building => `<option value="${escapeAttr(building)}">${escapeHtml(building)}</option>`).join('');
+    buildingSelect.value = state.mobile.qmBrowseBuilding || '';
+
+    const floors = [...new Set(rooms
+      .filter(room => !state.mobile.qmBrowseBuilding || String(room.building || '') === state.mobile.qmBrowseBuilding)
+      .map(room => String(room.floor || '').trim()).filter(Boolean))]
+      .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b, 'ko'));
+    if (state.mobile.qmBrowseFloor && !floors.includes(state.mobile.qmBrowseFloor)) state.mobile.qmBrowseFloor = '';
+    floorSelect.innerHTML = '<option value="">전체 층</option>' + floors.map(floor => `<option value="${escapeAttr(floor)}">${escapeHtml(floor)}층</option>`).join('');
+    floorSelect.value = state.mobile.qmBrowseFloor || '';
+  }
+
+  function renderQmBrowseRoomCard_(room, view) { // (QM 추가탭 카드 · 안전 본인확보 후 기존 체크리스트 연결)
     const roomStatus = codeLabel_(state.mobile.data?.codes?.roomStatuses, room.roomStatus);
     const cleaningStatus = codeLabel_(state.mobile.data?.codes?.cleaningStatuses, room.cleaningStatus);
     const assignedNames = [room.roommaidName, room.secondaryRoommaidName].filter(Boolean).join(' · ') || '-';
     const qmName = String(room.qmName || '').trim();
+    const qmNo = String(room.qmEmployeeNo || '').trim();
+    const employeeNo = String(state.bootstrap?.user?.employeeNo || '').trim();
+    const status = String(room.cleaningStatus || '').trim().toUpperCase();
     const operationBadges = [
       room.preassigned ? '<span class="mobile-operation-badge preassigned">선배정</span>' : '',
       room.vip ? '<span class="mobile-operation-badge vip">VIP</span>' : '',
       room.importantRoom ? '<span class="mobile-operation-badge important">중요</span>' : ''
     ].filter(Boolean).join('');
     const viewLabel = view === 'CLEANED' ? '당일 청소완료' : '공실';
-    return `<article class="mobile-room-card qm-browse-readonly">
+    let actions = '';
+    if (status === 'QM_COMPLETED') {
+      actions = '<button type="button" disabled>점검완료</button>';
+    } else if (qmNo && qmNo !== employeeNo) {
+      actions = '<button type="button" disabled>다른 QM 배정</button>';
+    } else if (status === 'QM_CHECKING' && qmNo === employeeNo) {
+      actions = `<button type="button" class="primary" data-qm-browse-inspect="${escapeAttr(room.roomNo)}">점검 계속</button>`;
+    } else if (['COMPLETED', 'QM_WAITING'].includes(status)) {
+      actions = `<button type="button" class="primary" data-qm-browse-inspect="${escapeAttr(room.roomNo)}">점검 시작</button>`;
+    }
+    return `<article class="mobile-room-card qm-browse-inspection">
       <div class="mobile-card-top"><strong>${escapeHtml(room.roomNo)}</strong><span>${escapeHtml([room.building, room.floor ? `${room.floor}층` : ''].filter(Boolean).join(' · '))}</span></div>
       ${operationBadges ? `<div class="mobile-operation-badges">${operationBadges}</div>` : ''}
       <div class="mobile-room-status"><b>${escapeHtml(assignedNames)}</b><span>${escapeHtml(cleaningStatus || roomStatus)}</span></div>
       <div class="mobile-cleaning-type"><span>${escapeHtml(viewLabel)}</span>${qmName ? ` · QM ${escapeHtml(qmName)}` : ''}</div>
+      ${actions ? `<div class="mobile-actions">${actions}</div>` : ''}
     </article>`;
   }
 
@@ -7652,6 +7721,8 @@
         return;
       }
       const filtered = browse.rooms.filter(room => {
+        if (state.mobile.qmBrowseBuilding && String(room.building || '') !== state.mobile.qmBrowseBuilding) return false;
+        if (state.mobile.qmBrowseFloor && String(room.floor || '') !== state.mobile.qmBrowseFloor) return false;
         if (!query) return true;
         return [room.roomNo, room.building, room.floor ? `${room.floor}층` : '', room.roomStatus, room.cleaningStatus, room.roommaidName, room.secondaryRoommaidName, room.qmName]
           .join(' ').toLowerCase().includes(query);
@@ -7813,7 +7884,88 @@
     </article>`;
   }
 
+  async function startQmBrowseInspection_(roomNo, button) { // (QM 추가탭 즉시점검 · 단일왕복 후 기존 체크리스트 재사용)
+    const view = qmMobileBrowseView_();
+    const key = qmMobileBrowseKey_(view);
+    const browse = state.mobile.qmBrowseData;
+    const room = browse?.key === key && Array.isArray(browse.rooms)
+      ? browse.rooms.find(item => String(item.roomNo || '') === String(roomNo || ''))
+      : null;
+    if (!room) {
+      showToast('점검할 객실을 다시 불러와 주세요.');
+      return;
+    }
+
+    const originalText = button?.textContent || '';
+    if (button) {
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      button.textContent = '시작 중…';
+    }
+    try {
+      const result = await callServer('startQmMobileBrowseInspection', state.token, {
+        businessDate: state.mobile.businessDate || state.bootstrap.app.businessDate,
+        site: room.site || state.mobile.site,
+        roomNo: room.roomNo,
+        rowNumber: Number(room.rowNumber || 0),
+        view
+      });
+      if (!result?.ok) throw new Error(result?.message || 'QM 점검을 시작하지 못했습니다.');
+      const checklist = result.checklist || state.mobile.data?.qmChecklist || {};
+      if (!(checklist.items || []).length) throw new Error('QM 체크리스트를 불러오지 못했습니다.');
+
+      const confirmed = Object.assign({}, room, result.room || {}, {
+        rowNumber: Number(result.room?.rowNumber || room.rowNumber || 0),
+        businessDate: state.mobile.businessDate || room.businessDate,
+        site: String(result.room?.site || room.site || state.mobile.site || ''),
+        roomNo: String(room.roomNo || ''),
+        qmEmployeeNo: String(state.bootstrap?.user?.employeeNo || ''),
+        qmName: String(state.bootstrap?.user?.name || ''),
+        cleaningStatus: 'QM_CHECKING',
+        version: Number(result.room?.version || result.version || 0)
+      });
+      const targetRooms = state.mobile.data.rooms || (state.mobile.data.rooms = []);
+      const existingIndex = targetRooms.findIndex(item => String(item.site || '') === confirmed.site && String(item.roomNo || '') === confirmed.roomNo);
+      if (existingIndex >= 0) targetRooms[existingIndex] = Object.assign({}, targetRooms[existingIndex], confirmed);
+      else targetRooms.push(confirmed);
+      state.mobile.data.qmChecklist = checklist;
+      state.qmChecklist.activeInspection = {
+        roomNo: confirmed.roomNo,
+        checklist,
+        draft: result.draft,
+        roomVersion: Number(confirmed.version || 0),
+        sheetExpectedVersion: 0,
+        localDirty: false
+      };
+
+      // 시작 후에는 기존 점검대상 흐름으로 복귀시켜 제출/재정비/완료 로직을 그대로 사용합니다.
+      state.mobile.qmView = 'TARGETS';
+      state.mobile.qmBrowseData = null;
+      state.mobile.qmBrowseBuilding = '';
+      state.mobile.qmBrowseFloor = '';
+      state.mobile.qmBrowseLimit = 50;
+      renderQmBrowseTabs_();
+      renderQmBrowseLocationFilters_();
+      renderMobileSummary();
+      renderMobileFilters();
+      renderMobileList();
+      openQmInspectionModal_();
+      setSyncStatus(`${confirmed.roomNo}호 QM 점검 시작`);
+      void loadMobileSnapshot({ silent: true, force: true }).catch(error => console.warn('[NOVA QM] 추가탭 점검시작 후 화면갱신 실패:', error));
+    } catch (error) {
+      showToast(error?.message || 'QM 점검 시작 오류');
+    } finally {
+      if (button && button.isConnected) {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        button.textContent = originalText || '점검 시작';
+      }
+    }
+  }
+
   async function handleMobileListClick(event) { // (모바일 카드 작업 처리)
+    const qmBrowseButton = event.target.closest('[data-qm-browse-inspect]');
+    if (qmBrowseButton) return startQmBrowseInspection_(qmBrowseButton.dataset.qmBrowseInspect, qmBrowseButton);
     const orderButton = event.target.closest('[data-order-action]');
     if (orderButton) {
       const action = orderButton.dataset.orderAction;
