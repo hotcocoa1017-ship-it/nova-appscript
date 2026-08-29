@@ -578,14 +578,14 @@
         auth: { persistSession: false, autoRefreshToken: false }
       });
     }
-    novaRealtime_.supabase.realtime.setAuth(auth.token);
+    await novaRealtime_.supabase.realtime.setAuth(auth.token); // REALTIME_SUBSCRIPTION_RESILIENCE_V1
 
     if (novaRealtime_.tokenRefreshTimer) window.clearTimeout(novaRealtime_.tokenRefreshTimer);
     novaRealtime_.tokenRefreshTimer = window.setTimeout(async () => {
       try {
         if (!novaRealtimeIsEnabled_() || !state.token || !novaRealtime_.supabase) return;
         const next = await novaRealtimeGetAuth_();
-        novaRealtime_.supabase.realtime.setAuth(next.token);
+        await novaRealtime_.supabase.realtime.setAuth(next.token);
         await novaRealtimeEnsureSubscriptions_();
       } catch (error) {
         console.error('[NOVA Realtime] 토큰 갱신 실패:', error);
@@ -621,8 +621,24 @@
           novaRealtimeHandleHousemanOrderBroadcast_(payload);
         })
         .subscribe((status, error) => {
-          if (error) console.error(`[NOVA Realtime] ${site} 구독 오류`, error);
-          if (status === 'SUBSCRIBED') setSyncStatus(`Realtime 연결 · ${site}`);
+          if (status === 'SUBSCRIBED') {
+            setSyncStatus(`Realtime 연결 · ${site}`);
+            return;
+          }
+          const failed = Boolean(error) || ['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(String(status || '').toUpperCase());
+          if (!failed) return;
+          console.error(`[NOVA Realtime] ${site} 구독 실패 (${status || 'UNKNOWN'})`, error || '');
+          if (novaRealtime_.channels.get(site) === channel) novaRealtime_.channels.delete(site);
+          if (novaRealtime_.supabase) {
+            void novaRealtime_.supabase.removeChannel(channel).catch(() => {});
+          }
+          window.setTimeout(() => {
+            if (!state.token || document.hidden || !novaRealtimeIsEnabled_()) return;
+            if (!novaRealtimeRelevantSites_().includes(site)) return;
+            void novaRealtimeEnsureSubscriptions_().catch(retryError => {
+              console.warn(`[NOVA Realtime] ${site} 구독 재시도 실패`, retryError);
+            });
+          }, 1200);
         });
       novaRealtime_.channels.set(site, channel);
     }
