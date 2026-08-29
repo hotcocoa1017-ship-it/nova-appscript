@@ -1,0 +1,182 @@
+name: Repair Cloud Run Realtime
+
+on:
+  push:
+    branches: [ops/cloudrun-realtime-repair-20260829]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: nova-cloudrun-realtime-repair
+  cancel-in-progress: false
+
+env:
+  CLOUD_RUN_SERVICE: nova-realtime-api
+  SUPABASE_URL: https://evoetxfjmkkjptucwxsv.supabase.co
+  SUPABASE_PUBLISHABLE_KEY: sb_publishable_yKpHBqwrzlNdpIYzgmUMXg_5wApTA7L
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        shell: bash
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GCP_SA_KEY:-}" ]; then
+            echo "::error::Missing repository secret GCP_SA_KEY"
+            exit 10
+          fi
+          if [ -z "${SUPABASE_JWT_SECRET:-}" ]; then
+            echo "::error::Missing repository secret SUPABASE_JWT_SECRET"
+            exit 11
+          fi
+          python3 - <<'PY'
+          import os, json
+          doc=json.loads(os.environ['GCP_SA_KEY'])
+          if doc.get('type') != 'service_account' or not doc.get('project_id') or not doc.get('client_email'):
+              raise SystemExit('GCP_SA_KEY is not a valid service-account JSON document')
+          print('SERVICE_ACCOUNT_JSON_OK')
+          print('PROJECT_ID_PRESENT', bool(doc.get('project_id')))
+          PY
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Discover NOVA Cloud Run service
+        id: discover
+        shell: bash
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          set -euo pipefail
+          PROJECT_ID="$(python3 - <<'PY'
+          import os,json
+          print(json.loads(os.environ['GCP_SA_KEY'])['project_id'])
+          PY
+          )"
+          gcloud config set project "$PROJECT_ID" >/dev/null
+          gcloud run services list --platform=managed --project="$PROJECT_ID" --format=json > /tmp/run-services.json
+          python3 - <<'PY' > /tmp/discovered.env
+          import json, os, sys
+          rows=json.load(open('/tmp/run-services.json'))
+          target=os.environ['CLOUD_RUN_SERVICE']
+          matches=[]
+          for s in rows:
+              md=s.get('metadata') or {}
+              if md.get('name') != target:
+                  continue
+              labels=md.get('labels') or {}
+              region=(labels.get('cloud.googleapis.com/location') or labels.get('run.googleapis.com/location') or '').strip()
+              url=((s.get('status') or {}).get('url') or '').strip()
+              matches.append((region,url))
+          if len(matches) != 1:
+              print(f'Expected exactly one {target} service, found {len(matches)}', file=sys.stderr)
+              raise SystemExit(20)
+          region,url=matches[0]
+          if not region:
+              print('Cloud Run region could not be discovered', file=sys.stderr)
+              raise SystemExit(21)
+          print(f'PROJECT_ID={os.environ.get("PROJECT_ID_OVERRIDE", "")}') if False else None
+          print('REGION='+region)
+          print('SERVICE_URL='+url)
+          PY
+          REGION="$(grep '^REGION=' /tmp/discovered.env | cut -d= -f2-)"
+          SERVICE_URL="$(grep '^SERVICE_URL=' /tmp/discovered.env | cut -d= -f2-)"
+          echo "project_id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
+          echo "region=$REGION" >> "$GITHUB_OUTPUT"
+          echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
+          echo "NOVA Cloud Run service discovered in region: $REGION"
+
+      - name: Inspect Realtime environment variable presence
+        shell: bash
+        env:
+          PROJECT_ID: ${{ steps.discover.outputs.project_id }}
+          REGION: ${{ steps.discover.outputs.region }}
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_SERVICE" --platform=managed --project="$PROJECT_ID" --region="$REGION" --format=json > /tmp/service-before.json
+          python3 - <<'PY'
+          import json
+          s=json.load(open('/tmp/service-before.json'))
+          spec=s.get('spec') or {}
+          tmpl=spec.get('template') or {}
+          tspec=tmpl.get('spec') or {}
+          containers=tspec.get('containers') or []
+          envs=(containers[0].get('env') or []) if containers else []
+          names={str(e.get('name','')) for e in envs}
+          for key in ['SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET']:
+              print(key, 'PRESENT' if key in names else 'MISSING')
+          PY
+
+      - name: Update Realtime environment variables
+        shell: bash
+        env:
+          PROJECT_ID: ${{ steps.discover.outputs.project_id }}
+          REGION: ${{ steps.discover.outputs.region }}
+          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
+        run: |
+          set -euo pipefail
+          gcloud run services update "$CLOUD_RUN_SERVICE" \
+            --platform=managed \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --update-env-vars="SUPABASE_URL=$SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY=$SUPABASE_PUBLISHABLE_KEY,SUPABASE_JWT_SECRET=$SUPABASE_JWT_SECRET" \
+            --quiet
+
+      - name: Verify new revision and health
+        shell: bash
+        env:
+          PROJECT_ID: ${{ steps.discover.outputs.project_id }}
+          REGION: ${{ steps.discover.outputs.region }}
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_SERVICE" --platform=managed --project="$PROJECT_ID" --region="$REGION" --format=json > /tmp/service-after.json
+          python3 - <<'PY'
+          import json,sys
+          s=json.load(open('/tmp/service-after.json'))
+          status=s.get('status') or {}
+          url=str(status.get('url') or '').strip()
+          latest=str(status.get('latestReadyRevisionName') or '').strip()
+          if not url or not latest:
+              raise SystemExit('Cloud Run service did not report a ready revision')
+          print('LATEST_READY_REVISION', latest)
+          print('SERVICE_URL_OK', bool(url))
+          PY
+          SERVICE_URL="$(python3 - <<'PY'
+          import json
+          print((json.load(open('/tmp/service-after.json')).get('status') or {}).get('url') or '')
+          PY
+          )"
+          for i in 1 2 3 4 5 6; do
+            code="$(curl -sS -o /tmp/health.json -w '%{http_code}' "$SERVICE_URL/health" || true)"
+            if [ "$code" = "200" ]; then
+              python3 - <<'PY'
+          import json
+          body=json.load(open('/tmp/health.json'))
+          if body.get('ok') is not True:
+              raise SystemExit('Cloud Run health body is not ok')
+          print('CLOUD_RUN_HEALTH_OK')
+          print('BUILD', str(body.get('build') or body.get('version') or '')[:120])
+          PY
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Cloud Run /health did not return HTTP 200 after update"
+          cat /tmp/health.json || true
+          exit 30
