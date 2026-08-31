@@ -29,6 +29,9 @@ jobs:
       - name: Apply transient sync status auto-hide patch
         run: python3 scripts/patch_sync_status_autohide.py
 
+      - name: Apply Telegram self-connect patch
+        run: python3 scripts/patch_telegram_self_connect.py
+
       - name: Apply Realtime subscription resilience patch
         run: python3 scripts/patch_realtime_subscription_resilience.py
 
@@ -59,6 +62,9 @@ jobs:
           set -euo pipefail
           grep -q "API 설정과 보조 Realtime 연결을 분리해 고속 API 유지" Client.html
           grep -q "SYNC_STATUS_AUTO_HIDE_V1" Client.html
+          grep -q "TELEGRAM_SELF_CONNECT_V1" Client.html
+          grep -q "function prepareMyTelegramConnection" TelegramSelfConnect.js
+          grep -q "function getMyTelegramConnectionStatus" TelegramSelfConnect.js
           grep -q "REALTIME_SUBSCRIPTION_RESILIENCE_V1" Client.html
           grep -q "await novaRealtime_.supabase.realtime.setAuth(auth.token)" Client.html
           grep -q "'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'" Client.html
@@ -99,6 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           node --check RealtimeDailySync.js
+          node --check TelegramSelfConnect.js
           python3 - <<'PY'
           from pathlib import Path
           import re
@@ -122,6 +129,7 @@ jobs:
           before="$(sha256sum Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js | sha256sum | awk '{print $1}')"
           python3 scripts/patch_realtime_client.py
           python3 scripts/patch_sync_status_autohide.py
+          python3 scripts/patch_telegram_self_connect.py
           python3 scripts/patch_realtime_subscription_resilience.py
           python3 scripts/patch_qm_mobile_browse.py
           python3 scripts/patch_qm_mobile_browse_v2.py
