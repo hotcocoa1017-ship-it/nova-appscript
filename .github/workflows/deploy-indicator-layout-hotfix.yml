@@ -36,10 +36,13 @@ jobs:
           grep -q "MOBILE_INDICATOR_LAYOUT_V1" Client.html
           grep -q "MOBILE_INDICATOR_LAYOUT_V1" Styles.html
           grep -q "INDICATOR_DESKTOP_LAYOUT_V1" Styles.html
+          grep -q "INDICATOR_DESKTOP_LAYOUT_V2" Styles.html
           grep -q 'class="indicator-query-row"' Client.html
           grep -q 'id="indicatorQueryButton"' Client.html
           grep -q -- '-webkit-line-clamp: 2' Styles.html
-          grep -q 'grid-template-columns: minmax(220px, 0.9fr) minmax(220px, 0.9fr) 112px' Styles.html
+          grep -q 'grid-template-columns: 220px 220px 104px minmax(220px, 320px) minmax(0, 1fr)' Styles.html
+          grep -q 'grid-column: 4' Styles.html
+          grep -q 'max-width: 320px' Styles.html
 
       - name: Validate existing site-scope and explicit-query protections
         shell: bash
