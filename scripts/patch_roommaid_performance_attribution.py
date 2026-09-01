@@ -26,7 +26,7 @@ v1_helper = """function roommaidPerformanceEligibleEmployeeNo_(employeeNo, users
 }
 """
 
-v2_helper = """function roommaidPerformanceFallbackEmployeeNo_(employeeNo, usersByEmployeeNo) { // (대상사번 fallback 룸메이드 검증 · ROOMMAID_PERFORMANCE_ATTRIBUTION_V1 · ROOMMAID_PERFORMANCE_ATTRIBUTION_V2)
+v2_helper = """function roommaidPerformanceEligibleEmployeeNo_(employeeNo, usersByEmployeeNo) { // (대상사번 fallback 룸메이드 검증 · ROOMMAID_PERFORMANCE_ATTRIBUTION_V1 · ROOMMAID_PERFORMANCE_ATTRIBUTION_V2)
   const no = String(employeeNo || '').trim();
   if (!no) return '';
   const user = usersByEmployeeNo && usersByEmployeeNo[no] || null;
@@ -46,7 +46,7 @@ v1_participants = """    const primaryNo = roommaidPerformanceEligibleEmployeeNo
 v2_participants = """    // 명시적으로 저장된 배정 스냅샷은 과거 직무변경과 무관하게 그대로 보존합니다.
     // 배정 스냅샷이 비어 있을 때만 대상사번을 fallback하며, 이 경우 현재 ROOMMAID 권한을 검증합니다.
     const explicitPrimaryNo = String(detail.primaryEmployeeNo || '').trim();
-    const primaryNo = explicitPrimaryNo || roommaidPerformanceFallbackEmployeeNo_(data['대상사번'] || '', users);
+    const primaryNo = explicitPrimaryNo || roommaidPerformanceEligibleEmployeeNo_(data['대상사번'] || '', users);
     const secondaryNo = String(detail.secondaryEmployeeNo || '').trim();
 """
 
