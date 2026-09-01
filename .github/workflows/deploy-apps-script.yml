@@ -68,6 +68,12 @@ jobs:
       - name: Apply site scope, explicit indicator query, close read V2
         run: python3 scripts/patch_site_scope_indicator_close_v2.py
 
+      - name: Apply ORDER shared site context V1
+        run: python3 scripts/patch_order_site_context_v1.py
+
+      - name: Apply ORDER shared site context V2
+        run: python3 scripts/patch_order_site_context_v2.py
+
       - name: Validate full Realtime routing
         shell: bash
         run: |
@@ -95,6 +101,8 @@ jobs:
           grep -q "SITE_SCOPE_INDICATOR_CLOSE_V2" Index.html
           grep -q "SITE_SCOPE_INDICATOR_CLOSE_V2" 03_Auth.js
           grep -q "SITE_SCOPE_INDICATOR_CLOSE_V2" Client.html
+          grep -q "ORDER_SHARED_SITE_CONTEXT_V1" Client.html
+          grep -q "ORDER_SHARED_SITE_CONTEXT_V2" Client.html
           grep -q "QM 추가조회 탭 · 기존 점검대상 화면 보존" Client.html
           grep -q "QM 추가탭 동·층 필터 + 안전 즉시점검" Client.html
           grep -q "QM 추가탭 체크리스트 즉시노출 v1" Client.html
@@ -120,6 +128,9 @@ jobs:
 
       - name: Validate site scope and close V2 simulations
         run: python3 scripts/validate_site_scope_indicator_close_v2.py
+
+      - name: Validate ORDER shared site simulations
+        run: python3 scripts/validate_order_site_context_v1.py
 
       - name: Validate production release regression gate
         run: python3 scripts/validate_nova_release.py
@@ -172,7 +183,10 @@ jobs:
           python3 scripts/patch_roommaid_close_read_acceleration.py
           python3 scripts/fix_patch_site_scope_v2.py
           python3 scripts/patch_site_scope_indicator_close_v2.py
+          python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
           python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_order_site_context_v1.py
           after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
           test "$before" = "$after"
 
