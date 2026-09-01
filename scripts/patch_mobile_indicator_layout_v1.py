@@ -4,6 +4,7 @@ import sys
 
 MARKER = 'MOBILE_INDICATOR_LAYOUT_V1'
 DESKTOP_MARKER = 'INDICATOR_DESKTOP_LAYOUT_V1'
+DESKTOP_V2_MARKER = 'INDICATOR_DESKTOP_LAYOUT_V2'
 client_path = Path('Client.html')
 styles_path = Path('Styles.html')
 
@@ -212,6 +213,84 @@ if DESKTOP_MARKER not in styles:
         print('ERROR: Styles.html closing </style> not found.', file=sys.stderr)
         sys.exit(72)
     styles = styles[:idx] + desktop_css + '\n' + styles[idx:]
+    changed = True
+
+if DESKTOP_V2_MARKER not in styles:
+    desktop_v2_css = r'''
+
+  /* INDICATOR_DESKTOP_LAYOUT_V2
+   * 데스크탑 상단 조회영역을 기존의 컴팩트한 업무일자 폭에 맞춥니다.
+   * 업무일자 · 사업장 · 조회하기 · 검색을 한 줄에 배치하며 모바일 레이아웃은 유지합니다.
+   */
+  @media (min-width: 761px) {
+    .indicator-page .indicator-controls {
+      display: grid;
+      grid-template-columns: 220px 220px 104px minmax(220px, 320px) minmax(0, 1fr);
+      column-gap: 10px;
+      row-gap: 12px;
+      align-items: end;
+    }
+
+    .indicator-page .indicator-controls > .control-group:nth-of-type(1),
+    .indicator-page .indicator-controls > .control-group:nth-of-type(2) {
+      width: 220px;
+      min-width: 220px;
+      max-width: 220px;
+      gap: 6px;
+    }
+
+    .indicator-page #indicatorDate,
+    .indicator-page #indicatorSite {
+      width: 220px;
+      min-width: 220px;
+      max-width: 220px;
+      height: 40px;
+      padding: 0 12px;
+      border-radius: 9px;
+      font-size: 13px;
+    }
+
+    .indicator-page .indicator-query-row {
+      grid-column: 3;
+      grid-row: 1;
+      width: 104px;
+      min-width: 104px;
+      align-self: end;
+    }
+
+    .indicator-page .indicator-query-row #indicatorQueryButton {
+      width: 104px;
+      min-width: 104px;
+      height: 40px;
+      padding: 0 12px;
+      border-radius: 9px;
+      font-size: 13px;
+    }
+
+    .indicator-page #roomSearch {
+      grid-column: 4;
+      grid-row: 1;
+      align-self: end;
+      width: 100%;
+      min-width: 220px;
+      max-width: 320px;
+      height: 40px;
+      margin: 0;
+      border-radius: 9px;
+      font-size: 13px;
+    }
+
+    .indicator-page #roomUploadButton,
+    .indicator-page #indicatorSummary {
+      grid-column: 1 / -1;
+    }
+  }
+'''
+    idx = styles.rfind('</style>')
+    if idx < 0:
+        print('ERROR: Styles.html closing </style> not found.', file=sys.stderr)
+        sys.exit(73)
+    styles = styles[:idx] + desktop_v2_css + '\n' + styles[idx:]
     changed = True
 
 if changed:
