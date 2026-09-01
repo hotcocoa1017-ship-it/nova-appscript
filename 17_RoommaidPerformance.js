@@ -105,6 +105,16 @@ function roommaidPerformanceMonthDays_(year, month) { // (선택 월 일수)
   return new Date(Number(year), Number(month), 0).getDate();
 }
 
+function roommaidPerformanceEligibleEmployeeNo_(employeeNo, usersByEmployeeNo) { // (실적 귀속 가능 룸메이드 검증 · ROOMMAID_PERFORMANCE_ATTRIBUTION_V1)
+  const no = String(employeeNo || '').trim();
+  if (!no) return '';
+  const user = usersByEmployeeNo && usersByEmployeeNo[no] || null;
+  // 현재 사용자목록에 없는 과거 사번은 기존 이력 호환을 위해 보존합니다.
+  // 현재 등록된 사용자라면 ROOMMAID 권한만 정비실적에 귀속합니다.
+  if (!user) return no;
+  return String(user.role || '').trim().toUpperCase() === 'ROOMMAID' ? no : '';
+}
+
 function buildRoommaidPerformanceBundle_(historyRows, request) { // (개인별 실적·일자별·상세 집계)
   const users = getUserIndex_().byEmployeeNo;
   const employmentIndex = readRoommaidPerformanceEmploymentIndex_();
@@ -174,8 +184,10 @@ function buildRoommaidPerformanceBundle_(historyRows, request) { // (개인별 �
     const maintenanceCredit = roommaidPerformanceMaintenanceCredit_(maintenanceType);
     const cleaningCredit = getRoommaidCleaningCreditUnit_(cleaningType);
     const unit = maintenanceCredit * cleaningCredit;
-    const primaryNo = String(detail.primaryEmployeeNo || data['대상사번'] || '').trim();
-    const secondaryNo = String(detail.secondaryEmployeeNo || '').trim();
+    const primaryNo = roommaidPerformanceEligibleEmployeeNo_(
+      detail.primaryEmployeeNo || data['대상사번'] || '', users
+    );
+    const secondaryNo = roommaidPerformanceEligibleEmployeeNo_(detail.secondaryEmployeeNo || '', users);
     const shares = roommaidPerformanceAssignmentCreditShares_(assignmentType, primaryNo, secondaryNo);
     const participants = [];
     if (primaryNo) participants.push({

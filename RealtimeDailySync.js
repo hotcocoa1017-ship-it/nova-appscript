@@ -819,18 +819,28 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
       // 같은 배치에서 같은 객실 후속 이벤트가 오면 다음 이벤트가 갱신상태를 보도록 메모리도 즉시 갱신한다.
       rowInfo.data['청소상태'] = afterStatus;
 
+      const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
+      const eventRole = String(
+        eventDetail.role || (usersByEmployeeNo[employeeNo] && usersByEmployeeNo[employeeNo].role) || ''
+      ).trim().toUpperCase();
+      // ROOMMAID_PERFORMANCE_ATTRIBUTION_V1
+      // 관리자·오더테이커가 대신 START/COMPLETE를 눌러도 처리자를 정비실적 대상자로 기록하지 않습니다.
+      // Sheet 배정정보가 일시적으로 비어 있으면 실제 ROOMMAID 본인이 처리한 경우에만 본인 사번을 안전하게 보완합니다.
+      const performancePrimaryEmployeeNo = roommaidNo || (eventRole === 'ROOMMAID' ? employeeNo : '');
+      const performanceSecondaryEmployeeNo = performancePrimaryEmployeeNo ? secondaryRoommaidNo : '';
+
       historyPayloads.push({
         recordType: NOVA.RECORD_TYPES.CLEANING,
         businessDate: eventBusinessDate,
         site: eventSite,
         roomNo: eventRoomNo,
-        targetEmployeeNo: employeeNo,
+        targetEmployeeNo: performancePrimaryEmployeeNo,
         status: action === 'CLEANING_START' ? 'ROOMMAID_START' : 'ROOMMAID_COMPLETE',
         detail: {
           requestId,
           realtime: true,
           action: action === 'CLEANING_START' ? 'START' : 'COMPLETE',
-          role: 'ROOMMAID',
+          role: eventRole || 'UNKNOWN',
           beforeCleaningStatus: beforeStatus,
           previousRoomStatus: String(rowInfo.data['객실상태'] || '').trim().toUpperCase(),
           sourceRoomStatus: action === 'CLEANING_COMPLETE' ? String(rowInfo.data['객실상태'] || '').trim().toUpperCase() : '',
@@ -838,8 +848,8 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
           cleaningStatus: afterStatus,
           cleaningType,
           assignmentType,
-          primaryEmployeeNo: roommaidNo,
-          secondaryEmployeeNo: secondaryRoommaidNo,
+          primaryEmployeeNo: performancePrimaryEmployeeNo,
+          secondaryEmployeeNo: performanceSecondaryEmployeeNo,
           creditUnit: getRoommaidCleaningCreditUnit_(cleaningType),
           dbRoomVersion: Number(event.roomVersion || 0),
           dbEventTime: String(event.eventTime || '')
