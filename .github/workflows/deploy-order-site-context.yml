@@ -1,12 +1,6 @@
 name: Deploy NOVA ORDER Shared Site Context
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'scripts/patch_order_site_context_v1.py'
-      - 'scripts/validate_order_site_context_v1.py'
-      - '.github/workflows/deploy-order-site-context.yml'
   workflow_dispatch:
 
 permissions:
@@ -27,8 +21,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Apply ORDER shared site context
+      - name: Apply ORDER shared site context V1
         run: python3 scripts/patch_order_site_context_v1.py
+
+      - name: Apply ORDER shared site context V2
+        run: python3 scripts/patch_order_site_context_v2.py
 
       - name: Validate ORDER shared site simulations
         run: python3 scripts/validate_order_site_context_v1.py
@@ -39,6 +36,7 @@ jobs:
           set -euo pipefail
           grep -q "SITE_SCOPE_INDICATOR_CLOSE_V2" Client.html
           grep -q "ORDER_SHARED_SITE_CONTEXT_V1" Client.html
+          grep -q "ORDER_SHARED_SITE_CONTEXT_V2" Client.html
           grep -q "indicatorQueryButton" Client.html
           grep -q "markIndicatorQueryDirty_" Client.html
           grep -q "loadIndicatorSnapshot" Client.html
@@ -71,6 +69,7 @@ jobs:
           set -euo pipefail
           before="$(sha256sum Client.html | awk '{print $1}')"
           python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
           python3 scripts/validate_order_site_context_v1.py
           after="$(sha256sum Client.html | awk '{print $1}')"
           test "$before" = "$after"
@@ -85,7 +84,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add Client.html
-            git commit -m "Persist ORDER shared site context [skip ci]"
+            git commit -m "Persist ORDER shared site context V2 [skip ci]"
             git push origin HEAD:main
           fi
 
@@ -124,9 +123,9 @@ jobs:
           set -euo pipefail
           clasp create-deployment \
             --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" \
-            --description "NOVA ORDER shared site ${GITHUB_SHA::12}"
+            --description "NOVA ORDER shared site V2 ${GITHUB_SHA::12}"
 
       - name: Deployment summary
         run: |
-          echo "ORDER shared site context validated and deployed."
+          echo "ORDER shared site context V2 validated and deployed."
           echo "Commit: $GITHUB_SHA"
