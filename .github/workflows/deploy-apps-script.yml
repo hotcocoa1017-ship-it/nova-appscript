@@ -62,6 +62,9 @@ jobs:
       - name: Apply Roommaid close read acceleration patch
         run: python3 scripts/patch_roommaid_close_read_acceleration.py
 
+      - name: Repair site scope V2 patch bootstrap
+        run: python3 scripts/fix_patch_site_scope_v2.py
+
       - name: Apply site scope, explicit indicator query, close read V2
         run: python3 scripts/patch_site_scope_indicator_close_v2.py
 
@@ -167,6 +170,7 @@ jobs:
           python3 scripts/patch_realtime_assignment_batch_merge.py
           python3 scripts/patch_roommaid_performance_attribution.py
           python3 scripts/patch_roommaid_close_read_acceleration.py
+          python3 scripts/fix_patch_site_scope_v2.py
           python3 scripts/patch_site_scope_indicator_close_v2.py
           python3 scripts/validate_site_scope_indicator_close_v2.py
           after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
