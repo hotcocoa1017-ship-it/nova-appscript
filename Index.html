@@ -17,7 +17,16 @@
   <section id="loginView" class="center-view hidden">
     <form id="loginForm" class="login-card" autocomplete="on">
       <div class="nova-logo nova-logo-login" role="img" aria-label="NOVA"></div>
-      <p class="muted login-guide">이름과 사번으로 로그인합니다.</p>
+      <p class="muted login-guide">일반 직원은 사업장 · 이름 · 사번 순으로 로그인합니다. 관리자·오더테이커는 사업장 선택을 생략할 수 있습니다.</p>
+      <!-- SITE_SCOPE_INDICATOR_CLOSE_V2 -->
+      <label>
+        <span>사업장</span>
+        <select id="loginSite" name="site" autocomplete="organization">
+          <option value="">관리자·오더테이커는 선택하지 않음</option>
+          <option value="쏘라노">쏘라노</option>
+          <option value="별관">별관</option>
+        </select>
+      </label>
       <label>
         <span>이름</span>
         <input id="loginName" name="name" autocomplete="username" required>

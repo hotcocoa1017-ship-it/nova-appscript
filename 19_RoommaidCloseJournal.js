@@ -28,7 +28,7 @@ const NOVA_ROOMMAID_CLOSE = Object.freeze({
   ])
 });
 
-function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지 조회 · ROOMMAID_CLOSE_READ_ACCEL_V1)
+function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지 조회 · ROOMMAID_CLOSE_READ_ACCEL_V2)
   return measureResponse_('getRoommaidCloseJournal', () => {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const safe = filters || {};
@@ -36,15 +36,17 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
     const requestedSite = String(safe.site || '').trim();
     const hasAttendanceOverride = Array.isArray(safe.attendanceEmployeeNos);
     const requestedAttendance = hasAttendanceOverride ? uniqueEmployeeNos_(safe.attendanceEmployeeNos) : [];
+    const sites = getSiteList_();
+    const defaultSite = String(user.defaultSite || '').trim();
+    const preferredSite = requestedSite || (sites.includes(defaultSite) ? defaultSite : sites[0] || '');
+    if (!preferredSite) throw new Error(`${businessDate} 조회할 사업장이 없습니다.`);
+    if (!sites.includes(preferredSite)) throw new Error(`${preferredSite} 사업장을 확인할 수 없습니다.`);
 
-    // 같은 변경버전의 같은 조회는 짧게 재사용하여 반복 탭 이동/재조회에서 Sheets 접근 자체를 생략합니다.
-    // ROOM/ORDER/REPORT와 CONFIG/SYSTEM 버전이 바뀌면 캐시키가 달라져 즉시 새 원천자료를 읽습니다.
-    const cacheSiteHint = requestedSite || String(user.defaultSite || '').trim();
-    const sourceVersion = getSyncVersion_(['ROOM', 'ORDER', 'REPORT'], businessDate, cacheSiteHint);
-    const cacheKey = buildDeltaCacheKey_('ROOMMAID_CLOSE_READ_V1', [
+    const sourceVersion = getSyncVersion_(['ROOM', 'ORDER', 'REPORT'], businessDate, preferredSite);
+    const cacheKey = buildDeltaCacheKey_('ROOMMAID_CLOSE_READ_V2', [
       NOVA_ROOMMAID_CLOSE.SCHEMA_VERSION,
       businessDate,
-      cacheSiteHint || '*',
+      preferredSite,
       String(user.employeeNo || ''),
       sourceVersion,
       hasAttendanceOverride ? requestedAttendance.slice().sort().join(',') : 'AUTO'
@@ -56,25 +58,30 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
       });
     }
 
-    // 기존에는 전체 사업장의 현재객실 전체행을 읽은 뒤 선택 사업장만 필터링했습니다.
-    // 이제 날짜/사업장 2개 열만 먼저 훑고, 실제 전체행은 선택 사업장만 읽습니다.
-    const currentSelection = readRoommaidCloseCurrentSelection_(
-      businessDate,
-      requestedSite,
-      String(user.defaultSite || '').trim()
-    );
-    const sites = currentSelection.sites;
-    const preferredSite = currentSelection.site;
-    const currentRows = currentSelection.currentRows;
-
-    if (!preferredSite) throw new Error(`${businessDate} 현재객실현황에 조회할 사업장이 없습니다.`);
-    if (!sites.includes(preferredSite)) throw new Error(`${businessDate} ${preferredSite} 현재객실현황이 없습니다.`);
-
-    // 업무이력과 저장된 DAILY_CLOSE 요약을 같은 전체열 스캔에서 함께 선별합니다.
-    // 기존 readHistoryRowsForClose_ + readDailyCloseSummaries_의 중복 전체스캔을 제거합니다.
-    const historyBundle = readRoommaidCloseHistoryBundle_(businessDate, preferredSite);
+    // 업무이력은 날짜 TextFinder로 후보행만 읽습니다. 전체 업무이력 열 스캔을 제거합니다.
+    const historyBundle = readRoommaidCloseHistoryBundleFast_(businessDate, preferredSite);
     const historyRows = historyBundle.historyRows;
     const saved = historyBundle.saved;
+
+    // 미마감 조회는 PostgreSQL 현재객실을 우선 사용합니다. 저장된 마감은 기존 Sheet 기반 sourceSignature를
+    // 그대로 비교해야 과거 저장서명과 DB updated_at 차이로 false stale이 생기지 않습니다.
+    let currentRows = [];
+    let currentSource = 'SHEET';
+    if (!saved) {
+      try {
+        currentRows = readRoommaidCloseRealtimeCurrentRows_(token, businessDate, preferredSite);
+        if (currentRows.length) currentSource = 'REALTIME_DB';
+      } catch (error) {
+        currentRows = [];
+      }
+    }
+    if (!currentRows.length) {
+      const currentSelection = readRoommaidCloseCurrentSelection_(businessDate, preferredSite, defaultSite);
+      currentRows = currentSelection.currentRows;
+      currentSource = 'SHEET';
+    }
+    if (!currentRows.length) throw new Error(`${businessDate} ${preferredSite} 현재객실현황이 없습니다.`);
+
     const users = getUserIndex_().byEmployeeNo;
     const employmentIndex = readRoommaidCloseEmploymentIndex_();
     const inferredAttendance = inferRoommaidCloseAttendance_(currentRows, historyRows);
@@ -95,8 +102,7 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
     const latestSourceAt = latestRoommaidCloseSourceAt_(currentRows, historyRows);
     const savedHasJournal = Boolean(saved && saved.roommaidCloseJournal);
     const savedJournalSchemaChanged = Boolean(
-      savedHasJournal &&
-      Number(saved.roommaidCloseJournal.schemaVersion || 0) !== NOVA_ROOMMAID_CLOSE.SCHEMA_VERSION
+      savedHasJournal && Number(saved.roommaidCloseJournal.schemaVersion || 0) !== NOVA_ROOMMAID_CLOSE.SCHEMA_VERSION
     );
     const signatureChanged = Boolean(saved && saved.sourceSignature && saved.sourceSignature !== liveSnapshot.sourceSignature);
     const legacyTimestampChanged = Boolean(saved && !saved.sourceSignature && saved.closedAt && latestSourceAt && latestSourceAt > saved.closedAt);
@@ -127,18 +133,119 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
         ? (isStale ? '마감 이후 객실 또는 정비실적이 수정되었습니다. 수정 후 재마감이 필요합니다.' : '저장된 마감자료입니다.')
         : '실시간 미마감 자료입니다.',
       optimization: {
-        marker: 'ROOMMAID_CLOSE_READ_ACCEL_V1',
+        marker: 'ROOMMAID_CLOSE_READ_ACCEL_V2',
         cacheHit: false,
         sourceVersion,
+        currentSource,
         currentRowCount: currentRows.length,
-        historyRowCount: historyRows.length
+        historyRowCount: historyRows.length,
+        historyLookup: 'DATE_TEXTFINDER'
       }
     };
-
-    // CacheService 항목 제한을 넘는 큰 응답은 putCachedJson_이 자동으로 저장을 건너뜁니다.
     putCachedJson_(cacheKey, result, Math.min(30, Number(NOVA.SNAPSHOT_CACHE_SECONDS || 45)));
     return result;
   });
+}
+
+function readRoommaidCloseRealtimeCurrentRows_(token, businessDate, site) { // (PostgreSQL 현재객실 조회 · 조회전용·실패시 Sheet fallback)
+  const props = PropertiesService.getScriptProperties();
+  const enabled = String(props.getProperty('NOVA_REALTIME_ENABLED') || 'N').trim().toUpperCase() === 'Y';
+  const apiBase = String(props.getProperty('NOVA_REALTIME_API_BASE') || '').trim().replace(/\/+$/, '');
+  if (!enabled || !apiBase) return [];
+  const query = `businessDate=${encodeURIComponent(String(businessDate || ''))}&site=${encodeURIComponent(String(site || ''))}`;
+  const response = UrlFetchApp.fetch(`${apiBase}/v1/rooms?${query}`, {
+    method: 'get',
+    headers: { Authorization: `Bearer ${String(token || '').trim()}` },
+    muteHttpExceptions: true,
+    followRedirects: true
+  });
+  const status = Number(response.getResponseCode() || 0);
+  let body = {};
+  try { body = JSON.parse(response.getContentText() || '{}'); } catch (error) { body = {}; }
+  if (status < 200 || status >= 300 || !body.ok || !Array.isArray(body.rooms)) return [];
+  const seen = new Set();
+  return body.rooms.map(raw => {
+    const roomNo = String(raw && (raw.roomNo || raw.room_no) || '').trim();
+    const roomSite = String(raw && raw.site || site || '').trim();
+    const rowDate = String(raw && (raw.businessDate || raw.business_date) || businessDate || '').trim();
+    if (!roomNo || roomSite !== site || rowDate !== businessDate) return null;
+    const key = `${roomSite}|${roomNo}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    return {
+      '업무일자': rowDate,
+      '객실번호': roomNo,
+      '사업장': roomSite,
+      '동': String(raw.building || ''),
+      '객실상태': String(raw.roomStatus ?? raw.room_status ?? ''),
+      '청소상태': String(raw.cleaningStatus ?? raw.cleaning_status ?? ''),
+      '정비유형': String(raw.cleaningType ?? raw.cleaning_type ?? NOVA.CLEANING_TYPES.NORMAL),
+      '배정유형': String(raw.assignmentType ?? raw.assignment_type ?? NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO),
+      '룸메이드사번': String(raw.roommaidEmployeeNo ?? raw.roommaid_employee_no ?? ''),
+      '보조룸메이드사번': String(raw.secondaryRoommaidEmployeeNo ?? raw.secondary_roommaid_employee_no ?? ''),
+      'QM사번': String(raw.qmEmployeeNo ?? raw.qm_employee_no ?? ''),
+      '마지막변경버전': Number(raw.version || 0),
+      '수정일시': String(raw.updatedAt ?? raw.updated_at ?? ''),
+      '하우스맨상태': '',
+      '하우스맨미완료수': '',
+      '객실운영상태': String(raw.operationalStatus ?? raw.operational_status ?? '')
+    };
+  }).filter(Boolean);
+}
+
+function readRoommaidCloseHistoryBundleFast_(businessDate, site) { // (업무일자 후보행만 TextFinder로 읽기)
+  const liveTypes = new Set([
+    NOVA.RECORD_TYPES.ROOM_STATUS_UPLOAD,
+    NOVA.RECORD_TYPES.ROOM_STATUS_CHANGE,
+    NOVA.RECORD_TYPES.CLEANING,
+    NOVA.RECORD_TYPES.QM,
+    NOVA.RECORD_TYPES.QM_CHECKLIST,
+    NOVA.RECORD_TYPES.HOUSEMAN_ORDER,
+    NOVA.RECORD_TYPES.DEPARTURE_DELAY
+  ]);
+  const sheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { historyRows: [], saved: null };
+  const headerMap = getHeaderMap_(sheet);
+  const dateColumn = headerMap['업무일자'];
+  if (!dateColumn) return readRoommaidCloseHistoryBundle_(businessDate, site);
+
+  let matches = [];
+  try {
+    matches = sheet.getRange(2, dateColumn, lastRow - 1, 1)
+      .createTextFinder(String(businessDate || ''))
+      .matchEntireCell(true)
+      .findAll();
+  } catch (error) {
+    return readRoommaidCloseHistoryBundle_(businessDate, site);
+  }
+  const rowNumbers = matches.map(range => range.getRow()).filter(row => row >= 2);
+  if (!rowNumbers.length) return { historyRows: [], saved: null };
+  const rows = readRowsByNumbersForClose_(sheet, headerMap, rowNumbers);
+  const historyRows = [];
+  let saved = null;
+  rows.forEach(data => {
+    if (String(data['업무일자'] || '').trim() !== businessDate) return;
+    if (site && String(data['사업장'] || '').trim() !== site) return;
+    if (String(data['삭제여부'] || 'N').trim().toUpperCase() === 'Y') return;
+    const type = String(data['기록구분'] || '').trim();
+    const status = String(data['처리상태'] || '').trim();
+    if (liveTypes.has(type)) {
+      historyRows.push(data);
+      return;
+    }
+    if (type !== NOVA.RECORD_TYPES.DAILY_CLOSE || status !== NOVA_DAILY_CLOSE.SUMMARY_STATUS || saved) return;
+    let detail = {};
+    try { detail = JSON.parse(String(data['세부내용JSON'] || '{}')); } catch (error) { detail = {}; }
+    if (detail.roommaidCloseJournal) detail.roommaidCloseJournal = expandRoommaidCloseJournalFromStorage_(detail.roommaidCloseJournal);
+    saved = Object.assign({}, detail, {
+      businessDate: String(data['업무일자'] || detail.businessDate || '').trim(),
+      site: String(data['사업장'] || detail.site || '').trim(),
+      closedAt: String(detail.closedAt || data['등록일시'] || '').trim(),
+      closedBy: String(detail.closedBy || data['등록사번'] || '').trim()
+    });
+  });
+  return { historyRows, saved };
 }
 
 function readRoommaidCloseCurrentSelection_(businessDate, requestedSite, defaultSite) { // (선택 사업장 현재객실만 전체행 읽기 · ROOMMAID_CLOSE_READ_ACCEL_V1)
@@ -1813,18 +1920,11 @@ function resolveRoommaidCloseWorkerGroup_(user, storedEmploymentType) { // (채�
   return { code: '', label: '', jobLabel: '', displayLabel: '정규직' };
 }
 
-function readRoommaidCloseEmploymentIndex_() { // (사용자계정 채용구분 인덱스)
+function readRoommaidCloseEmploymentIndex_() { // (사용자 인덱스 채용구분 재사용 · ROOMMAID_CLOSE_READ_ACCEL_V2)
   const result = {};
-  const sheet = getRequiredSheet_(NOVA.SHEETS.USERS);
-  const headerMap = getHeaderMap_(sheet);
-  const employeeNoColumn = headerMap['사번'];
-  const employmentColumn = headerMap['채용구분'];
-  if (!employeeNoColumn || sheet.getLastRow() < 2) return result;
-  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getDisplayValues();
-  rows.forEach(row => {
-    const employeeNo = String(row[employeeNoColumn - 1] || '').trim();
-    if (!employeeNo) return;
-    result[employeeNo] = employmentColumn ? String(row[employmentColumn - 1] || '').trim() : '';
+  const users = getUserIndex_().byEmployeeNo || {};
+  Object.keys(users).forEach(employeeNo => {
+    result[employeeNo] = String(users[employeeNo] && users[employeeNo].employmentType || '').trim();
   });
   return result;
 }

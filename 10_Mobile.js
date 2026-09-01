@@ -43,7 +43,7 @@ function buildMobileSnapshot_(token, options) { // (직무별 모바일 스냅�
     role,
     selection: request,
     version: getMobileSyncVersion_(role, request),
-    sites: getSiteList_(),
+    sites: user.siteScopeLocked && request.site ? [request.site] : getSiteList_(), // SITE_SCOPE_INDICATOR_CLOSE_V2
     codes: {
       roomStatuses: codeIndex['객실상태'] || [],
       cleaningStatuses: codeIndex['청소상태'] || [],
@@ -154,7 +154,7 @@ function novaMobileRealtimeEnrichRoom_(resultRoom, businessDate, site, roomNo, p
 
 function updateMobileRoomOperationRealtime_(token, safe, user) { // (초기화 지연 시에도 ROOMMAID 작업을 Cloud Run으로 강제 라우팅)
   const businessDate = normalizeBusinessDate_(safe.businessDate);
-  const site = String(safe.site || user.defaultSite || '').trim();
+  const site = resolveUserSessionSite_(user, safe.site); // SITE_SCOPE_INDICATOR_CLOSE_V2
   const roomNo = String(safe.roomNo || '').trim();
   const rawAction = String(safe.action || '').trim().toUpperCase();
   const action = rawAction === 'START' ? 'CLEANING_START'
@@ -224,7 +224,7 @@ function updateMobileRoomOperation(token, payload) { // (룸메이드·QM 모바
 
     const safe = payload || {};
     const businessDate = normalizeBusinessDate_(safe.businessDate);
-    const site = String(safe.site || user.defaultSite || '').trim();
+    const site = resolveUserSessionSite_(user, safe.site); // SITE_SCOPE_INDICATOR_CLOSE_V2
     const roomNo = String(safe.roomNo || '').trim();
     const action = String(safe.action || '').trim().toUpperCase();
     if (!roomNo) throw new Error('객실번호가 없습니다.');
@@ -379,6 +379,7 @@ function createMobileHousemanRequest(token, payload) { // (룸메이드·QM 객�
     if (!['ROOMMAID', 'QM'].includes(role)) throw new Error('하우스맨 요청 권한이 없습니다.');
 
     const safe = normalizeHousemanPayload_(payload);
+    safe.site = resolveUserSessionSite_(user, safe.site); // SITE_SCOPE_INDICATOR_CLOSE_V2
     if (!safe.roomNo) throw new Error('객실번호가 없습니다.');
     if (!safe.part) throw new Error('파트를 선택하세요.');
     if (!safe.items.length) throw new Error('요청 품목을 입력하세요.');
@@ -465,7 +466,7 @@ function normalizeMobileOptions_(options, user) { // (모바일 조회조건 정
   const safe = options || {};
   return {
     businessDate: normalizeBusinessDate_(safe.businessDate),
-    site: String(safe.site || user.defaultSite || '').trim()
+    site: resolveUserSessionSite_(user, safe.site) // SITE_SCOPE_INDICATOR_CLOSE_V2
   };
 }
 

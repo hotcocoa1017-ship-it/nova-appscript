@@ -313,7 +313,7 @@
     try {
       await novaRealtimeHydrateCurrentView_();
       const role = String(state.bootstrap?.user?.role || '').toUpperCase();
-      if (['ADMIN', 'ORDER'].includes(role) && state.activeMenu === 'indicator') {
+      if (['ADMIN', 'ORDER'].includes(role) && state.activeMenu === 'indicator' && state.indicator.queryApplied && state.indicator.loaded && !state.indicator.queryDirty) {
         try {
           await novaRealtimeEnsureSubscriptions_();
         } catch (subscriptionError) {
@@ -469,6 +469,7 @@
     if (!state.bootstrap) return [];
     const role = String(state.bootstrap.user?.role || '').toUpperCase();
     if (state.activeMenu === 'indicator' && ['ADMIN', 'ORDER'].includes(role)) {
+      if (!state.indicator.queryApplied || state.indicator.queryDirty || !state.indicator.loaded) return []; // SITE_SCOPE_INDICATOR_CLOSE_V2
       const selected = String(state.indicator.site || '').trim();
       if (selected) return [selected];
       return [...new Set((state.indicator.data?.sites || []).map(String).map(v => v.trim()).filter(Boolean))];
@@ -1321,6 +1322,8 @@
       loading: false,
       data: null,
       version: 0,
+      queryApplied: false,
+      queryDirty: true,
       businessDate: sessionStorage.getItem('novaIndicatorBusinessDate') || '',
       site: sessionStorage.getItem('novaIndicatorSite') || '',
       filter: 'ALL',
@@ -1468,6 +1471,7 @@
 
   async function handleLogin(event) { // (로그인·초기데이터 1회 통신)
     event.preventDefault();
+    const site = $('loginSite') ? $('loginSite').value.trim() : ''; // SITE_SCOPE_INDICATOR_CLOSE_V2
     const name = $('loginName').value.trim();
     const employeeNo = $('loginEmployeeNo').value.trim();
     const clientType = window.matchMedia('(max-width: 760px)').matches ? 'mobile' : 'desktop';
@@ -1475,7 +1479,7 @@
     setBusy(true);
     const startedAt = performance.now();
     try {
-      const result = await callServer('loginNovaBootstrap', name, employeeNo, clientType);
+      const result = await callServer('loginNovaBootstrap', name, employeeNo, clientType, site);
       const networkElapsed = Math.round(performance.now() - startedAt);
       if (!result || !result.ok || !result.bootstrap?.ok) {
         $('loginMessage').textContent = result?.message || result?.bootstrap?.message || '로그인하지 못했습니다.';
@@ -1517,6 +1521,13 @@
 
   function applyBootstrapResult_(bootstrap, networkElapsed, serverElapsed) { // (초기데이터 공통 반영)
     state.bootstrap = bootstrap;
+    const bootstrapRole = String(bootstrap.user?.role || '').toUpperCase();
+    const sessionSite = String(bootstrap.user?.sessionSite || '').trim();
+    if (!['ADMIN', 'ORDER'].includes(bootstrapRole) && bootstrap.user?.siteScopeLocked && sessionSite) {
+      state.mobile.site = sessionSite;
+      sessionStorage.setItem('novaMobileSite', sessionSite);
+      if (state.roommaidStats) state.roommaidStats.site = sessionSite;
+    }
     const available = new Set((bootstrap.menu || []).map(item => item.id));
     if (!state.activeMenu || !available.has(state.activeMenu) || (state.activeMenu === 'home' && bootstrap.defaultMenu !== 'home')) {
       state.activeMenu = bootstrap.defaultMenu || 'home';
@@ -1592,12 +1603,12 @@
   function renderContent(menuId) { // (현재 화면 부분 교체)
     if (menuId === 'indicator') {
       renderIndicatorShell();
-      if (state.indicator.loaded && state.indicator.data) {
+      if (state.indicator.loaded && state.indicator.data && state.indicator.queryApplied && !state.indicator.queryDirty) {
         renderIndicatorData();
         startIndicatorSync();
       } else {
-        loadIndicatorSnapshot();
-      }
+        renderIndicatorAwaitingQuery_();
+      } // SITE_SCOPE_INDICATOR_CLOSE_V2
       return;
     }
 
@@ -4208,7 +4219,7 @@
             </div>
             <div class="control-group">
               <span class="control-label">사업장</span>
-              <select id="indicatorSite"><option value="">전체</option></select>
+              <select id="indicatorSite"><option value="">사업장 선택</option><option value="쏘라노">쏘라노</option><option value="별관">별관</option></select><button id="indicatorQueryButton" class="filter-button primary-inline" type="button">조회하기</button>
             </div>
             <input id="roomSearch" class="room-search" placeholder="객실번호·담당자 검색" value="${escapeAttr(state.indicator.search)}">
             <button id="roomUploadButton" class="upload-button" type="button">객실현황 업로드</button>
@@ -4283,23 +4294,52 @@
     bindIndicatorShellEvents();
   }
 
+  function renderIndicatorAwaitingQuery_() { // (업무일자·사업장 확정 전 조회 대기화면)
+    if ($('indicatorSummary')) $('indicatorSummary').innerHTML = '<span class="summary-pill">업무일자와 사업장을 선택한 후 조회하기를 눌러주세요.</span>';
+    if ($('orderScroll')) $('orderScroll').innerHTML = '<div class="empty-state">조회 조건을 먼저 선택하세요.</div>';
+    if ($('roomGrid')) $('roomGrid').innerHTML = '<div class="empty-state">업무일자 · 사업장 선택 후 조회하기</div>';
+  }
+
+  function markIndicatorQueryDirty_() { // (조건 변경만 기록하고 서버조회는 조회하기 버튼에서 1회 실행)
+    state.indicator.queryDirty = true;
+    state.indicator.queryApplied = false;
+    state.indicator.loaded = false;
+    state.indicator.data = null;
+    state.indicator.version = 0;
+    stopIndicatorSync();
+    novaRealtimeStopIndicatorDbFallback_();
+    renderIndicatorAwaitingQuery_();
+    setSyncStatus('업무일자 · 사업장 선택 후 조회하기');
+    if (novaRealtimeIsEnabled_()) void novaRealtimeEnsureSubscriptions_().catch(() => {});
+  }
+
   function bindIndicatorShellEvents() { // (통합 화면 이벤트 연결)
     $('indicatorDate').addEventListener('change', event => {
       state.indicator.businessDate = event.target.value;
-      if (state.indicator.businessDate) sessionStorage.setItem('novaIndicatorBusinessDate', state.indicator.businessDate);
       state.indicator.building = '';
       state.indicator.floor = '';
-      state.indicator.version = 0;
-      loadIndicatorSnapshot();
+      markIndicatorQueryDirty_();
     });
     $('indicatorSite').addEventListener('change', event => {
       state.indicator.site = event.target.value;
-      sessionStorage.setItem('novaIndicatorSite', String(state.indicator.site || ''));
       state.indicator.building = '';
       state.indicator.floor = '';
-      state.indicator.version = 0;
-      loadIndicatorSnapshot();
+      markIndicatorQueryDirty_();
     });
+    $('indicatorQueryButton').addEventListener('click', () => {
+      const businessDate = String($('indicatorDate')?.value || '').trim();
+      const site = String($('indicatorSite')?.value || '').trim();
+      if (!businessDate) return showToast('업무일자를 선택하세요.');
+      if (!site) return showToast('사업장을 선택하세요.');
+      state.indicator.businessDate = businessDate;
+      state.indicator.site = site;
+      state.indicator.queryDirty = false;
+      state.indicator.queryApplied = true;
+      state.indicator.version = 0;
+      sessionStorage.setItem('novaIndicatorBusinessDate', businessDate);
+      sessionStorage.setItem('novaIndicatorSite', site);
+      loadIndicatorSnapshot({ force: true, silent: false });
+    }); // SITE_SCOPE_INDICATOR_CLOSE_V2
     $('roomSearch').addEventListener('input', event => {
       state.indicator.search = event.target.value.trim();
       scheduleUiRender_('indicator-room-search', renderRoomGrid, 80);
@@ -4452,6 +4492,8 @@
     }
     const deferUiRender = isHousemanItemEditorOpen_();
     state.indicator.loaded = true;
+    state.indicator.queryApplied = true;
+    state.indicator.queryDirty = false;
     state.indicator.version = Number(result.version || 0);
     state.indicator.businessDate = result.selection?.businessDate || state.indicator.businessDate;
     if (state.indicator.businessDate) sessionStorage.setItem('novaIndicatorBusinessDate', state.indicator.businessDate);
@@ -4502,7 +4544,7 @@
     const data = state.indicator.data;
     const siteSelect = $('indicatorSite');
     const currentSite = state.indicator.site;
-    siteSelect.innerHTML = `<option value="">전체</option>${(data.sites || []).map(site => `<option value="${escapeAttr(site)}">${escapeHtml(site)}</option>`).join('')}`;
+    siteSelect.innerHTML = `<option value="">사업장 선택</option>${(data.sites || []).map(site => `<option value="${escapeAttr(site)}">${escapeHtml(site)}</option>`).join('')}`;
     siteSelect.value = currentSite;
     $('indicatorDate').value = state.indicator.businessDate;
 
@@ -7524,16 +7566,25 @@
     if (!$('mobilePage') || !state.mobile.data) return;
     ensureMobileSelectionControlsVisible_();
     const siteSelect = $('mobileSite');
-    const selectedSite = String(state.mobile.site || '').trim();
-    const sites = [...new Set([
+    const sessionSite = String(state.bootstrap.user?.sessionSite || '').trim();
+    const siteScopeLocked = Boolean(state.bootstrap.user?.siteScopeLocked && sessionSite);
+    const selectedSite = siteScopeLocked ? sessionSite : String(state.mobile.site || '').trim();
+    const sites = siteScopeLocked ? [sessionSite] : [...new Set([
       ...(state.mobile.data.sites || []),
       selectedSite,
       String(state.bootstrap.user.defaultSite || '').trim()
     ].map(site => String(site || '').trim()).filter(Boolean))];
     if (siteSelect) {
-      siteSelect.innerHTML = '<option value="">전체 사업장</option>' + sites.map(site => `<option value="${escapeAttr(site)}">${escapeHtml(site)}</option>`).join('');
+      siteSelect.innerHTML = siteScopeLocked
+        ? sites.map(site => `<option value="${escapeAttr(site)}">${escapeHtml(site)}</option>`).join('')
+        : '<option value="">전체 사업장</option>' + sites.map(site => `<option value="${escapeAttr(site)}">${escapeHtml(site)}</option>`).join('');
       siteSelect.value = selectedSite;
-    }
+      siteSelect.disabled = siteScopeLocked;
+      if (siteScopeLocked) {
+        state.mobile.site = sessionSite;
+        sessionStorage.setItem('novaMobileSite', sessionSite);
+      }
+    } // SITE_SCOPE_INDICATOR_CLOSE_V2
     const dateInput = $('mobileDate');
     if (dateInput) dateInput.value = state.mobile.businessDate || state.bootstrap.app.businessDate;
     renderMobileLocationFilters_();

@@ -41,6 +41,7 @@ function rowToUser_(row, rowNumber, headerMap) { // (사용자계정 행 변환)
     employeeNo: value('사번'),
     name: value('이름'),
     job: value('직무'),
+    employmentType: value('채용구분'),
     role: value('권한').toUpperCase(),
     enabled: value('사용여부').toUpperCase() === 'Y',
     telegramId: value('텔레그램ID'),
@@ -82,7 +83,10 @@ function getPublicUser_(user) { // (클라이언트 전달용 사용자 정보)
     telegramEnabled: user.telegramEnabled,
     telegramConnectionStatus: user.telegramConnectionStatus || (user.telegramId ? '연결완료' : '미연결'),
     defaultSite: user.defaultSite,
+    sessionSite: String(user.sessionSite || ''),
+    siteScopeLocked: Boolean(user.siteScopeLocked),
     defaultBuildings: user.defaultBuildings
+    // SITE_SCOPE_INDICATOR_CLOSE_V2
   };
 }
 

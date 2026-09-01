@@ -10,7 +10,7 @@ function getQmMobileBrowseRooms(token, options) { // (QM 추가탭 지연조회 
     const user = requireRole_(token, ['QM']);
     const safe = options || {};
     const businessDate = normalizeBusinessDate_(safe.businessDate);
-    const site = String(safe.site || user.defaultSite || '').trim();
+    const site = resolveUserSessionSite_(user, safe.site); // SITE_SCOPE_INDICATOR_CLOSE_V2
     const view = String(safe.view || '').trim().toUpperCase();
     if (!['CLEANED', 'VACANT'].includes(view)) throw new Error('지원하지 않는 QM 객실 조회입니다.');
 
@@ -90,7 +90,7 @@ function startQmMobileBrowseInspection(token, payload) { // (QM 추가탭 미배
     const user = requireRole_(token, ['QM']);
     const safe = payload || {};
     const businessDate = normalizeBusinessDate_(safe.businessDate);
-    const site = String(safe.site || user.defaultSite || '').trim();
+    const site = resolveUserSessionSite_(user, safe.site); // SITE_SCOPE_INDICATOR_CLOSE_V2
     const roomNo = String(safe.roomNo || '').trim();
     const view = String(safe.view || '').trim().toUpperCase();
     if (!site || !roomNo) throw new Error('점검할 사업장과 객실번호가 필요합니다.');

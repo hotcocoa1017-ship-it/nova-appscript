@@ -45,7 +45,7 @@ function syncNovaRealtimeRoomForAction(token, payload) { // (룸메이드 작업
   if (!auth.ok) throw new Error('로그인이 필요합니다.');
   const safe = payload || {};
   const businessDate = novaRealtimeFinalBusinessDate_(safe.businessDate);
-  const site = String(safe.site || auth.user.defaultSite || '').trim();
+  const site = resolveUserSessionSite_(auth.user, safe.site); // SITE_SCOPE_INDICATOR_CLOSE_V2
   const roomNo = String(safe.roomNo || '').trim();
   if (!site || !roomNo) throw new Error('Realtime 단건 동기화에 사업장과 객실번호가 필요합니다.');
   const rooms = novaRealtimeFinalBuildRooms_(businessDate, site, roomNo);
