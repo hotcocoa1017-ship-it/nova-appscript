@@ -4219,8 +4219,11 @@
             </div>
             <div class="control-group">
               <span class="control-label">사업장</span>
-              <select id="indicatorSite"><option value="">사업장 선택</option><option value="쏘라노">쏘라노</option><option value="별관">별관</option></select><button id="indicatorQueryButton" class="filter-button primary-inline" type="button">조회하기</button>
+              <select id="indicatorSite"><option value="">사업장 선택</option><option value="쏘라노">쏘라노</option><option value="별관">별관</option></select>
             </div>
+            <div class="indicator-query-row">
+              <button id="indicatorQueryButton" class="filter-button primary-inline" type="button">조회하기</button>
+            </div> <!-- MOBILE_INDICATOR_LAYOUT_V1 -->
             <input id="roomSearch" class="room-search" placeholder="객실번호·담당자 검색" value="${escapeAttr(state.indicator.search)}">
             <button id="roomUploadButton" class="upload-button" type="button">객실현황 업로드</button>
             <div id="indicatorSummary" class="indicator-summary"></div>
