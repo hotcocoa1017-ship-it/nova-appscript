@@ -105,12 +105,12 @@ function roommaidPerformanceMonthDays_(year, month) { // (선택 월 일수)
   return new Date(Number(year), Number(month), 0).getDate();
 }
 
-function roommaidPerformanceEligibleEmployeeNo_(employeeNo, usersByEmployeeNo) { // (실적 귀속 가능 룸메이드 검증 · ROOMMAID_PERFORMANCE_ATTRIBUTION_V1)
+function roommaidPerformanceEligibleEmployeeNo_(employeeNo, usersByEmployeeNo) { // (대상사번 fallback 룸메이드 검증 · ROOMMAID_PERFORMANCE_ATTRIBUTION_V1 · ROOMMAID_PERFORMANCE_ATTRIBUTION_V2)
   const no = String(employeeNo || '').trim();
   if (!no) return '';
   const user = usersByEmployeeNo && usersByEmployeeNo[no] || null;
-  // 현재 사용자목록에 없는 과거 사번은 기존 이력 호환을 위해 보존합니다.
-  // 현재 등록된 사용자라면 ROOMMAID 권한만 정비실적에 귀속합니다.
+  // 사용자목록에 없는 과거 사번은 기존 이력 호환을 위해 보존합니다.
+  // 현재 등록된 사번을 fallback으로 쓸 때는 ROOMMAID 권한만 허용해 ORDER/ADMIN/QM/HOUSEMAN 오귀속을 막습니다.
   if (!user) return no;
   return String(user.role || '').trim().toUpperCase() === 'ROOMMAID' ? no : '';
 }
@@ -184,10 +184,11 @@ function buildRoommaidPerformanceBundle_(historyRows, request) { // (개인별 �
     const maintenanceCredit = roommaidPerformanceMaintenanceCredit_(maintenanceType);
     const cleaningCredit = getRoommaidCleaningCreditUnit_(cleaningType);
     const unit = maintenanceCredit * cleaningCredit;
-    const primaryNo = roommaidPerformanceEligibleEmployeeNo_(
-      detail.primaryEmployeeNo || data['대상사번'] || '', users
-    );
-    const secondaryNo = roommaidPerformanceEligibleEmployeeNo_(detail.secondaryEmployeeNo || '', users);
+    // 명시적으로 저장된 배정 스냅샷은 과거 직무변경과 무관하게 그대로 보존합니다.
+    // 배정 스냅샷이 비어 있을 때만 대상사번을 fallback하며, 이 경우 현재 ROOMMAID 권한을 검증합니다.
+    const explicitPrimaryNo = String(detail.primaryEmployeeNo || '').trim();
+    const primaryNo = explicitPrimaryNo || roommaidPerformanceEligibleEmployeeNo_(data['대상사번'] || '', users);
+    const secondaryNo = String(detail.secondaryEmployeeNo || '').trim();
     const shares = roommaidPerformanceAssignmentCreditShares_(assignmentType, primaryNo, secondaryNo);
     const participants = [];
     if (primaryNo) participants.push({
