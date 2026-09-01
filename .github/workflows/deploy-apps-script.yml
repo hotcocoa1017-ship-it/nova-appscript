@@ -59,6 +59,9 @@ jobs:
       - name: Apply Roommaid performance attribution patch
         run: python3 scripts/patch_roommaid_performance_attribution.py
 
+      - name: Apply Roommaid close read acceleration patch
+        run: python3 scripts/patch_roommaid_close_read_acceleration.py
+
       - name: Validate full Realtime routing
         shell: bash
         run: |
@@ -80,6 +83,9 @@ jobs:
           grep -q "ROOMMAID_PERFORMANCE_ATTRIBUTION_V1" RealtimeDailySync.js
           grep -q "ROOMMAID_PERFORMANCE_ATTRIBUTION_V1" 17_RoommaidPerformance.js
           grep -q "roommaidPerformanceEligibleEmployeeNo_" 17_RoommaidPerformance.js
+          grep -q "ROOMMAID_CLOSE_READ_ACCEL_V1" 19_RoommaidCloseJournal.js
+          grep -q "function readRoommaidCloseCurrentSelection_" 19_RoommaidCloseJournal.js
+          grep -q "function readRoommaidCloseHistoryBundle_" 19_RoommaidCloseJournal.js
           grep -q "QM 추가조회 탭 · 기존 점검대상 화면 보존" Client.html
           grep -q "QM 추가탭 동·층 필터 + 안전 즉시점검" Client.html
           grep -q "QM 추가탭 체크리스트 즉시노출 v1" Client.html
@@ -112,6 +118,7 @@ jobs:
           set -euo pipefail
           node --check RealtimeDailySync.js
           node --check 17_RoommaidPerformance.js
+          node --check 19_RoommaidCloseJournal.js
           node --check TelegramSelfConnect.js
           python3 - <<'PY'
           from pathlib import Path
@@ -133,7 +140,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          before="$(sha256sum Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js | sha256sum | awk '{print $1}')"
+          before="$(sha256sum Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js | sha256sum | awk '{print $1}')"
           python3 scripts/patch_realtime_client.py
           python3 scripts/patch_sync_status_autohide.py
           python3 scripts/patch_telegram_self_connect.py
@@ -146,14 +153,15 @@ jobs:
           python3 scripts/patch_roommaid_notification_bell.py
           python3 scripts/patch_realtime_assignment_batch_merge.py
           python3 scripts/patch_roommaid_performance_attribution.py
-          after="$(sha256sum Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js | sha256sum | awk '{print $1}')"
+          python3 scripts/patch_roommaid_close_read_acceleration.py
+          after="$(sha256sum Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js | sha256sum | awk '{print $1}')"
           test "$before" = "$after"
 
       - name: Persist generated production sources to main
         shell: bash
         run: |
           set -euo pipefail
-          generated=(Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js)
+          generated=(Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js)
           if git diff --quiet -- "${generated[@]}"; then
             echo "Generated production sources already match repository source."
             exit 0
