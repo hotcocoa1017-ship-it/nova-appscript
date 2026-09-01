@@ -4516,6 +4516,7 @@
     if (state.indicator.businessDate) sessionStorage.setItem('novaIndicatorBusinessDate', state.indicator.businessDate);
     state.indicator.site = result.selection?.site ?? state.indicator.site;
     sessionStorage.setItem('novaIndicatorSite', String(state.indicator.site || ''));
+    if (state.indicator.site) setOrderSharedSite_(state.indicator.site); // ORDER_SHARED_SITE_CONTEXT_V2
     state.indicator.data = Object.assign({}, previousData || {}, result);
 
     if (deferUiRender) {
@@ -8808,9 +8809,15 @@
     return String(state.bootstrap?.user?.role || '').trim().toUpperCase() === 'ORDER';
   }
 
-  function getOrderSharedSite_() {
+  function getOrderSharedSite_() { // ORDER_SHARED_SITE_CONTEXT_V2 · 기존 세션도 인디케이터 사업장 승계
     if (!isOrderSharedSiteContext_()) return '';
-    return String(sessionStorage.getItem('novaOrderWorkSite') || '').trim();
+    const stored = String(sessionStorage.getItem('novaOrderWorkSite') || '').trim();
+    if (stored) return stored;
+    const indicatorSite = String(state.indicator?.site || '').trim();
+    const persistedIndicatorSite = String(sessionStorage.getItem('novaIndicatorSite') || '').trim();
+    const fallback = indicatorSite || persistedIndicatorSite;
+    if (fallback) sessionStorage.setItem('novaOrderWorkSite', fallback);
+    return fallback;
   }
 
   function setOrderSharedSite_(site) {
