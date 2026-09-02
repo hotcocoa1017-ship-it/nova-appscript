@@ -476,7 +476,8 @@
     }
     // 직원 모바일은 상시 Realtime 채널을 만들지 않고 현재 화면 진입/저빈도 조회로 hydrate 합니다.
     const mobileRealtimeRole = (state.activeMenu === 'cleaning' && role === 'ROOMMAID')
-      || (state.activeMenu === 'qm' && role === 'QM');
+      || (state.activeMenu === 'qm' && role === 'QM')
+      || (state.activeMenu === 'houseman' && role === 'HOUSEMAN'); // HOUSEMAN_REALTIME_PUSH_V1
     if (mobileRealtimeRole) {
       const selected = String(state.mobile.site || '').trim();
       if (selected) return [selected];
@@ -785,10 +786,44 @@
     };
   }
 
-  function novaRealtimeHandleHousemanOrderBroadcast_(payload) { // (관리자간 신규 오더 즉시 전파)
-    if (state.activeMenu !== 'indicator' || !state.indicator.data) return;
+  let novaHousemanPushRefreshTimer_ = null;
+
+  function novaRealtimeScheduleHousemanPushRefresh_() { // HOUSEMAN_REALTIME_PUSH_V1 · Push 수신 즉시 안전 재조회
+    if (novaHousemanPushRefreshTimer_) window.clearTimeout(novaHousemanPushRefreshTimer_);
+    novaHousemanPushRefreshTimer_ = window.setTimeout(async () => {
+      novaHousemanPushRefreshTimer_ = null;
+      const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').toUpperCase();
+      if (role !== 'HOUSEMAN' || state.activeMenu !== 'houseman' || document.hidden || !state.mobile.loaded) return;
+      if (state.mobile.loading || state.mobile.syncInFlight || state.mobile.actionInFlight) {
+        novaHousemanPushRefreshTimer_ = window.setTimeout(novaRealtimeScheduleHousemanPushRefresh_, 250);
+        return;
+      }
+      try {
+        await syncMobileDelta();
+      } catch (error) {
+        console.warn('[NOVA Realtime] 하우스맨 Push 즉시조회 실패 · 주기조회로 복구합니다.', error);
+      }
+    }, 80);
+  }
+
+  function novaRealtimeHandleHousemanOrderBroadcast_(payload) { // (관리자 + HOUSEMAN 신규/재배정 오더 즉시 전파 · HOUSEMAN_REALTIME_PUSH_V1)
     const raw = novaRealtimeBroadcastRow_(payload);
     if (!raw || !(raw.order_id || raw.orderId)) return;
+
+    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').toUpperCase();
+    if (role === 'HOUSEMAN' && state.activeMenu === 'houseman') {
+      const selectedSite = String(state.mobile.site || state.bootstrap?.user?.defaultSite || '').trim();
+      const selectedDate = String(state.mobile.businessDate || state.bootstrap?.app?.businessDate || '').trim();
+      const rowSite = String(raw.site || '').trim();
+      const rowDate = String(raw.business_date || raw.businessDate || '').trim();
+      if ((!rowSite || !selectedSite || rowSite === selectedSite)
+          && (!rowDate || !selectedDate || rowDate === selectedDate)) {
+        novaRealtimeScheduleHousemanPushRefresh_();
+      }
+      return;
+    }
+
+    if (state.activeMenu !== 'indicator' || !state.indicator.data) return;
     const order = novaRealtimeMapHousemanOrder_(raw);
     if (!order?.orderId || !order.roomNo || !order.site) return;
     if (String(order.businessDate) !== String(state.indicator.businessDate || '')) return;
@@ -8597,6 +8632,13 @@
   function startMobileSync() { // (지터 기반 모바일 동기화 시작)
     stopMobileSync();
     if (!['qm', 'houseman', 'cleaning', 'public'].includes(state.activeMenu)) return;
+    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').toUpperCase();
+    if (novaRealtimeIsEnabled_() && role === 'HOUSEMAN' && state.activeMenu === 'houseman') {
+      // HOUSEMAN_REALTIME_PUSH_V1 · 신규/재배정 오더는 Push 우선, 3~3.7초 DB 조회는 fallback 유지
+      void novaRealtimeEnsureSubscriptions_().catch(error => {
+        console.warn('[NOVA Realtime] 하우스맨 Push 구독 실패 · DB 주기조회로 계속 동작합니다.', error);
+      });
+    }
     scheduleMobileSync_();
   }
 
