@@ -19,9 +19,12 @@ function getNovaRealtimeClientConfig(token) { // QM_DRAFT_DB_FIRST_V1
     .toUpperCase() === 'Y';
 
   let qmDraftDbFirstEnabled = false;
-  const qmDraftMasterEnabled = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED') || 'N').trim().toUpperCase() === 'Y';
-  const qmDraftEmployees = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES') || '')
+  const qmDraftMode = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED') || 'CANARY').trim().toUpperCase();
+  const qmDraftConfiguredEmployees = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES') || '')
     .split(',').map(value => value.trim()).filter(Boolean);
+  const qmDraftCanaryEmployees = Object.freeze(['q001']); // QM_DRAFT_CANARY_Q001_V1
+  const qmDraftEmployees = qmDraftMode === 'CANARY' ? Array.from(qmDraftCanaryEmployees) : qmDraftConfiguredEmployees;
+  const qmDraftMasterEnabled = qmDraftMode === 'CANARY' || qmDraftMode === 'Y';
   if (qmDraftMasterEnabled && qmDraftEmployees.length && token) {
     const verified = verifyNovaToken(token);
     const user = verified && verified.ok ? verified.user : null;
@@ -51,10 +54,10 @@ function setupNovaRealtimeClientConfig() {
     props.setProperty('NOVA_REALTIME_API_BASE', '');
   }
   if (!props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED')) {
-    props.setProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED', 'N');
+    props.setProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED', 'CANARY');
   }
   if (!props.getProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES')) {
-    props.setProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES', '');
+    props.setProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES', 'q001');
   }
   return {
     ok: true,
