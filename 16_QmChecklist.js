@@ -262,7 +262,7 @@ function saveQmInspectionDraft(token, payload) { // (QM 점검 실시간 자동�
     const user = requireRole_(token, ['QM']);
     const safe = payload || {};
     const checklist = getQmChecklistForSubmit_();
-    const writeLock = acquireWriteLock_();
+    const writeLock = acquireUserWriteLock_(); // CONCURRENT_WRITE_RESILIENCE_V1
     try {
       const draftInfo = getQmInspectionRecordById_(String(safe.draftId || '').trim(), safe.draftRowNumber);
       validateQmDraftOwnership_(draftInfo, user);
@@ -304,7 +304,7 @@ function uploadQmInspectionPhoto(token, payload) { // (QM 점검 하자사진 �
       fileId: file.getId(), name: file.getName(), mimeType, size: bytes.length,
       uploadedAt: nowText_(), uploadedBy: user.employeeNo
     };
-    const writeLock = acquireWriteLock_();
+    const writeLock = acquireUserWriteLock_(); // CONCURRENT_WRITE_RESILIENCE_V1
     try {
       const draftInfo = getQmInspectionRecordById_(String(safe.draftId || '').trim());
       validateQmDraftOwnership_(draftInfo, user);
@@ -332,7 +332,7 @@ function deleteQmInspectionPhoto(token, payload) { // (QM 점검 하자사진 �
     const user = requireRole_(token, ['QM']);
     const safe = payload || {};
     const fileId = String(safe.fileId || '').trim();
-    const writeLock = acquireWriteLock_();
+    const writeLock = acquireUserWriteLock_(); // CONCURRENT_WRITE_RESILIENCE_V1
     let response;
     try {
       const draftInfo = getQmInspectionRecordById_(String(safe.draftId || '').trim());

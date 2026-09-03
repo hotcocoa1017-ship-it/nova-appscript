@@ -176,6 +176,17 @@ function acquireWriteLock_(timeoutMs) { // (모든 핵심 쓰기를 하나의 �
   return lock;
 }
 
+function acquireUserWriteLock_(timeoutMs) { // CONCURRENT_WRITE_RESILIENCE_V1 · 사용자별 독립 저장 직렬화
+  const lock = LockService.getUserLock();
+  const waitMs = Math.max(500, Number(timeoutMs || NOVA.WRITE_LOCK_TIMEOUT_MS || 2500));
+  if (!lock.tryLock(waitMs)) {
+    const error = new Error('현재 계정의 저장 요청이 겹쳤습니다. 잠시 후 다시 처리하세요.');
+    error.code = 'BUSY_RETRY';
+    throw error;
+  }
+  return lock;
+}
+
 function getCachedJson_(key) { // (짧은 응답 캐시 조회)
   const cached = CacheService.getScriptCache().get(String(key || ''));
   if (!cached) return null;
