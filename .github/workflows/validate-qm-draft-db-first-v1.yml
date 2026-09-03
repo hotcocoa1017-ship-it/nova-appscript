@@ -19,6 +19,9 @@ jobs:
       - name: Apply QM draft DB-first V1
         run: python3 scripts/patch_qm_draft_db_first_v1.py
 
+      - name: Apply q001 canary gate
+        run: python3 scripts/patch_qm_draft_canary_q001.py
+
       - name: Validate QM draft DB-first safety
         run: python3 scripts/validate_qm_draft_db_first_v1.py
 
@@ -47,6 +50,7 @@ jobs:
           set -euo pipefail
           before="$(sha256sum RealtimeBridge.js Client.html | sha256sum | awk '{print $1}')"
           python3 scripts/patch_qm_draft_db_first_v1.py
+          python3 scripts/patch_qm_draft_canary_q001.py
           after="$(sha256sum RealtimeBridge.js Client.html | sha256sum | awk '{print $1}')"
           test "$before" = "$after"
 
@@ -61,5 +65,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add RealtimeBridge.js Client.html
-          git commit -m 'Persist validated QM draft DB-first V1 [skip ci]'
+          git commit -m 'Persist validated q001 QM draft canary [skip ci]'
           git push origin HEAD:feature/qm-draft-db-first-v1
