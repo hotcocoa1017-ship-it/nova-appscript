@@ -1,5 +1,4 @@
 from pathlib import Path
-import re
 
 bridge = Path('RealtimeBridge.js').read_text(encoding='utf-8')
 client = Path('Client.html').read_text(encoding='utf-8')
@@ -7,8 +6,11 @@ client = Path('Client.html').read_text(encoding='utf-8')
 checks = {
     'bridge marker': 'QM_DRAFT_DB_FIRST_V1' in bridge,
     'client marker': 'QM_DRAFT_DB_FIRST_V1' in client,
+    'canary marker': 'QM_DRAFT_CANARY_Q001_V1' in bridge,
     'master flag': 'NOVA_QM_DRAFT_DB_FIRST_ENABLED' in bridge,
-    'canary allowlist': 'NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES' in bridge,
+    'canary allowlist property': 'NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES' in bridge,
+    'built-in q001 canary': "Object.freeze(['q001'])" in bridge,
+    'kill switch N supported': "qmDraftMode === 'CANARY' || qmDraftMode === 'Y'" in bridge,
     'qm role guard': "String(user.role || '').trim().toUpperCase() === 'QM'" in bridge,
     'direct rpc': '/rest/v1/rpc/nova_save_qm_draft' in client,
     'supabase jwt': "'Authorization': `Bearer ${auth.token}`" in client,
@@ -24,12 +26,14 @@ failed = [name for name, ok in checks.items() if not ok]
 if failed:
     raise SystemExit('QM Draft DB-first validation failed: ' + ', '.join(failed))
 
-# The master flag must be OFF by setup default.
-if "props.setProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED', 'N')" not in bridge:
-    raise SystemExit('Default OFF safety missing')
+# Fresh/missing property must canary q001 only; explicit N remains the immediate kill switch.
+if "props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED') || 'CANARY'" not in bridge:
+    raise SystemExit('Default CANARY safety missing')
+if "props.setProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED', 'CANARY')" not in bridge:
+    raise SystemExit('Setup CANARY default missing')
+if "props.setProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES', 'q001')" not in bridge:
+    raise SystemExit('Setup q001 allowlist missing')
+if "qmDraftMode === 'CANARY' ? Array.from(qmDraftCanaryEmployees) : qmDraftConfiguredEmployees" not in bridge:
+    raise SystemExit('Canary must not use configured broad allowlist')
 
-# Canary must never enable everyone with an empty allowlist.
-if 'qmDraftMasterEnabled && qmDraftEmployees.length && token' not in bridge:
-    raise SystemExit('Canary allowlist safety missing')
-
-print('QM_DRAFT_DB_FIRST_V1 validation PASS')
+print('QM_DRAFT_DB_FIRST_V1 q001 canary validation PASS')
