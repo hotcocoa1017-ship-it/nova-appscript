@@ -74,6 +74,12 @@ jobs:
       - name: Apply ORDER shared site context V2
         run: python3 scripts/patch_order_site_context_v2.py
 
+      - name: Apply Houseman Realtime Push V1
+        run: python3 scripts/patch_houseman_realtime_push.py
+
+      - name: Apply concurrent write resilience V1
+        run: python3 scripts/patch_concurrent_write_resilience_v1.py
+
       - name: Validate full Realtime routing
         shell: bash
         run: |
@@ -103,6 +109,10 @@ jobs:
           grep -q "SITE_SCOPE_INDICATOR_CLOSE_V2" Client.html
           grep -q "ORDER_SHARED_SITE_CONTEXT_V1" Client.html
           grep -q "ORDER_SHARED_SITE_CONTEXT_V2" Client.html
+          grep -q "HOUSEMAN_REALTIME_PUSH_V1" Client.html
+          grep -q "CONCURRENT_WRITE_RESILIENCE_V1" 05_Performance.js
+          grep -q "CONCURRENT_WRITE_RESILIENCE_V1" 16_QmChecklist.js
+          grep -q "function acquireUserWriteLock_" 05_Performance.js
           grep -q "QM 추가조회 탭 · 기존 점검대상 화면 보존" Client.html
           grep -q "QM 추가탭 동·층 필터 + 안전 즉시점검" Client.html
           grep -q "QM 추가탭 체크리스트 즉시노출 v1" Client.html
@@ -140,7 +150,9 @@ jobs:
         run: |
           set -euo pipefail
           node --check 03_Auth.js
+          node --check 05_Performance.js
           node --check 10_Mobile.js
+          node --check 16_QmChecklist.js
           node --check QmMobileBrowse.js
           node --check RealtimeDailySync.js
           node --check 17_RoommaidPerformance.js
@@ -166,7 +178,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tracked=(Index.html 02_Repository.js 03_Auth.js 10_Mobile.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js)
+          tracked=(Index.html 02_Repository.js 03_Auth.js 05_Performance.js 10_Mobile.js 16_QmChecklist.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js)
           before="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
           python3 scripts/patch_realtime_client.py
           python3 scripts/patch_sync_status_autohide.py
@@ -185,6 +197,8 @@ jobs:
           python3 scripts/patch_site_scope_indicator_close_v2.py
           python3 scripts/patch_order_site_context_v1.py
           python3 scripts/patch_order_site_context_v2.py
+          python3 scripts/patch_houseman_realtime_push.py
+          python3 scripts/patch_concurrent_write_resilience_v1.py
           python3 scripts/validate_site_scope_indicator_close_v2.py
           python3 scripts/validate_order_site_context_v1.py
           after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
@@ -194,7 +208,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          generated=(Index.html 02_Repository.js 03_Auth.js 10_Mobile.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js)
+          generated=(Index.html 02_Repository.js 03_Auth.js 05_Performance.js 10_Mobile.js 16_QmChecklist.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js)
           if git diff --quiet -- "${generated[@]}"; then
             echo "Generated production sources already match repository source."
             exit 0
