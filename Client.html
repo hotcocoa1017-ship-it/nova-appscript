@@ -195,8 +195,10 @@
     indicatorDbBusy: false,
     indicatorEventCursorTime: '',
     indicatorEventCursorRequestId: '',
-    roomStatusProtections: new Map()
-  };
+    roomStatusProtections: new Map(),
+    qmDraftDbFirstEnabled: false,
+    qmDraftAuthBundle: null
+  }; // QM_DRAFT_DB_FIRST_V1
 
   const NOVA_REALTIME_ROOM_FIELDS_ = Object.freeze([
     // Phase 1 Realtime owns cleaning progress and DB version metadata only.
@@ -299,6 +301,7 @@
         novaRealtime_.configLoaded = true;
         novaRealtime_.enabled = Boolean(config?.ok && config?.enabled && config?.apiBase);
         novaRealtime_.apiBase = String(config?.apiBase || '').replace(/\/+$/, '');
+        novaRealtime_.qmDraftDbFirstEnabled = Boolean(config?.qmDraftDbFirstEnabled); // QM_DRAFT_DB_FIRST_V1
       } catch (error) {
         novaRealtime_.configLoaded = false;
         novaRealtime_.enabled = false;
@@ -7256,6 +7259,71 @@
     state.qmChecklist.autosaveTimer = setTimeout(() => saveQmInspectionDraftNow_(false), 800);
   }
 
+  let novaQmDraftLegacyMirrorTimer_ = null;
+
+  async function novaQmDraftAuthBundle_() { // QM_DRAFT_DB_FIRST_V1 · Cloud Run이 발급한 Supabase JWT 재사용
+    if (novaRealtime_.qmDraftAuthBundle?.token) return novaRealtime_.qmDraftAuthBundle;
+    const auth = await novaRealtimeGetAuth_();
+    novaRealtime_.qmDraftAuthBundle = auth;
+    return auth;
+  }
+
+  async function novaQmDraftDbFirstSave_(draft) { // QM_DRAFT_DB_FIRST_V1 · PostgreSQL row-level 저장
+    const active = state.qmChecklist.activeInspection;
+    if (!active || !draft?.draftId) throw new Error('QM 초안 정보가 없습니다.');
+    const auth = await novaQmDraftAuthBundle_();
+    const requestId = novaRealtimeRequestId_('QM_DRAFT_SAVE', draft.draftId);
+    const expectedVersion = Number(active.draft?.dbVersion || 0);
+    const response = await fetch(`${String(auth.supabaseUrl || '').replace(/\/+$/, '')}/rest/v1/rpc/nova_save_qm_draft`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': String(auth.publishableKey || ''),
+        'Authorization': `Bearer ${auth.token}`
+      },
+      body: JSON.stringify({
+        p_draft_id: String(draft.draftId || ''),
+        p_business_date: String(draft.businessDate || active.draft?.businessDate || state.mobile.businessDate || ''),
+        p_site: String(draft.site || active.draft?.site || state.mobile.site || ''),
+        p_room_no: String(draft.roomNo || active.draft?.roomNo || ''),
+        p_checklist_revision: String(active.revision || active.draft?.revision || ''),
+        p_answers: Array.isArray(draft.answers) ? draft.answers : [],
+        p_defects: Array.isArray(draft.defects) ? draft.defects : [],
+        p_expected_version: expectedVersion,
+        p_request_id: requestId
+      })
+    });
+    let data = null;
+    try { data = await response.json(); } catch (_) {}
+    if (!response.ok) {
+      const error = new Error(data?.message || data?.details || `QM DB 자동저장 오류 (${response.status})`);
+      error.status = response.status;
+      error.code = data?.code || '';
+      throw error;
+    }
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row?.draft_id) throw new Error('QM DB 자동저장 응답을 확인할 수 없습니다.');
+    active.draft.dbVersion = Number(row.version || expectedVersion || 0);
+    active.draft.dbSavedAt = String(row.saved_at || '');
+    return { ok: true, savedAt: active.draft.dbSavedAt, dbVersion: active.draft.dbVersion };
+  }
+
+  function novaQmScheduleLegacyDraftMirror_(draft) { // QM_DRAFT_DB_FIRST_V1 · 최종제출/기존 이력 호환용 저빈도 미러
+    if (novaQmDraftLegacyMirrorTimer_) window.clearTimeout(novaQmDraftLegacyMirrorTimer_);
+    const snapshot = JSON.parse(JSON.stringify({
+      draftId: draft.draftId,
+      draftRowNumber: Number(draft.rowNumber || 0),
+      answers: draft.answers || [],
+      defects: draft.defects || []
+    }));
+    novaQmDraftLegacyMirrorTimer_ = window.setTimeout(() => {
+      novaQmDraftLegacyMirrorTimer_ = null;
+      callServer('saveQmInspectionDraft', state.token, snapshot).catch(error => {
+        console.warn('[NOVA QM] DB-first Sheet 미러 지연 · 최종제출은 기존 경로로 보호됩니다.', error);
+      });
+    }, 5000);
+  }
+
   async function saveQmInspectionDraftNow_(showMessage) { // (점검 초안 서버 저장)
     const active = state.qmChecklist.activeInspection;
     if (!active) return null;
@@ -7271,10 +7339,23 @@
     const status = $('qmDraftSaveStatus');
     if (status) status.textContent = '저장 중…';
     try {
-      const result = await callServer('saveQmInspectionDraft', state.token, { draftId: draft.draftId, draftRowNumber: Number(draft.rowNumber || 0), answers: draft.answers, defects: draft.defects });
+      let result;
+      if (novaRealtime_.qmDraftDbFirstEnabled && novaRealtimeIsEnabled_()) {
+        try {
+          const dbResult = await novaQmDraftDbFirstSave_(draft);
+          result = { ok: true, savedAt: dbResult.savedAt, draft: active.draft, dbFirst: true };
+          active.draft = Object.assign({}, active.draft, { answers: draft.answers, defects: draft.defects, dbVersion: dbResult.dbVersion });
+          novaQmScheduleLegacyDraftMirror_(Object.assign({}, active.draft, { answers: draft.answers, defects: draft.defects }));
+        } catch (dbError) {
+          console.warn('[NOVA QM] DB-first 자동저장 실패 · 기존 Sheet 저장으로 즉시 fallback', dbError);
+          result = await callServer('saveQmInspectionDraft', state.token, { draftId: draft.draftId, draftRowNumber: Number(draft.rowNumber || 0), answers: draft.answers, defects: draft.defects });
+        }
+      } else {
+        result = await callServer('saveQmInspectionDraft', state.token, { draftId: draft.draftId, draftRowNumber: Number(draft.rowNumber || 0), answers: draft.answers, defects: draft.defects });
+      }
       if (!result?.ok) throw new Error(result?.message || '임시 저장하지 못했습니다.');
       active.draft = Object.assign({}, active.draft, result.draft || {}, { answers: draft.answers, defects: draft.defects });
-      if (status) status.textContent = `실시간 저장 ${result.savedAt || ''}`;
+      if (status) status.textContent = `${result.dbFirst ? 'DB 실시간 저장' : '실시간 저장'} ${result.savedAt || ''}`; // QM_DRAFT_DB_FIRST_V1
       if (showMessage) showToast('점검내용을 임시 저장했습니다.');
       return result;
     } catch (error) { if (status) status.textContent = `저장 오류 · ${error?.message || ''}`; if (showMessage) showToast(error?.message || '임시 저장 오류'); return null; }

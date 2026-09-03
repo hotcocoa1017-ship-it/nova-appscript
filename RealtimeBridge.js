@@ -9,7 +9,7 @@
  *   NOVA_REALTIME_ENABLED = N 또는 Y
  *   NOVA_REALTIME_API_BASE = https://xxxx.run.app
  */
-function getNovaRealtimeClientConfig() {
+function getNovaRealtimeClientConfig(token) { // QM_DRAFT_DB_FIRST_V1
   const props = PropertiesService.getScriptProperties();
   const apiBase = String(props.getProperty('NOVA_REALTIME_API_BASE') || '')
     .trim()
@@ -18,11 +18,24 @@ function getNovaRealtimeClientConfig() {
     .trim()
     .toUpperCase() === 'Y';
 
+  let qmDraftDbFirstEnabled = false;
+  const qmDraftMasterEnabled = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED') || 'N').trim().toUpperCase() === 'Y';
+  const qmDraftEmployees = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES') || '')
+    .split(',').map(value => value.trim()).filter(Boolean);
+  if (qmDraftMasterEnabled && qmDraftEmployees.length && token) {
+    const verified = verifyNovaToken(token);
+    const user = verified && verified.ok ? verified.user : null;
+    qmDraftDbFirstEnabled = Boolean(user
+      && String(user.role || '').trim().toUpperCase() === 'QM'
+      && qmDraftEmployees.includes(String(user.employeeNo || '').trim()));
+  }
+
   return {
     ok: true,
     enabled: Boolean(enabled && apiBase),
     apiBase: apiBase,
-    mode: enabled && apiBase ? 'REALTIME' : 'LEGACY'
+    mode: enabled && apiBase ? 'REALTIME' : 'LEGACY',
+    qmDraftDbFirstEnabled // QM_DRAFT_DB_FIRST_V1
   };
 }
 
@@ -36,6 +49,12 @@ function setupNovaRealtimeClientConfig() {
   }
   if (!props.getProperty('NOVA_REALTIME_API_BASE')) {
     props.setProperty('NOVA_REALTIME_API_BASE', '');
+  }
+  if (!props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED')) {
+    props.setProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED', 'N');
+  }
+  if (!props.getProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES')) {
+    props.setProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES', '');
   }
   return {
     ok: true,
