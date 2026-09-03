@@ -1,0 +1,65 @@
+name: Validate QM Draft DB First V1
+
+on:
+  push:
+    branches: [feature/qm-draft-db-first-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+
+      - name: Apply QM draft DB-first V1
+        run: python3 scripts/patch_qm_draft_db_first_v1.py
+
+      - name: Validate QM draft DB-first safety
+        run: python3 scripts/validate_qm_draft_db_first_v1.py
+
+      - name: Validate existing NOVA production regression gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check RealtimeBridge.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('Client.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if not scripts:
+              raise SystemExit('Client script block missing')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum RealtimeBridge.js Client.html | sha256sum | awk '{print $1}')"
+          python3 scripts/patch_qm_draft_db_first_v1.py
+          after="$(sha256sum RealtimeBridge.js Client.html | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Persist validated feature sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- RealtimeBridge.js Client.html; then
+            echo 'Feature sources already persisted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add RealtimeBridge.js Client.html
+          git commit -m 'Persist validated QM draft DB-first V1 [skip ci]'
+          git push origin HEAD:feature/qm-draft-db-first-v1
