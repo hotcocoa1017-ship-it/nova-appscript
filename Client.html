@@ -1403,7 +1403,8 @@
       floor: '',
       syncTimer: null,
       syncInFlight: false,
-      actionInFlight: 0
+      actionInFlight: 0,
+      restoreScrollPending: true // MOBILE_VIEW_STATE_PERSIST_V2
     },
     settings: {
       tab: 'operations',
@@ -7834,11 +7835,11 @@
     $('mobileDate').addEventListener('change', event => {
       state.mobile.businessDate = event.target.value;
       if (state.mobile.businessDate) sessionStorage.setItem('novaMobileBusinessDate', state.mobile.businessDate);
-      clearMobileLocationPreferencesForCurrentContext_(); // MOBILE_LOCATION_FILTER_PERSIST_V1
+      // MOBILE_VIEW_STATE_PERSIST_V2 · 새 업무범위의 기존 동·층 저장값은 삭제하지 않습니다.
       state.mobile.building = '';
       state.mobile.floor = '';
       state.mobile.version = 0;
-      state.mobile.qmView = 'TARGETS';
+      // MOBILE_VIEW_STATE_PERSIST_V2 · 현재 QM 탭 유지
       state.mobile.qmBrowseData = null;
       state.mobile.qmBrowseLimit = 50;
       state.mobile.qmBrowseBuilding = '';
@@ -7848,11 +7849,11 @@
     $('mobileSite').addEventListener('change', event => {
       state.mobile.site = event.target.value;
       sessionStorage.setItem('novaMobileSite', String(state.mobile.site || ''));
-      clearMobileLocationPreferencesForCurrentContext_(); // MOBILE_LOCATION_FILTER_PERSIST_V1
+      // MOBILE_VIEW_STATE_PERSIST_V2 · 새 업무범위의 기존 동·층 저장값은 삭제하지 않습니다.
       state.mobile.building = '';
       state.mobile.floor = '';
       state.mobile.version = 0;
-      state.mobile.qmView = 'TARGETS';
+      // MOBILE_VIEW_STATE_PERSIST_V2 · 현재 QM 탭 유지
       state.mobile.qmBrowseData = null;
       state.mobile.qmBrowseLimit = 50;
       state.mobile.qmBrowseBuilding = '';
@@ -7889,14 +7890,12 @@
     });
     $('mobileSearch').addEventListener('input', event => {
       state.mobile.search = event.target.value.trim();
+      saveMobileViewPreference_(); // MOBILE_VIEW_STATE_PERSIST_V2
       scheduleUiRender_('mobile-search', renderMobileList, 80);
     });
     $('mobileSyncButton').addEventListener('click', async () => {
       await loadMobileSnapshot({ force: true });
-      if (state.mobile.data?.role === 'QM' && qmMobileBrowseView_() !== 'TARGETS') {
-        await loadQmMobileBrowse_({ force: true });
-      }
-    });
+    }); // MOBILE_VIEW_STATE_PERSIST_V2
     $('mobileList').addEventListener('click', handleMobileListClick);
   }
 
@@ -7912,7 +7911,16 @@
       });
       if (!result?.ok) throw new Error(result?.message || '모바일 업무를 불러오지 못했습니다.');
       applyMobileSnapshot(result);
-      if (options.silent) requestAnimationFrame(() => window.scrollTo({ top: previousY, behavior: 'auto' }));
+      const mobileRole = String(state.bootstrap?.user?.role || '').toUpperCase();
+      if (mobileRole === 'QM' && qmMobileBrowseView_() !== 'TARGETS') {
+        await loadQmMobileBrowse_({ force: Boolean(options.force) });
+      }
+      if (state.mobile.restoreScrollPending) {
+        state.mobile.restoreScrollPending = false;
+        requestAnimationFrame(() => window.scrollTo({ top: Number(state.scrollY || 0), behavior: 'auto' }));
+      } else if (options.silent) {
+        requestAnimationFrame(() => window.scrollTo({ top: previousY, behavior: 'auto' }));
+      }
       startMobileSync();
       setSyncStatus(`모바일 동기화 · 서버 ${result.performance?.elapsedMs ?? '-'}ms`);
     } catch (error) {
@@ -7935,6 +7943,7 @@
     if (state.mobile.businessDate) sessionStorage.setItem('novaMobileBusinessDate', state.mobile.businessDate);
     state.mobile.site = result.selection?.site ?? state.mobile.site;
     sessionStorage.setItem('novaMobileSite', String(state.mobile.site || ''));
+    restoreMobileViewPreference_(); // MOBILE_VIEW_STATE_PERSIST_V2
     renderMobileData();
     const mobileRole = String(state.bootstrap?.user?.role || '').toUpperCase();
     if (novaRealtimeIsEnabled_() && ['ROOMMAID', 'QM'].includes(mobileRole)) {
@@ -8061,6 +8070,7 @@
       const nextView = String(button.dataset.qmBrowseView || 'TARGETS').toUpperCase();
       if (nextView === qmMobileBrowseView_()) return;
       state.mobile.qmView = nextView;
+      saveMobileViewPreference_(); // MOBILE_VIEW_STATE_PERSIST_V2
       state.mobile.qmBrowseLimit = 50;
       state.mobile.qmBrowseBuilding = '';
       state.mobile.qmBrowseFloor = '';
@@ -8232,6 +8242,7 @@
     $('mobileFilters').innerHTML = filters.map(([code, label]) => `<button type="button" class="mobile-filter${state.mobile.filter === code ? ' active' : ''}" data-mobile-filter="${escapeAttr(code)}">${escapeHtml(label)}</button>`).join('');
     $('mobileFilters').querySelectorAll('[data-mobile-filter]').forEach(button => button.addEventListener('click', () => {
       state.mobile.filter = button.dataset.mobileFilter;
+      saveMobileViewPreference_(); // MOBILE_VIEW_STATE_PERSIST_V2
       renderMobileFilters();
       renderMobileList();
     }));
@@ -8511,6 +8522,7 @@
 
       // 시작 확정 후 기존 점검대상 흐름으로 복귀시켜 제출/재정비/완료를 그대로 사용합니다.
       state.mobile.qmView = 'TARGETS';
+      saveMobileViewPreference_(); // MOBILE_VIEW_STATE_PERSIST_V2
       state.mobile.qmBrowseData = null;
       state.mobile.qmBrowseBuilding = '';
       state.mobile.qmBrowseFloor = '';
@@ -9366,6 +9378,51 @@
   }
 
   // MOBILE_LOCATION_FILTER_PERSIST_V1
+  // MOBILE_VIEW_STATE_PERSIST_V2
+  function mobileViewPreferenceKey_() { // (사용자·역할별 현재 모바일 화면상태 저장키)
+    const employeeNo = String(state.bootstrap?.user?.employeeNo || '').trim() || 'ANON';
+    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase() || 'UNKNOWN';
+    return `novaMobileView:${employeeNo}:${role}`;
+  }
+
+  function readMobileViewPreference_() { // (현재 탭·필터·검색 안전조회)
+    try {
+      const parsed = JSON.parse(localStorage.getItem(mobileViewPreferenceKey_()) || 'null');
+      if (!parsed || typeof parsed !== 'object') return null;
+      return {
+        filter: String(parsed.filter || '').trim().toUpperCase(),
+        search: String(parsed.search || ''),
+        qmView: String(parsed.qmView || '').trim().toUpperCase()
+      };
+    } catch (ignore) {
+      return null;
+    }
+  }
+
+  function restoreMobileViewPreference_() { // (새로고침 후 현재 모바일 화면상태 복원)
+    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
+    if (!role) return;
+    const saved = readMobileViewPreference_();
+    if (!saved) return;
+    if (saved.filter) state.mobile.filter = saved.filter;
+    state.mobile.search = saved.search;
+    if (role === 'QM' && ['TARGETS', 'CLEANED', 'VACANT'].includes(saved.qmView)) state.mobile.qmView = saved.qmView;
+    const searchInput = $('mobileSearch');
+    if (searchInput) searchInput.value = state.mobile.search;
+  }
+
+  function saveMobileViewPreference_() { // (탭·필터·검색 변경 즉시 저장)
+    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
+    if (!role) return;
+    try {
+      localStorage.setItem(mobileViewPreferenceKey_(), JSON.stringify({
+        filter: String(state.mobile.filter || ''),
+        search: String(state.mobile.search || ''),
+        qmView: role === 'QM' ? String(state.mobile.qmView || 'TARGETS') : ''
+      }));
+    } catch (ignore) {}
+  }
+
   function mobileLocationPreferenceKey_(scope, view) { // (사용자·역할·업무일자·사업장별 동·층 저장키)
     const employeeNo = String(state.bootstrap?.user?.employeeNo || '').trim() || 'ANON';
     const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase() || 'UNKNOWN';
@@ -9440,7 +9497,8 @@
   }
 
   function saveUiState() { // (스크롤·메뉴·선택 업무일자 저장)
-    sessionStorage.setItem('novaScrollY', String(window.scrollY || 0));
+    state.scrollY = Number(window.scrollY || 0); // MOBILE_VIEW_STATE_PERSIST_V2
+    sessionStorage.setItem('novaScrollY', String(state.scrollY));
     sessionStorage.setItem('novaActiveMenu', state.activeMenu);
     if (state.indicator.businessDate) sessionStorage.setItem('novaIndicatorBusinessDate', state.indicator.businessDate);
     if (state.mobile.businessDate) sessionStorage.setItem('novaMobileBusinessDate', state.mobile.businessDate);
@@ -9452,6 +9510,7 @@
     sessionStorage.setItem('novaMonthlyType', String(state.monthly.type || 'HOUSEMAN'));
     saveMobileLocationPreference_(); // MOBILE_LOCATION_FILTER_PERSIST_V1
     saveQmBrowseLocationPreference_(); // MOBILE_LOCATION_FILTER_PERSIST_V1
+    saveMobileViewPreference_(); // MOBILE_VIEW_STATE_PERSIST_V2
   }
 
   function showView(id) { // (단일 화면 전환)
