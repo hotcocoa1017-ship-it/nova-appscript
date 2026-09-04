@@ -142,5 +142,13 @@ if old_start_target not in updated:
     sys.exit(30)
 updated = updated.replace(old_start_target, new_start_target, 1)
 
+# 8) 새 loadMobileSnapshot이 QM 추가조회까지 함께 복원하므로 새로고침 버튼의 중복 조회를 제거합니다.
+old_sync = """    $('mobileSyncButton').addEventListener('click', async () => {\n      await loadMobileSnapshot({ force: true });\n      if (state.mobile.data?.role === 'QM' && qmMobileBrowseView_() !== 'TARGETS') {\n        await loadQmMobileBrowse_({ force: true });\n      }\n    });\n"""
+new_sync = """    $('mobileSyncButton').addEventListener('click', async () => {\n      await loadMobileSnapshot({ force: true });\n    }); // MOBILE_VIEW_STATE_PERSIST_V2\n"""
+if old_sync not in updated:
+    print('ERROR: mobile sync listener not found.', file=sys.stderr)
+    sys.exit(31)
+updated = updated.replace(old_sync, new_sync, 1)
+
 path.write_text(updated, encoding='utf-8')
 print('Applied MOBILE_VIEW_STATE_PERSIST_V2.')
