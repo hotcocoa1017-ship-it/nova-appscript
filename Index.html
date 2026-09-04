@@ -18,6 +18,16 @@
     <form id="loginForm" class="login-card" autocomplete="on">
       <div class="nova-logo nova-logo-login" role="img" aria-label="NOVA"></div>
       <p class="muted login-guide">일반 직원은 사업장 · 이름 · 사번 순으로 로그인합니다. 관리자·오더테이커는 사업장 선택을 생략할 수 있습니다.</p>
+      <!-- NOVA_I18N_V1 -->
+      <label class="login-language-field">
+        <span>언어</span>
+        <select id="loginLanguage" name="language" autocomplete="language">
+          <option value="ko">한국어</option>
+          <option value="en">English</option>
+          <option value="th">ไทย</option>
+          <option value="mn">Монгол</option>
+        </select>
+      </label>
       <!-- SITE_SCOPE_INDICATOR_CLOSE_V2 -->
       <label>
         <span>사업장</span>
@@ -75,5 +85,6 @@
   <?!= include_('RoommaidDueOutGuard'); ?>
   <?!= include_('HousemanRequestPhotoClient'); ?>
   <?!= include_('HousemanUiPerformancePatch'); ?>
+  <?!= include_('I18nClient'); ?> <!-- NOVA_I18N_V1 -->
 </body>
 </html>

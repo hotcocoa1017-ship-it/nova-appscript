@@ -477,7 +477,8 @@
       roomNo: activeRoomNo,
       part,
       items: [{ name: item, quantity: clampHousemanPhotoQuantity_(qtyEl && qtyEl.value) }],
-      note: String(noteEl && noteEl.value || '').trim()
+      note: String(noteEl && noteEl.value || '').trim(),
+      sourceLanguage: String(window.NOVA_I18N?.getLanguage?.() || 'ko').toLowerCase() // NOVA_I18N_V1 · 사진 오더 원문언어
     };
     setHousemanPhotoSubmitBusy_(button, true, '요청 등록 중…');
     const fastCreate = typeof window.novaCreateRoommaidHousemanRequestFast_ === 'function'

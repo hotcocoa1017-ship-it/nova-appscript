@@ -3817,6 +3817,7 @@
         realtimeFallbackReason = novaRealtime_.configLoaded ? 'REALTIME_DISABLED' : 'REALTIME_CONFIG_UNAVAILABLE';
       }
 
+      payload.sourceLanguage = String(payload.sourceLanguage || window.NOVA_I18N?.getLanguage?.() || 'ko').toLowerCase(); // NOVA_I18N_V1
       const result = await callServer('createHousemanOrder', state.token, payload);
       if (!result?.ok) throw new Error(result?.message || '오더 등록에 실패했습니다.');
       const elapsed = Math.round(performance.now() - clickedAt);
@@ -5512,6 +5513,22 @@
   }
 
   async function novaRealtimeCreateHousemanOrder_(payload, authRetry = 0) { // (Cloud Run/PostgreSQL 등록 확정)
+    // NOVA_I18N_V1 · Realtime 오더 번역: DB에는 한국어 운영값, Sheet JSON에는 원문 메타를 보존합니다.
+    let preparedPayload = Object.assign({}, payload || {});
+    preparedPayload.sourceLanguage = String(
+      preparedPayload.sourceLanguage || window.NOVA_I18N?.getLanguage?.() || 'ko'
+    ).trim().toLowerCase();
+    if (preparedPayload.sourceLanguage !== 'ko'
+        && !(preparedPayload.translation
+          && String(preparedPayload.translation.translatedTo || '').toLowerCase() === 'ko'
+          && String(preparedPayload.translation.status || '').toUpperCase() === 'SUCCESS')) {
+      const translated = await callServer('translateNovaHousemanOrderPayload', state.token, preparedPayload);
+      if (!translated?.ok || !translated.payload) {
+        throw new Error(translated?.message || '오더 한국어 번역에 실패했습니다.');
+      }
+      preparedPayload = translated.payload;
+    }
+    payload = preparedPayload;
     if (!novaRealtimeIsEnabled_()) throw new Error('Realtime이 비활성화되어 있습니다.');
     const assignment = novaRealtimeHousemanAssignmentSnapshot_(payload);
     if (String(payload.assignmentMode || '').trim().toUpperCase() === 'AUTO' && !assignment?.employeeNo) {
@@ -5726,6 +5743,7 @@
       }
 
       // Realtime 비활성/오류 시 기존 동작을 그대로 유지합니다.
+      payload.sourceLanguage = String(payload.sourceLanguage || window.NOVA_I18N?.getLanguage?.() || 'ko').toLowerCase(); // NOVA_I18N_V1
       const result = await callServer('createHousemanOrder', state.token, payload);
       if (!result?.ok) throw new Error(result?.message || '오더 등록에 실패했습니다.');
       replacePendingOrderLocal_(pendingOrder.orderId, result.order, result.version);
@@ -9028,7 +9046,8 @@
       const payload = {
         businessDate: state.mobile.businessDate, site: state.mobile.site, roomNo, part,
         items: [{ name: item, quantity: clampQuantity($('mobileRequestQty').value) }],
-        note: $('mobileRequestNote').value.trim(), requester: state.bootstrap.user.name
+        note: $('mobileRequestNote').value.trim(), requester: state.bootstrap.user.name,
+        sourceLanguage: String(window.NOVA_I18N?.getLanguage?.() || 'ko').toLowerCase() // NOVA_I18N_V1
       };
       const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
       if (!['ROOMMAID', 'QM', 'PUBLIC'].includes(role)) { // QM_HOUSEMAN_REQUEST_PARITY_V1 · PUBLIC_HOUSEMAN_REQUEST_V1

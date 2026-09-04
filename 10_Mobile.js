@@ -400,7 +400,7 @@ function createMobileHousemanRequest(token, payload) { // (룸메이드·QM·객
     const role = String(user.role || '').toUpperCase();
     if (!['ROOMMAID', 'QM', 'PUBLIC'].includes(role)) throw new Error('하우스맨 요청 권한이 없습니다.'); // PUBLIC_HOUSEMAN_REQUEST_V1
 
-    const rawPayload = payload || {};
+    const rawPayload = prepareNovaHousemanOrderPayloadForStorage_(payload || {}); // NOVA_I18N_V1 · 모바일 오더 저장 전 한국어 변환
     const safe = normalizeHousemanPayload_(rawPayload);
     safe.site = resolveUserSessionSite_(user, safe.site); // SITE_SCOPE_INDICATOR_CLOSE_V2
     if (!safe.roomNo) throw new Error('객실번호가 없습니다.');
@@ -457,6 +457,8 @@ function createMobileHousemanRequest(token, payload) { // (룸메이드·QM·객
     const totalQuantity = safe.items.reduce((sum, item) => sum + item.quantity, 0);
     const detail = {
       items: safe.items,
+      sourceLanguage: safe.sourceLanguage || 'ko', // NOVA_I18N_V1 · 원문/한국어 번역 메타
+      translation: safe.translation || null,
       requester: user.name,
       requestSource: role,
       createdFrom: 'MOBILE',

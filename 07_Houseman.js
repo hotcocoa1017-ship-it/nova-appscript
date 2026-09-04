@@ -5,7 +5,7 @@ function createHousemanOrder(token, payload) { // (하우스맨 오더 등록·�
   return measureResponse_('createHousemanOrder', () => {
     const startedMs = Date.now();
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
-    const safe = normalizeHousemanPayload_(payload);
+    const safe = normalizeHousemanPayload_(prepareNovaHousemanOrderPayloadForStorage_(payload)); // NOVA_I18N_V1 · 일반 오더 저장 전 한국어 변환
     if (!safe.roomNo) throw new Error('객실번호를 입력하세요.');
     if (!safe.site) throw new Error('사업장을 선택하세요.');
     if (!safe.part) throw new Error('파트를 선택하세요.');
@@ -140,6 +140,8 @@ function createHousemanOrder(token, payload) { // (하우스맨 오더 등록·�
 
       const detail = {
         items: safe.items,
+        sourceLanguage: safe.sourceLanguage || 'ko', // NOVA_I18N_V1 · 원문/한국어 번역 메타
+        translation: safe.translation || null,
         requester: safe.requester,
         requestSource: safe.requestSource,
         createdFrom: 'ORDER_DESKTOP',
@@ -2047,6 +2049,16 @@ function normalizeHousemanPayload_(payload) { // (오더 입력값 정리)
         safe.requestSource
         || 'ORDER'
       ).trim(),
+
+    sourceLanguage:
+      typeof normalizeNovaUiLanguage_ === 'function'
+        ? normalizeNovaUiLanguage_(safe.sourceLanguage)
+        : String(safe.sourceLanguage || 'ko').trim().toLowerCase(),
+
+    translation:
+      safe.translation && typeof safe.translation === 'object'
+        ? safe.translation
+        : null,
 
     assignedEmployeeNo:
       String(
