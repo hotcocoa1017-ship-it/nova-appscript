@@ -51,15 +51,154 @@ function loginNova(name, employeeNo, site) { // (사용자 로그인)
   });
 }
 
-function loginNovaBootstrap(name, employeeNo, clientType, site) { // (로그인·초기화 1회 통신)
+function loginNovaBootstrap(name, employeeNo, clientType, site, persistentLogin) { // (로그인·초기화 1회 통신)
   return measureResponse_('loginNovaBootstrap', () => {
     const user = authenticateNovaUser_(name, employeeNo, site);
+    const token = createLoginToken_(user.employeeNo, user.sessionSite);
+    const mobilePersistent = String(clientType || '').trim().toLowerCase() === 'mobile' && persistentLogin !== false;
+    return {
+      ok: true,
+      token,
+      persistentSessionToken: mobilePersistent ? createPersistentLoginSession_(user) : '',
+      bootstrap: buildBootstrapPayload_(user, clientType)
+    };
+  });
+}
+
+const NOVA_PERSISTENT_SESSION_PREFIX_ = 'NOVA_PERSIST_SESSION_V1_';
+
+function persistentLoginError_(message, code) { // (지속세션 오류코드 통일)
+  const error = new Error(message);
+  error.code = String(code || 'PERSISTENT_SESSION_INVALID');
+  return error;
+}
+
+function persistentLoginPropertyKey_(sessionId) { // (원문 세션ID를 ScriptProperties 키에 노출하지 않음)
+  const bytes = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    String(sessionId || ''),
+    Utilities.Charset.UTF_8
+  );
+  const digest = Utilities.base64EncodeWebSafe(bytes).replace(/=+$/g, '').slice(0, 40);
+  return `${NOVA_PERSISTENT_SESSION_PREFIX_}${digest}`;
+}
+
+function encodePersistentLoginToken_(payload) { // (기존 NOVA 서명키를 사용하는 지속세션 토큰)
+  const body = Utilities.base64EncodeWebSafe(JSON.stringify(payload), Utilities.Charset.UTF_8);
+  return `${body}.${signTokenBody_(body)}`;
+}
+
+function parsePersistentLoginToken_(token) { // (지속세션 토큰 서명·형식 검증)
+  const parts = String(token || '').split('.');
+  if (parts.length !== 2) throw persistentLoginError_('저장된 로그인 세션이 올바르지 않습니다. 다시 로그인하세요.');
+  const [body, signature] = parts;
+  if (signTokenBody_(body) !== signature) {
+    throw persistentLoginError_('저장된 로그인 세션이 변경되었습니다. 다시 로그인하세요.');
+  }
+  let payload;
+  try {
+    const json = Utilities.newBlob(Utilities.base64DecodeWebSafe(body)).getDataAsString('UTF-8');
+    payload = JSON.parse(json);
+  } catch (error) {
+    throw persistentLoginError_('저장된 로그인 세션을 확인할 수 없습니다. 다시 로그인하세요.');
+  }
+  if (String(payload && payload.type || '') !== 'NOVA_PERSIST_V1'
+      || !String(payload && payload.sessionId || '').trim()
+      || !String(payload && payload.employeeNo || '').trim()) {
+    throw persistentLoginError_('저장된 로그인 세션 정보가 부족합니다. 다시 로그인하세요.');
+  }
+  return payload;
+}
+
+function createPersistentLoginSession_(user) { // (모바일 명시 로그아웃 전까지 유지되는 서버 취소가능 세션)
+  const sessionId = `${Utilities.getUuid()}${Utilities.getUuid()}`;
+  const employeeNo = String(user && user.employeeNo || '').trim();
+  const site = normalizeNovaLoginSite_(user && user.sessionSite);
+  const now = Date.now();
+  const record = {
+    employeeNo,
+    site,
+    createdAt: now,
+    lastUsedAt: now
+  };
+  PropertiesService.getScriptProperties().setProperty(
+    persistentLoginPropertyKey_(sessionId),
+    JSON.stringify(record)
+  );
+  return encodePersistentLoginToken_({
+    type: 'NOVA_PERSIST_V1',
+    sessionId,
+    employeeNo,
+    site,
+    issuedAt: now
+  });
+}
+
+function resolvePersistentLoginUser_(payload, record, propertyKey) { // (계정 비활성·사업장 변경은 지속세션도 즉시 차단)
+  const employeeNo = String(record && record.employeeNo || '').trim();
+  if (!employeeNo || employeeNo !== String(payload && payload.employeeNo || '').trim()) {
+    PropertiesService.getScriptProperties().deleteProperty(propertyKey);
+    throw persistentLoginError_('저장된 로그인 세션이 일치하지 않습니다. 다시 로그인하세요.');
+  }
+  const sourceUser = getActiveUserByEmployeeNo_(employeeNo);
+  if (!sourceUser) {
+    PropertiesService.getScriptProperties().deleteProperty(propertyKey);
+    throw persistentLoginError_('사용할 수 없는 계정입니다. 다시 로그인하세요.', 'PERSISTENT_ACCOUNT_DISABLED');
+  }
+  const scopedRole = isNovaSiteScopedRole_(sourceUser.role);
+  const tokenSite = normalizeNovaLoginSite_(record.site || payload.site);
+  const configuredSite = normalizeNovaLoginSite_(sourceUser.defaultSite);
+  if (scopedRole && tokenSite && configuredSite && tokenSite !== configuredSite) {
+    PropertiesService.getScriptProperties().deleteProperty(propertyKey);
+    throw persistentLoginError_('계정 사업장이 변경되었습니다. 다시 로그인하세요.', 'PERSISTENT_SITE_CHANGED');
+  }
+  const sessionSite = scopedRole ? (tokenSite || configuredSite) : '';
+  return Object.assign({}, sourceUser, {
+    sessionSite,
+    siteScopeLocked: Boolean(scopedRole && sessionSite),
+    defaultSite: sessionSite || sourceUser.defaultSite
+  });
+}
+
+function resumePersistentLogin(persistentSessionToken, clientType) { // (모바일 지속세션으로 새 12시간 업무토큰 발급)
+  return measureResponse_('resumePersistentLogin', () => {
+    if (String(clientType || '').trim().toLowerCase() !== 'mobile') {
+      throw persistentLoginError_('지속 로그인은 모바일 화면에서만 사용할 수 있습니다.', 'PERSISTENT_MOBILE_ONLY');
+    }
+    const payload = parsePersistentLoginToken_(persistentSessionToken);
+    const propertyKey = persistentLoginPropertyKey_(payload.sessionId);
+    const properties = PropertiesService.getScriptProperties();
+    const raw = properties.getProperty(propertyKey);
+    if (!raw) throw persistentLoginError_('로그아웃된 세션입니다. 다시 로그인하세요.', 'PERSISTENT_SESSION_REVOKED');
+    let record;
+    try { record = JSON.parse(raw); } catch (error) {
+      properties.deleteProperty(propertyKey);
+      throw persistentLoginError_('저장된 로그인 세션을 복원할 수 없습니다. 다시 로그인하세요.');
+    }
+    const user = resolvePersistentLoginUser_(payload, record, propertyKey);
+    record.lastUsedAt = Date.now();
+    properties.setProperty(propertyKey, JSON.stringify(record));
     const token = createLoginToken_(user.employeeNo, user.sessionSite);
     return {
       ok: true,
       token,
-      bootstrap: buildBootstrapPayload_(user, clientType)
+      persistentSessionToken: String(persistentSessionToken || ''),
+      bootstrap: buildBootstrapPayload_(user, 'mobile')
     };
+  });
+}
+
+function revokePersistentLogin(persistentSessionToken) { // (명시적 로그아웃 시 지속세션 서버 폐기)
+  return measureResponse_('revokePersistentLogin', () => {
+    if (!String(persistentSessionToken || '').trim()) return { ok: true, revoked: false };
+    let payload;
+    try { payload = parsePersistentLoginToken_(persistentSessionToken); }
+    catch (error) { return { ok: true, revoked: false }; }
+    const key = persistentLoginPropertyKey_(payload.sessionId);
+    const properties = PropertiesService.getScriptProperties();
+    const existed = Boolean(properties.getProperty(key));
+    properties.deleteProperty(key);
+    return { ok: true, revoked: existed };
   });
 }
 

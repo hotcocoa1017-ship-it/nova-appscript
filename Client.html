@@ -1503,10 +1503,146 @@
     void novaRealtimeDisconnect_();
   });
 
-  function init() { // (클라이언트 초기화)
+  const NOVA_REMEMBER_LOGIN_KEY_ = 'novaRememberLoginV1';
+  const NOVA_PERSISTENT_SESSION_KEY_ = 'novaPersistentSessionV1';
+  let persistentLoginRefreshTimer_ = null;
+  let persistentLoginRefreshInFlight_ = null;
+
+  function isMobileLoginClient_() { // (지속로그인은 모바일 화면만)
+    return window.matchMedia('(max-width: 760px)').matches;
+  }
+
+  function readRememberedLogin_() { // (사용자가 체크한 경우에만 기기 로컬정보 복원)
+    try {
+      const parsed = JSON.parse(localStorage.getItem(NOVA_REMEMBER_LOGIN_KEY_) || 'null');
+      return parsed && parsed.enabled === true ? parsed : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function restoreRememberedLogin_(clearWhenMissing = false) {
+    const saved = readRememberedLogin_();
+    const remember = $('loginRemember');
+    if (remember) remember.checked = Boolean(saved);
+    if (!saved) {
+      if (clearWhenMissing) {
+        if ($('loginName')) $('loginName').value = '';
+        if ($('loginEmployeeNo')) $('loginEmployeeNo').value = '';
+        if ($('loginSite')) $('loginSite').value = '';
+      }
+      return false;
+    }
+    if ($('loginName')) $('loginName').value = String(saved.name || '');
+    if ($('loginEmployeeNo')) $('loginEmployeeNo').value = String(saved.employeeNo || '');
+    if ($('loginSite')) $('loginSite').value = String(saved.site || '');
+    return true;
+  }
+
+  function saveRememberedLogin_(name, employeeNo, site) {
+    if (!$('loginRemember')?.checked) {
+      localStorage.removeItem(NOVA_REMEMBER_LOGIN_KEY_);
+      return false;
+    }
+    localStorage.setItem(NOVA_REMEMBER_LOGIN_KEY_, JSON.stringify({
+      enabled: true,
+      name: String(name || ''),
+      employeeNo: String(employeeNo || ''),
+      site: String(site || '')
+    }));
+    return true;
+  }
+
+  function persistentSessionToken_() {
+    return String(localStorage.getItem(NOVA_PERSISTENT_SESSION_KEY_) || '').trim();
+  }
+
+  function setPersistentSessionToken_(token) {
+    const value = String(token || '').trim();
+    if (value) localStorage.setItem(NOVA_PERSISTENT_SESSION_KEY_, value);
+    else localStorage.removeItem(NOVA_PERSISTENT_SESSION_KEY_);
+  }
+
+  function novaTokenExpiresAt_(token) { // (서명 검증은 서버가 담당, 클라이언트는 갱신시각 계산만)
+    try {
+      const body = String(token || '').split('.')[0] || '';
+      if (!body) return 0;
+      const base64 = body.replace(/-/g, '+').replace(/_/g, '/');
+      const padded = base64 + '='.repeat((4 - base64.length % 4) % 4);
+      const binary = window.atob(padded);
+      const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+      const payload = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+      return Number(payload.expiresAt || 0);
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  function schedulePersistentLoginRefresh_() { // (12시간 업무토큰 만료 30분 전 자동교체)
+    if (persistentLoginRefreshTimer_) window.clearTimeout(persistentLoginRefreshTimer_);
+    persistentLoginRefreshTimer_ = null;
+    if (!isMobileLoginClient_() || !state.token || !persistentSessionToken_()) return;
+    const expiresAt = novaTokenExpiresAt_(state.token);
+    const fallbackDelay = 6 * 60 * 60 * 1000;
+    const delay = expiresAt
+      ? Math.max(60 * 1000, expiresAt - Date.now() - 30 * 60 * 1000)
+      : fallbackDelay;
+    persistentLoginRefreshTimer_ = window.setTimeout(() => {
+      persistentLoginRefreshTimer_ = null;
+      void refreshPersistentLogin_(false);
+    }, Math.min(delay, 0x7fffffff));
+  }
+
+  async function refreshPersistentLogin_(applyBootstrap) { // (지속세션 → 새 일반 업무토큰)
+    if (!isMobileLoginClient_()) return false;
+    const persistentToken = persistentSessionToken_();
+    if (!persistentToken) return false;
+    if (persistentLoginRefreshInFlight_) return persistentLoginRefreshInFlight_;
+
+    const task = (async () => {
+      try {
+        const result = await callServer('resumePersistentLogin', persistentToken, 'mobile');
+        if (!result?.ok || !result.token) {
+          const code = String(result?.code || '');
+          if (code.startsWith('PERSISTENT_')) {
+            setPersistentSessionToken_('');
+            state.token = '';
+            localStorage.removeItem('novaToken');
+          }
+          return false;
+        }
+        state.token = result.token;
+        localStorage.setItem('novaToken', result.token);
+        if (result.persistentSessionToken) setPersistentSessionToken_(result.persistentSessionToken);
+        schedulePersistentLoginRefresh_();
+        if (applyBootstrap && result.bootstrap?.ok) {
+          applyBootstrapResult_(result.bootstrap, 0, result.performance?.elapsedMs);
+        }
+        return true;
+      } catch (error) {
+        console.warn('[NOVA] 모바일 지속로그인 갱신 지연:', error);
+        return false;
+      }
+    })();
+    persistentLoginRefreshInFlight_ = task;
+    try { return await task; }
+    finally {
+      if (persistentLoginRefreshInFlight_ === task) persistentLoginRefreshInFlight_ = null;
+    }
+  }
+
+  async function init() { // (클라이언트 초기화)
     bindEvents();
-    if (!state.token) return showView('loginView');
-    loadBootstrap();
+    restoreRememberedLogin_();
+    if (!state.token) {
+      if (isMobileLoginClient_() && persistentSessionToken_()) {
+        showView('loadingView');
+        if (await refreshPersistentLogin_(true)) return;
+      }
+      showView('loginView');
+      return;
+    }
+    await loadBootstrap();
   }
 
   function bindEvents() { // (공통 이벤트 연결)
@@ -1531,7 +1667,7 @@
     setBusy(true);
     const startedAt = performance.now();
     try {
-      const result = await callServer('loginNovaBootstrap', name, employeeNo, clientType, site);
+      const result = await callServer('loginNovaBootstrap', name, employeeNo, clientType, site, clientType === 'mobile');
       const networkElapsed = Math.round(performance.now() - startedAt);
       if (!result || !result.ok || !result.bootstrap?.ok) {
         $('loginMessage').textContent = result?.message || result?.bootstrap?.message || '로그인하지 못했습니다.';
@@ -1539,6 +1675,13 @@
       }
       state.token = result.token;
       localStorage.setItem('novaToken', result.token);
+      saveRememberedLogin_(name, employeeNo, site);
+      if (clientType === 'mobile' && result.persistentSessionToken) {
+        setPersistentSessionToken_(result.persistentSessionToken);
+      } else if (clientType !== 'mobile') {
+        setPersistentSessionToken_('');
+      }
+      schedulePersistentLoginRefresh_();
       applyBootstrapResult_(result.bootstrap, networkElapsed, result.performance?.elapsedMs);
     } catch (error) {
       $('loginMessage').textContent = error?.message || '서버 연결에 실패했습니다.';
@@ -1556,9 +1699,11 @@
       const networkElapsed = Math.round(performance.now() - startedAt);
       if (!result || !result.ok) {
         if (result?.code === 'UNAUTHORIZED') {
+          if (clientType === 'mobile' && persistentSessionToken_() && await refreshPersistentLogin_(true)) return;
           state.token = '';
           localStorage.removeItem('novaToken');
           showView('loginView');
+          restoreRememberedLogin_();
           $('loginMessage').textContent = result?.message || '다시 로그인해 주세요.';
           return;
         }
@@ -1585,6 +1730,7 @@
       state.activeMenu = bootstrap.defaultMenu || 'home';
     }
     renderApp();
+    schedulePersistentLoginRefresh_();
     setSyncStatus(`초기 로딩 ${networkElapsed}ms · 서버 ${serverElapsed ?? '-'}ms`);
     void initNovaRealtime_();
   }
@@ -8962,7 +9108,7 @@
     $('loginMessage').textContent = message;
   }
 
-  function handleLogout() { // (명시적 로그아웃)
+  function handleLogout() { // (명시적 로그아웃 · 모바일 지속세션도 함께 폐기)
     saveUiState();
     stopIndicatorSync();
     stopMobileSync();
@@ -8970,10 +9116,20 @@
     novaRealtime_.enabled = false;
     novaRealtime_.apiBase = '';
     novaRealtime_.configLoaded = false;
+    if (persistentLoginRefreshTimer_) window.clearTimeout(persistentLoginRefreshTimer_);
+    persistentLoginRefreshTimer_ = null;
+    const persistentToken = persistentSessionToken_();
+    setPersistentSessionToken_('');
     state.token = '';
     state.bootstrap = null;
     localStorage.removeItem('novaToken');
     showView('loginView');
+    restoreRememberedLogin_(true);
+    $('loginMessage').textContent = '';
+    if (persistentToken) {
+      void callServer('revokePersistentLogin', persistentToken)
+        .catch(error => console.warn('[NOVA] 지속세션 서버 로그아웃 지연:', error));
+    }
   }
 
   /* ORDER_SHARED_SITE_CONTEXT_V1
@@ -9120,11 +9276,15 @@
     }, 3000);
   }
 
-  function handleVisibilityChange_() { // (백그라운드 탭 서버요청 중지·복귀 분산)
+  async function handleVisibilityChange_() { // (백그라운드 탭 서버요청 중지·복귀 분산)
     if (document.hidden) {
       stopIndicatorSync();
       stopMobileSync();
       return;
+    }
+    if (isMobileLoginClient_() && persistentSessionToken_()) {
+      const expiresAt = novaTokenExpiresAt_(state.token);
+      if (!expiresAt || expiresAt - Date.now() < 60 * 60 * 1000) await refreshPersistentLogin_(false);
     }
     if (state.activeMenu === 'indicator') startIndicatorSync();
     else if (['qm', 'houseman', 'cleaning', 'public'].includes(state.activeMenu)) startMobileSync();
