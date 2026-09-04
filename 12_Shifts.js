@@ -544,6 +544,57 @@ function resolveHousemanAutoAssignee_(businessDate, site, roomNo) { // (객실�
 }
 
 
+function resolveHousemanPublicFastAssignee_(businessDate, site, roomNo) { // (객실퍼블릭 공동전달 담당동 경량 자동배정) // PUBLIC_HOUSEMAN_REQUEST_FAST_V2
+  const date = normalizeBusinessDate_(businessDate);
+  const normalizedSite = String(site || '').trim();
+  const building = normalizeRoomBuilding_('', roomNo);
+  if (!/^([1-9])동$/.test(building)) throw new Error('자동배정은 4자리 객실번호로 등록해야 합니다.');
+
+  const shiftAssignments = getShiftAssignmentsForDate_(date, normalizedSite);
+  const zoneAssignments = getHousemanZoneAssignmentsForDate_(date, normalizedSite);
+  const isToday = date === businessDateText_();
+  const activeShiftCodes = isToday ? resolveActiveShiftCodes_(new Date()) : Object.keys(NOVA.SHIFTS);
+  const eligibleEmployeeNos = isToday
+    ? Array.from(new Set(activeShiftCodes.flatMap(code => shiftAssignments.byShift[code] || [])))
+    : shiftAssignments.allEmployeeNos;
+  const eligibleSet = new Set(eligibleEmployeeNos);
+  const users = getUserIndex_().byEmployeeNo;
+
+  // 객실퍼블릭 오더는 담당동 후보 전체에 공동 전달되므로,
+  // 대표 배정자를 고르기 위해 기존 오더 전체의 미처리 건수를 다시 셀 필요가 없습니다.
+  const candidates = (zoneAssignments.byBuilding[building] || [])
+    .filter(employeeNo => eligibleSet.has(employeeNo))
+    .map(employeeNo => users[employeeNo])
+    .filter(user => user && user.enabled && user.role === 'HOUSEMAN')
+    .map(user => ({
+      employeeNo: user.employeeNo,
+      name: user.name,
+      shiftCodes: shiftAssignments.byEmployeeNo[user.employeeNo] || [],
+      pendingCount: 0
+    }))
+    .sort((a, b) => String(a.employeeNo).localeCompare(String(b.employeeNo)));
+
+  if (!candidates.length) {
+    const shiftCodes = isToday ? activeShiftCodes : [];
+    const shiftLabel = shiftCodes.length ? `${shiftCodes.join('·')}조 ` : '';
+    throw new Error(`${building} ${shiftLabel}담당 하우스맨이 없습니다. 근무조와 담당동을 먼저 등록하세요.`);
+  }
+
+  const selected = candidates[0];
+  return {
+    building,
+    employeeNo: selected.employeeNo,
+    name: selected.name,
+    employeeNos: candidates.map(candidate => candidate.employeeNo),
+    names: candidates.map(candidate => candidate.name),
+    candidates: candidates.map(candidate => Object.assign({}, candidate)),
+    shiftCodes: selected.shiftCodes,
+    pendingCount: 0,
+    currentShift: resolveCurrentShiftCode_(new Date()),
+    activeShiftCodes
+  };
+}
+
 function buildHistoryRowWithMap_(columnCount, headerMap, valuesByHeader) { // (근무조 일괄행 생성)
   const row = new Array(columnCount).fill('');
   Object.keys(valuesByHeader).forEach(header => {

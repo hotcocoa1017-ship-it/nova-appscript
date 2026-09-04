@@ -386,7 +386,7 @@ function getMobilePublicHousemanAutoAssignment(token, payload) { // (객실퍼�
     const site = resolveUserSessionSite_(user, safe.site);
     const roomNo = String(safe.roomNo || '').trim();
     if (!businessDate || !site || !roomNo) throw new Error('자동배정 확인에 업무일자·사업장·객실번호가 필요합니다.');
-    const assignment = resolveHousemanAutoAssignee_(businessDate, site, roomNo);
+    const assignment = resolveHousemanPublicFastAssignee_(businessDate, site, roomNo); // PUBLIC_HOUSEMAN_REQUEST_FAST_V2
     if (!assignment || !String(assignment.employeeNo || '').trim()) throw new Error('해당 동에 자동배정 가능한 하우스맨이 없습니다.');
     return { ok: true, businessDate, site, roomNo, assignment };
   });
@@ -424,7 +424,7 @@ function createMobileHousemanRequest(token, payload) { // (룸메이드·QM·객
         ? rawPayload.realtimeAssignmentSnapshot : null;
       publicAssignment = supplied && String(supplied.employeeNo || '').trim()
         ? normalizeRealtimeHousemanAssignmentSnapshot_(safe.businessDate, safe.site, safe.roomNo, supplied)
-        : resolveHousemanAutoAssignee_(safe.businessDate, safe.site, safe.roomNo);
+        : resolveHousemanPublicFastAssignee_(safe.businessDate, safe.site, safe.roomNo); // PUBLIC_HOUSEMAN_REQUEST_FAST_V2
       if (!publicAssignment || !String(publicAssignment.employeeNo || '').trim()) throw new Error('해당 동에 자동배정 가능한 하우스맨이 없습니다.');
       safe.assignedEmployeeNo = String(publicAssignment.employeeNo || '').trim();
     }

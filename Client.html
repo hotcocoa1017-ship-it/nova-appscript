@@ -8872,6 +8872,62 @@
     }
   }
 
+  let novaPublicHousemanAssignmentPrefetch_ = null; // PUBLIC_HOUSEMAN_REQUEST_FAST_V2
+
+  function publicHousemanAssignmentContext_(payload) { // (객실퍼블릭 담당동 사전조회 키)
+    const selection = state.mobile.data?.selection || {};
+    const roomNo = String(payload?.roomNo || '').trim();
+    const businessDate = String(payload?.businessDate || selection.businessDate || '').trim();
+    const site = String(payload?.site || selection.site || '').trim();
+    const building = roomNo ? roomNo.charAt(0) : '';
+    return { businessDate, site, roomNo, key: `${businessDate}|${site}|${building}` };
+  }
+
+  function getPublicHousemanAssignmentFast_(payload) { // (모달 사전조회 결과 재사용)
+    const context = publicHousemanAssignmentContext_(payload);
+    if (!context.businessDate || !context.site || !context.roomNo) {
+      return Promise.reject(new Error('자동배정 확인에 업무일자·사업장·객실번호가 필요합니다.'));
+    }
+    const now = Date.now();
+    if (novaPublicHousemanAssignmentPrefetch_
+      && novaPublicHousemanAssignmentPrefetch_.key === context.key
+      && now - novaPublicHousemanAssignmentPrefetch_.startedAt <= 30000
+      && novaPublicHousemanAssignmentPrefetch_.promise) {
+      return novaPublicHousemanAssignmentPrefetch_.promise;
+    }
+
+    const request = callServer('getMobilePublicHousemanAutoAssignment', state.token, {
+      businessDate: context.businessDate,
+      site: context.site,
+      roomNo: context.roomNo
+    }).then(result => {
+      const assignment = result?.assignment || null;
+      if (!assignment?.employeeNo) throw new Error('해당 동에 자동배정 가능한 하우스맨이 없습니다.');
+      return assignment;
+    });
+
+    novaPublicHousemanAssignmentPrefetch_ = {
+      key: context.key,
+      startedAt: now,
+      promise: request
+    };
+    request.catch(() => {
+      if (novaPublicHousemanAssignmentPrefetch_?.promise === request) novaPublicHousemanAssignmentPrefetch_ = null;
+    });
+    return request;
+  }
+
+  function prefetchPublicHousemanAssignment_(roomNo) { // (요청창 진입 즉시 담당동 조회 시작)
+    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
+    if (role !== 'PUBLIC') return;
+    const selection = state.mobile.data?.selection || {};
+    void getPublicHousemanAssignmentFast_({
+      businessDate: selection.businessDate,
+      site: selection.site,
+      roomNo
+    }).catch(() => null);
+  }
+
   async function createRoommaidHousemanRequestFast_(payload) { // (ROOMMAID·QM·PUBLIC 하우스맨 요청 PostgreSQL 선확정·Sheet 후행) // QM_HOUSEMAN_REQUEST_PARITY_V1 · PUBLIC_HOUSEMAN_REQUEST_V1
     const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
     if (!['ROOMMAID', 'QM', 'PUBLIC'].includes(role)) {
@@ -8887,11 +8943,7 @@
 
     let publicAssignment = null; // PUBLIC_HOUSEMAN_REQUEST_V1
     if (role === 'PUBLIC') {
-      const assignmentResult = await callServer('getMobilePublicHousemanAutoAssignment', state.token, {
-        businessDate: payload?.businessDate, site: payload?.site, roomNo: payload?.roomNo
-      });
-      publicAssignment = assignmentResult?.assignment || null;
-      if (!publicAssignment?.employeeNo) throw new Error('해당 동에 자동배정 가능한 하우스맨이 없습니다.');
+      publicAssignment = await getPublicHousemanAssignmentFast_(payload); // PUBLIC_HOUSEMAN_REQUEST_FAST_V2
     }
     const realtimePayload = Object.assign({}, payload || {}, {
       assignmentMode: role === 'PUBLIC' ? 'AUTO' : 'UNASSIGNED',
@@ -8939,6 +8991,7 @@
   function openMobileHousemanRequest_(roomNo) { // (모바일 하우스맨 요청 등록창) // PUBLIC_HOUSEMAN_REQUEST_V1
     const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
     const rawParts = state.mobile.data?.codes?.orderParts || [];
+    if (role === 'PUBLIC') prefetchPublicHousemanAssignment_(roomNo); // PUBLIC_HOUSEMAN_REQUEST_FAST_V2
     const parts = role === 'PUBLIC'
       ? [{ label: '습득물' }, { label: '기타' }]
       : rawParts;
