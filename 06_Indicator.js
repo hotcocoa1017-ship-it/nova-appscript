@@ -213,6 +213,17 @@ function updateRoomOperation(token, payload) { // (객실 청소배정·상태�
           recordType = NOVA.RECORD_TYPES.QM;
           updates['청소상태'] = 'QM_WAITING';
           break;
+        case 'QM_CLEAR': { // (QM 배정만 취소 · 룸메이드 배정/청소완료 실적 유지)
+          recordType = NOVA.RECORD_TYPES.QM;
+          const previousQmEmployeeNo = String(rowInfo.data['QM사번'] || '').trim();
+          const previousCleaningStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
+          if (!previousQmEmployeeNo) throw new Error('취소할 QM 배정이 없습니다.');
+          if (previousCleaningStatus !== 'QM_WAITING') throw new Error('QM 점검 시작 전 배정만 취소할 수 있습니다.');
+          targetEmployeeNo = previousQmEmployeeNo;
+          updates['QM사번'] = '';
+          updates['청소상태'] = 'COMPLETED';
+          break;
+        }
         case 'CLEAR_ASSIGNMENT':
           updates['정비유형'] = '';
           updates['배정유형'] = '';
@@ -285,6 +296,8 @@ function updateRoomOperation(token, payload) { // (객실 청소배정·상태�
           assignmentType: updates['배정유형'] || rowInfo.data['배정유형'] || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO,
           primaryEmployeeNo: updates['룸메이드사번'] || rowInfo.data['룸메이드사번'] || '',
           secondaryEmployeeNo: Object.prototype.hasOwnProperty.call(updates, '보조룸메이드사번') ? updates['보조룸메이드사번'] : (rowInfo.data['보조룸메이드사번'] || ''),
+          previousQmEmployeeNo: String(rowInfo.data['QM사번'] || '').trim(),
+          qmEmployeeNo: Object.prototype.hasOwnProperty.call(updates, 'QM사번') ? String(updates['QM사번'] || '').trim() : String(rowInfo.data['QM사번'] || '').trim(),
           creditUnit: getRoommaidCleaningCreditUnit_(updates['정비유형'] || rowInfo.data['정비유형'] || NOVA.CLEANING_TYPES.NORMAL),
           preassigned: Object.prototype.hasOwnProperty.call(updates, '선배정여부') ? updates['선배정여부'] === 'Y' : normalizeYesNo_(rowInfo.data['선배정여부']) === 'Y',
           vip: Object.prototype.hasOwnProperty.call(updates, 'VIP여부') ? updates['VIP여부'] === 'Y' : normalizeYesNo_(rowInfo.data['VIP여부']) === 'Y',
@@ -335,11 +348,28 @@ function updateRoomOperation(token, payload) { // (객실 청소배정·상태�
       updatedAt: String(refreshed['수정일시'] || '').trim(),
       version: Number(refreshed['마지막변경버전'] || version || 0)
     };
+    let realtimeSyncPending = false;
+    if (action === 'QM_CLEAR'
+        && typeof novaRealtimeFinalEnabled_ === 'function'
+        && novaRealtimeFinalEnabled_()
+        && typeof syncNovaRealtimeRoomForAction === 'function') {
+      try {
+        syncNovaRealtimeRoomForAction(token, {
+          businessDate,
+          site: responseRoom.site,
+          roomNo
+        });
+      } catch (syncError) {
+        realtimeSyncPending = true;
+        console.warn('[NOVA] QM 배정취소 후 Realtime 단건동기화 지연:', syncError);
+      }
+    }
     const finishedMs = Date.now();
     return {
       ok: true,
       version,
       room: responseRoom,
+      realtimeSyncPending,
       notificationQueued,
       notificationDeferred: Boolean(deferredNotification),
       deferredNotification,

@@ -6074,6 +6074,7 @@
     const cleaningCompletionLocked = isIndicatorCleaningCompletionLocked_(cleaningStatusCode);
     const cleaningResetAvailable = cleaningCompletionLocked
       && Boolean(room.cleaningType || room.roommaidEmployeeNo || room.secondaryRoommaidEmployeeNo || room.qmEmployeeNo);
+    const qmClearAvailable = Boolean(String(room.qmEmployeeNo || '').trim()) && cleaningStatusCode === 'QM_WAITING';
     const operationalStatus = normalizeIndicatorRoomOperationalStatus_(room.operationalStatus);
     const operationalStatusLabel = indicatorRoomOperationalStatusLabel_(operationalStatus);
     openModal(`
@@ -6110,6 +6111,7 @@
             <button class="action-button" type="button" data-room-action="CLEANING_START">청소시작</button>
             <button class="action-button primary" type="button" data-room-action="CLEANING_COMPLETE"${cleaningCompletionLocked ? ' disabled title="룸메이드 청소완료가 이미 기록된 객실입니다." aria-label="완료 처리됨"' : ''}>${cleaningCompletionLocked ? '완료 처리됨' : '청소완료'}</button>
             <button class="action-button" type="button" data-room-action="QM_ASSIGN">QM배정</button>
+            ${qmClearAvailable ? '<button class="action-button danger" type="button" data-room-action="QM_CLEAR">QM배정 취소</button>' : ''}
             ${cleaningResetAvailable ? '<button class="action-button danger" type="button" data-room-action="CLEANING_RESET">청소 초기화</button>' : ''}
           </div>
         </div>
@@ -6248,6 +6250,10 @@
       };
     }
 
+    if (action === 'QM_CLEAR') {
+      return { qmEmployeeNo: '', qmName: '', cleaningStatus: 'COMPLETED' };
+    }
+
     if (action === 'CLEAR_ASSIGNMENT') {
       return Object.assign({ cleaningStatus: 'WAITING' }, emptyRoomAssignmentPatch_());
     }
@@ -6317,6 +6323,15 @@
         `${room.roomNo}호의 금일 청소완료 실적을 모두 초기화합니다.\n\n`
         + '일반정비와 정비유형(D/S·5S·평가원·직원숙소·딥크리닝 등)의 모든 완료이력이 취소되어 룸메이드 실적과 마감일지에서 제외됩니다.\n'
         + '현재 룸메이드·QM 배정도 취소되고 객실은 미배정·미완료 상태로 돌아갑니다.\n\n'
+        + '계속하시겠습니까?'
+      );
+      if (!confirmed) return;
+    }
+    if (action === 'QM_CLEAR') {
+      const confirmed = window.confirm(
+        `${room.roomNo}호의 QM 배정을 취소합니다.\n\n`
+        + '룸메이드 배정과 청소완료 실적은 유지되고, QM 배정만 해제됩니다.\n'
+        + 'QM 점검 시작 전 배정만 취소할 수 있습니다.\n\n'
         + '계속하시겠습니까?'
       );
       if (!confirmed) return;
@@ -6393,6 +6408,7 @@
       CLEANING_COMPLETE: '청소완료',
       CLEANING_RESET: '청소 초기화',
       QM_ASSIGN: 'QM 배정',
+      QM_CLEAR: 'QM 배정 취소',
       CLEAR_ASSIGNMENT: '배정 초기화',
       UPDATE_OPERATION_FLAGS: '운영표시 저장',
       UPDATE_ROOM_OPERATION_STATUS: payload.operationalStatus === 'BROKEN' ? '고장 등록' : payload.operationalStatus === 'ROOM_CHECK' ? '객실확인 등록' : '객실조치 완료'
@@ -6419,6 +6435,9 @@
       const resultRoom = Object.assign({}, result.room || {});
       if (action === 'CLEAR_ASSIGNMENT' || action === 'CLEANING_RESET') {
         Object.assign(resultRoom, emptyRoomAssignmentPatch_(), { cleaningStatus: 'WAITING' });
+      }
+      if (action === 'QM_CLEAR') {
+        Object.assign(resultRoom, { qmEmployeeNo: '', qmName: '', cleaningStatus: 'COMPLETED' });
       }
       if (action === 'UPDATE_ROOM_OPERATION_STATUS') {
         // 서버 저장 성공 응답에서는 요청한 조치상태를 화면 확정값으로 강제 병합한다.

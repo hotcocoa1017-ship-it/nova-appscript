@@ -449,8 +449,12 @@ function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업�
   const targetEmployeeNo = String(data['대상사번'] || '').trim();
   const assignedEmployeeNo = String(data['배정사번'] || '').trim();
   const processorEmployeeNo = String(data['처리자사번'] || '').trim();
-  const employeeNos = Array.from(new Set([targetEmployeeNo, assignedEmployeeNo, processorEmployeeNo].filter(Boolean)));
-  const primaryEmployeeNo = processorEmployeeNo || assignedEmployeeNo || targetEmployeeNo;
+  const registeredEmployeeNo = String(data['등록사번'] || detail.registeredBy || detail.registeredEmployeeNo || '').trim();
+  const qmReceiverEmployeeNo = typeCode === 'QM' && !processorEmployeeNo && !assignedEmployeeNo && !targetEmployeeNo
+    ? registeredEmployeeNo
+    : '';
+  const employeeNos = Array.from(new Set([targetEmployeeNo, assignedEmployeeNo, processorEmployeeNo, qmReceiverEmployeeNo].filter(Boolean)));
+  const primaryEmployeeNo = processorEmployeeNo || assignedEmployeeNo || targetEmployeeNo || qmReceiverEmployeeNo;
   const primaryUser = users[primaryEmployeeNo];
   const statusCode = String(data['처리상태'] || '').trim().toUpperCase();
   const statusLabel = monthlyStatusLabel_(typeCode, statusCode, orderStatusMap);
@@ -514,7 +518,7 @@ function monthlyStatusLabel_(typeCode, statusCode, orderStatusMap) { // (월별 
   const labels = {
     ASSIGN_ROOMMAID: '룸메이드 배정', CLEANING_START: '청소 시작', CLEANING_COMPLETE: '청소 완료',
     ROOMMAID_START: '청소 시작', ROOMMAID_COMPLETE: '청소 완료', CLEAR_ASSIGNMENT: '배정 초기화',
-    QM_ASSIGN: 'QM 배정', QM_WAITING: 'QM 대기', QM_START: 'QM 점검 시작',
+    QM_ASSIGN: 'QM 배정', QM_WAITING: 'QM 대기', QM_CLEAR: 'QM 배정 취소', QM_START: 'QM 점검 시작',
     QM_COMPLETE: 'QM 완료', QM_REWORK: '재정비 요청'
   };
   return labels[statusCode] || statusCode || '-';
