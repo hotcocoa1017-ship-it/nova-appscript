@@ -1741,7 +1741,7 @@
   function menuWithLostFoundShortcut_(menu) { // (오더테이커 사용자계정 설정·외부 Web App 바로가기 추가)
     const items = Array.isArray(menu) ? menu.slice() : [];
     const role = String(state.bootstrap?.user?.role || '').trim().toUpperCase();
-    if (!['ADMIN', 'ORDER'].includes(role)) return items;
+    if (!['ADMIN', 'ORDER', 'HOUSEMAN'].includes(role)) return items; // HOUSEMAN_LOST_FOUND_SHORTCUT_V1
     if (role === 'ORDER' && !items.some(item => item && item.id === 'settings')) {
       items.push({ id: 'settings', label: '설정' });
     }
@@ -1752,6 +1752,7 @@
         externalUrl: NOVA_LOST_FOUND_WEBAPP_URL_
       });
     }
+    if (role === 'HOUSEMAN') return items; // HOUSEMAN은 습득물 관리 바로가지만 추가
     if (!items.some(item => item && item.id === 'salesShortcut')) {
       items.push({
         id: 'salesShortcut',
