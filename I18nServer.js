@@ -1,7 +1,8 @@
 /**
- * NOVA 다국어 서버 보조계층 // NOVA_I18N_V1
+ * NOVA 다국어 서버 보조계층 // NOVA_I18N_V1 · NOVA_I18N_COMPLETE_V2
  * - UI 언어는 클라이언트에서만 처리합니다.
  * - 하우스맨 오더의 자유입력(품목/추가내용)만 한국어 운영값으로 번역합니다.
+ * - 고정 사전에 없는 UI 시스템 문구는 제한된 배치 번역으로 보완합니다.
  * - 기존 상태코드·권한·시트 헤더·Realtime 구조는 변경하지 않습니다.
  */
 const NOVA_I18N_SUPPORTED_LANGUAGES = Object.freeze(['ko', 'en', 'th', 'mn']);
@@ -88,4 +89,43 @@ function translateNovaHousemanOrderPayload(token, payload) { // NOVA_I18N_V1 · 
       payload: prepareNovaHousemanOrderPayloadForStorage_(payload)
     };
   });
+}
+
+function translateNovaUiTextBatch(payload) { // NOVA_I18N_COMPLETE_V2 · 고정 사전 누락 UI 문구 보완
+  const safe = payload || {};
+  const targetLanguage = normalizeNovaUiLanguage_(safe.targetLanguage);
+  if (targetLanguage === 'ko') {
+    return { ok: true, targetLanguage, translations: {} };
+  }
+
+  const rawTexts = Array.isArray(safe.texts) ? safe.texts : [];
+  const uniqueTexts = [];
+  const seen = new Set();
+  let totalChars = 0;
+
+  rawTexts.forEach(value => {
+    if (uniqueTexts.length >= 40) return;
+    const text = String(value || '').trim();
+    if (!text || text.length > 180 || !/[가-힣]/.test(text) || seen.has(text)) return;
+    if (totalChars + text.length > 3200) return;
+    seen.add(text);
+    uniqueTexts.push(text);
+    totalChars += text.length;
+  });
+
+  const translations = {};
+  uniqueTexts.forEach(text => {
+    try {
+      const translated = String(LanguageApp.translate(text, 'ko', targetLanguage) || '').trim();
+      if (translated) translations[text] = translated;
+    } catch (error) {
+      console.warn('[NOVA I18N] UI 자동번역 실패:', targetLanguage, text, error);
+    }
+  });
+
+  return {
+    ok: true,
+    targetLanguage,
+    translations
+  };
 }
