@@ -76,7 +76,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          files=(Index.html Client.html HousemanRequestPhotoClient.html 07_Houseman.js 10_Mobile.js .github/workflows/deploy-apps-script.yml)
+          files=(Index.html Client.html HousemanRequestPhotoClient.html 07_Houseman.js 10_Mobile.js)
           if git diff --quiet -- "${files[@]}"; then
             echo "Validated branch sources already persisted."
             exit 0
