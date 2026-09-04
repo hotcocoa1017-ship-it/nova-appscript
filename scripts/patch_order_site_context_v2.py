@@ -30,6 +30,8 @@ else:
     path.write_text(text, encoding='utf-8')
     print('Applied ORDER shared work-site context V2 fallback and authoritative resync.')
 
-# 정식 전체 배포 체인에서 하우스맨 Push 보강도 항상 적용합니다.
-# 별도 배포 워크플로를 만들지 않아 기존 production concurrency/회귀검증을 그대로 사용합니다.
+# 정식 전체 배포 체인에서 하우스맨 관련 보강을 항상 적용합니다.
+# 기존 production concurrency/회귀검증 체인을 그대로 사용하고 별도 경로가 덮어쓰지 않게 합니다.
 import patch_houseman_realtime_push  # noqa: E402,F401
+import patch_qm_houseman_request_parity_v1  # noqa: E402,F401
+import patch_houseman_latest_first_v1  # noqa: E402,F401
