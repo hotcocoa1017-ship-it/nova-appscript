@@ -152,6 +152,7 @@
   const DEFAULT_MAX_PHOTOS_PER_ORDER = 5;
 
   let activeRoomNo = '';
+  let activeRequestMenu = 'cleaning'; // PUBLIC_HOUSEMAN_REQUEST_V1
   let photoSelectionActive = false;
   let preparedPhotos = [];
   let photoPrepareError = null;
@@ -172,6 +173,7 @@
     const requestButton = event.target && event.target.closest ? event.target.closest('[data-houseman-request]') : null;
     if (requestButton) {
       activeRoomNo = String(requestButton.dataset.housemanRequest || '').trim();
+      activeRequestMenu = String(requestButton.dataset.housemanRequestMenu || 'cleaning').trim() || 'cleaning'; // PUBLIC_HOUSEMAN_REQUEST_V1
       resetHousemanPhotoSelection_();
       window.setTimeout(() => prepareHousemanPhotoUi_(activeRoomNo), 0);
       return;
@@ -255,6 +257,7 @@
     const context = {
       savedAt: Date.now(),
       roomNo: activeRoomNo,
+      menu: activeRequestMenu, // PUBLIC_HOUSEMAN_REQUEST_V1
       part: String(document.getElementById('mobileRequestPart')?.value || ''),
       item: String(document.getElementById('mobileRequestItem')?.value || ''),
       quantity: String(document.getElementById('mobileRequestQty')?.value || '1'),
@@ -264,7 +267,7 @@
     };
     try {
       localStorage.setItem(PHOTO_RESUME_KEY, JSON.stringify(context));
-      sessionStorage.setItem('novaActiveMenu', 'cleaning');
+      sessionStorage.setItem('novaActiveMenu', activeRequestMenu || 'cleaning'); // PUBLIC_HOUSEMAN_REQUEST_V1
     } catch (ignore) {}
   }
 
@@ -299,7 +302,8 @@
   function restoreHousemanPhotoRequestAfterReload_() { // (카메라 복귀 중 WebView 재생성 시 같은 요청창 자동 복원)
     const context = readHousemanPhotoResumeContext_();
     if (!context) return;
-    try { sessionStorage.setItem('novaActiveMenu', 'cleaning'); } catch (ignore) {}
+    activeRequestMenu = String(context.menu || 'cleaning').trim() || 'cleaning'; // PUBLIC_HOUSEMAN_REQUEST_V1
+    try { sessionStorage.setItem('novaActiveMenu', activeRequestMenu); } catch (ignore) {}
     const startedAt = Date.now();
 
     const tryRestore = () => {

@@ -375,18 +375,37 @@ function findCurrentRoomRowForMobileUpdate_(sheet, businessDate, site, roomNo, p
   return findCurrentRoomRow_(sheet, businessDate, site, roomNo);
 }
 
-function createMobileHousemanRequest(token, payload) { // (룸메이드·QM 객실 하우스맨 요청)
+function getMobilePublicHousemanAutoAssignment(token, payload) { // (객실퍼블릭 습득물 요청 담당동 자동배정) // PUBLIC_HOUSEMAN_REQUEST_V1
+  return measureResponse_('getMobilePublicHousemanAutoAssignment', () => {
+    const auth = verifyNovaToken(token);
+    if (!auth.ok) throw new Error('로그인이 필요합니다.');
+    const user = auth.user;
+    if (String(user.role || '').trim().toUpperCase() !== 'PUBLIC') throw new Error('객실퍼블릭 계정만 사용할 수 있습니다.');
+    const safe = payload || {};
+    const businessDate = normalizeBusinessDate_(safe.businessDate);
+    const site = resolveUserSessionSite_(user, safe.site);
+    const roomNo = String(safe.roomNo || '').trim();
+    if (!businessDate || !site || !roomNo) throw new Error('자동배정 확인에 업무일자·사업장·객실번호가 필요합니다.');
+    const assignment = resolveHousemanAutoAssignee_(businessDate, site, roomNo);
+    if (!assignment || !String(assignment.employeeNo || '').trim()) throw new Error('해당 동에 자동배정 가능한 하우스맨이 없습니다.');
+    return { ok: true, businessDate, site, roomNo, assignment };
+  });
+}
+
+function createMobileHousemanRequest(token, payload) { // (룸메이드·QM·객실퍼블릭 객실 하우스맨 요청) // PUBLIC_HOUSEMAN_REQUEST_V1
   return measureResponse_('createMobileHousemanRequest', () => {
     const auth = verifyNovaToken(token);
     if (!auth.ok) throw new Error('로그인이 필요합니다.');
     const user = auth.user;
     const role = String(user.role || '').toUpperCase();
-    if (!['ROOMMAID', 'QM'].includes(role)) throw new Error('하우스맨 요청 권한이 없습니다.');
+    if (!['ROOMMAID', 'QM', 'PUBLIC'].includes(role)) throw new Error('하우스맨 요청 권한이 없습니다.'); // PUBLIC_HOUSEMAN_REQUEST_V1
 
-    const safe = normalizeHousemanPayload_(payload);
+    const rawPayload = payload || {};
+    const safe = normalizeHousemanPayload_(rawPayload);
     safe.site = resolveUserSessionSite_(user, safe.site); // SITE_SCOPE_INDICATOR_CLOSE_V2
     if (!safe.roomNo) throw new Error('객실번호가 없습니다.');
     if (!safe.part) throw new Error('파트를 선택하세요.');
+    if (role === 'PUBLIC' && !['습득물', '기타'].includes(String(safe.part || '').trim())) throw new Error('객실퍼블릭 요청 파트는 습득물 또는 기타만 선택할 수 있습니다.'); // PUBLIC_HOUSEMAN_REQUEST_V1
     if (!safe.items.length) throw new Error('요청 품목을 입력하세요.');
 
     const currentSheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
@@ -394,8 +413,21 @@ function createMobileHousemanRequest(token, payload) { // (룸메이드·QM 객�
     if (!rowInfo) throw new Error('현재객실현황에서 해당 객실을 찾을 수 없습니다.');
     const assignedNos = role === 'ROOMMAID'
       ? [String(rowInfo.data['룸메이드사번'] || '').trim(), String(rowInfo.data['보조룸메이드사번'] || '').trim()].filter(Boolean)
-      : [String(rowInfo.data['QM사번'] || '').trim()].filter(Boolean);
-    if (!assignedNos.includes(user.employeeNo)) throw new Error('본인에게 배정된 객실에서만 요청할 수 있습니다.');
+      : role === 'QM'
+        ? [String(rowInfo.data['QM사번'] || '').trim()].filter(Boolean)
+        : [];
+    if (role !== 'PUBLIC' && !assignedNos.includes(user.employeeNo)) throw new Error('본인에게 배정된 객실에서만 요청할 수 있습니다.');
+
+    let publicAssignment = null; // PUBLIC_HOUSEMAN_REQUEST_V1
+    if (role === 'PUBLIC') {
+      const supplied = rawPayload.realtimeAssignmentSnapshot && typeof rawPayload.realtimeAssignmentSnapshot === 'object'
+        ? rawPayload.realtimeAssignmentSnapshot : null;
+      publicAssignment = supplied && String(supplied.employeeNo || '').trim()
+        ? normalizeRealtimeHousemanAssignmentSnapshot_(safe.businessDate, safe.site, safe.roomNo, supplied)
+        : resolveHousemanAutoAssignee_(safe.businessDate, safe.site, safe.roomNo);
+      if (!publicAssignment || !String(publicAssignment.employeeNo || '').trim()) throw new Error('해당 동에 자동배정 가능한 하우스맨이 없습니다.');
+      safe.assignedEmployeeNo = String(publicAssignment.employeeNo || '').trim();
+    }
 
     const writeLock = acquireWriteLock_();
     let order;
@@ -427,7 +459,15 @@ function createMobileHousemanRequest(token, payload) { // (룸메이드·QM 객�
       items: safe.items,
       requester: user.name,
       requestSource: role,
-      createdFrom: 'MOBILE'
+      createdFrom: 'MOBILE',
+      assignmentMode: role === 'PUBLIC' ? 'AUTO' : 'UNASSIGNED', // PUBLIC_HOUSEMAN_REQUEST_V1
+      autoAssigned: Boolean(publicAssignment),
+      assignedBuilding: publicAssignment ? publicAssignment.building : normalizeRoomBuilding_('', safe.roomNo),
+      assignedShiftCode: publicAssignment ? publicAssignment.currentShift : '',
+      assignedShiftCodes: publicAssignment ? publicAssignment.activeShiftCodes : [],
+      routeCandidateEmployeeNos: publicAssignment ? publicAssignment.employeeNos : [],
+      routeCandidateNames: publicAssignment ? publicAssignment.names : [],
+      routeLocked: !publicAssignment
     };
     const row = createRowByHeaders_(sheet, {
       '기록ID': orderId,
@@ -435,8 +475,8 @@ function createMobileHousemanRequest(token, payload) { // (룸메이드·QM 객�
       '업무일자': safe.businessDate,
       '사업장': String(rowInfo.data['사업장'] || safe.site).trim(),
       '객실번호': safe.roomNo,
-      '대상사번': '',
-      '처리상태': 'REGISTERED',
+      '대상사번': role === 'PUBLIC' ? safe.assignedEmployeeNo : '',
+      '처리상태': role === 'PUBLIC' && safe.assignedEmployeeNo ? 'ASSIGNED' : 'REGISTERED', // PUBLIC_HOUSEMAN_REQUEST_V1
       '세부내용JSON': JSON.stringify(detail),
       '등록사번': user.employeeNo,
       '등록일시': now,
@@ -446,7 +486,7 @@ function createMobileHousemanRequest(token, payload) { // (룸메이드·QM 객�
       '수량': totalQuantity,
       '추가내용': safe.note,
       '요청자': user.name,
-      '배정사번': '',
+      '배정사번': role === 'PUBLIC' ? safe.assignedEmployeeNo : '', // PUBLIC_HOUSEMAN_REQUEST_V1
       '중요여부': safe.important ? 'Y' : 'N',
       '인수인계여부': 'N',
       '변경버전': version,
@@ -458,7 +498,7 @@ function createMobileHousemanRequest(token, payload) { // (룸메이드·QM 객�
     SpreadsheetApp.flush();
     publishDataVersion_(version, { domains: ['ORDER'], businessDate: safe.businessDate, site: String(rowInfo.data['사업장'] || safe.site).trim(), lockHeld: true });
     order = housemanOrderObject_(rowObjectFromValues_(row, getHeaderMap_(sheet)), rowNumber);
-    appendHousemanAudit_(order, 'CREATED_MOBILE', user.employeeNo, version, { role });
+    appendHousemanAudit_(order, 'CREATED_MOBILE', user.employeeNo, version, { role, autoAssignment: publicAssignment || null }); // PUBLIC_HOUSEMAN_REQUEST_V1
     } finally {
       writeLock.releaseLock();
     }

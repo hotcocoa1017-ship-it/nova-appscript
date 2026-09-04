@@ -1363,7 +1363,7 @@
       try {
         const resume = JSON.parse(localStorage.getItem('novaHmRequestPhotoResume') || '{}');
         const savedAt = Number(resume && resume.savedAt || 0);
-        if (resume && resume.roomNo && savedAt && Date.now() - savedAt <= 5 * 60 * 1000) return 'cleaning';
+        if (resume && resume.roomNo && savedAt && Date.now() - savedAt <= 5 * 60 * 1000) return String(resume.menu || 'cleaning'); // PUBLIC_HOUSEMAN_REQUEST_V1
       } catch (ignore) {}
       return savedMenu;
     })(),
@@ -5427,6 +5427,19 @@
 
   function novaRealtimeHousemanAssignmentSnapshot_(payload) { // (현재 화면 자동배정 후보를 동일하게 고정)
     const mode = String(payload.assignmentMode || '').trim().toUpperCase();
+    const supplied = payload.realtimeAssignmentSnapshot && typeof payload.realtimeAssignmentSnapshot === 'object'
+      ? payload.realtimeAssignmentSnapshot : null; // PUBLIC_HOUSEMAN_REQUEST_V1
+    if (mode === 'AUTO' && supplied && String(supplied.employeeNo || '').trim()) {
+      return {
+        building: String(supplied.building || `${String(payload.roomNo || '').charAt(0)}동`),
+        employeeNo: String(supplied.employeeNo || '').trim(),
+        name: String(supplied.name || ''),
+        employeeNos: Array.isArray(supplied.employeeNos) ? supplied.employeeNos.map(String).filter(Boolean) : [String(supplied.employeeNo || '').trim()].filter(Boolean),
+        names: Array.isArray(supplied.names) ? supplied.names.map(String) : [String(supplied.name || supplied.employeeNo || '')],
+        currentShift: String(supplied.currentShift || '').trim().toUpperCase(),
+        activeShiftCodes: Array.isArray(supplied.activeShiftCodes) ? supplied.activeShiftCodes.map(code => String(code || '').trim().toUpperCase()).filter(Boolean) : []
+      };
+    }
     if (mode === 'UNASSIGNED') return { building: `${String(payload.roomNo || '').charAt(0)}동`, employeeNo: '', employeeNos: [], names: [], currentShift: '', activeShiftCodes: [] };
     if (mode === 'MANUAL') {
       const employeeNo = String(payload.assignedEmployeeNo || '').trim();
@@ -8332,11 +8345,13 @@
         if (['ASSIGNED', 'WAITING', 'REWORK'].includes(room.cleaningStatus)) actions += `<button class="primary" data-room-action="START" data-room-no="${escapeAttr(room.roomNo)}">${room.cleaningType === 'DS' ? 'D/S 시작' : '청소 시작'}</button>`;
         if (mobileCleaningActive) actions += `<button class="primary" data-room-action="COMPLETE" data-room-no="${escapeAttr(room.roomNo)}">${room.cleaningType === 'DS' ? 'D/S 완료' : '청소 완료'}</button>`;
       }
-      actions += `<button data-houseman-request="${escapeAttr(room.roomNo)}">하우스맨 요청</button>`;
+      actions += `<button data-houseman-request="${escapeAttr(room.roomNo)}" data-houseman-request-menu="cleaning">하우스맨 요청</button>`;
     } else if (role === 'QM') {
       if (['QM_WAITING', 'COMPLETED'].includes(room.cleaningStatus)) actions += `<button class="primary" data-room-action="START" data-room-no="${escapeAttr(room.roomNo)}">점검 시작</button>`;
       if (room.cleaningStatus === 'QM_CHECKING' && normalizeIndicatorRoomOperationalStatus_(room.operationalStatus) !== 'REWORK') actions += `<button class="primary" data-room-action="CONTINUE" data-room-no="${escapeAttr(room.roomNo)}">점검 계속</button><button data-room-action="REWORK" data-room-no="${escapeAttr(room.roomNo)}">즉시 재정비</button>`;
-      actions += `<button data-houseman-request="${escapeAttr(room.roomNo)}">하우스맨 요청</button>`;
+      actions += `<button data-houseman-request="${escapeAttr(room.roomNo)}" data-houseman-request-menu="qm">하우스맨 요청</button>`;
+    } else if (role === 'PUBLIC') { // PUBLIC_HOUSEMAN_REQUEST_V1
+      actions += `<button data-houseman-request="${escapeAttr(room.roomNo)}" data-houseman-request-menu="public">하우스맨 요청</button>`;
     }
     return `<article class="mobile-room-card${roommaidMobileCardClass_(room, role)}${mobileCleaningActive ? ' mobile-card-cleaning' : ''}">
       <div class="mobile-card-top"><strong>${escapeHtml(room.roomNo)}</strong><span>${escapeHtml([room.building, room.floor ? `${room.floor}층` : ''].filter(Boolean).join(' · '))}</span></div>
@@ -8812,9 +8827,9 @@
     }
   }
 
-  async function createRoommaidHousemanRequestFast_(payload) { // (ROOMMAID·QM 하우스맨 요청 PostgreSQL 선확정·Sheet 후행) // QM_HOUSEMAN_REQUEST_PARITY_V1
+  async function createRoommaidHousemanRequestFast_(payload) { // (ROOMMAID·QM·PUBLIC 하우스맨 요청 PostgreSQL 선확정·Sheet 후행) // QM_HOUSEMAN_REQUEST_PARITY_V1 · PUBLIC_HOUSEMAN_REQUEST_V1
     const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
-    if (!['ROOMMAID', 'QM'].includes(role)) {
+    if (!['ROOMMAID', 'QM', 'PUBLIC'].includes(role)) {
       const legacy = await callServer('createMobileHousemanRequest', state.token, payload);
       return Object.assign({}, legacy || {}, { realtime: false, mirrorPromise: Promise.resolve(legacy) });
     }
@@ -8825,9 +8840,18 @@
       return Object.assign({}, legacy || {}, { realtime: false, mirrorPromise: Promise.resolve(legacy) });
     }
 
+    let publicAssignment = null; // PUBLIC_HOUSEMAN_REQUEST_V1
+    if (role === 'PUBLIC') {
+      const assignmentResult = await callServer('getMobilePublicHousemanAutoAssignment', state.token, {
+        businessDate: payload?.businessDate, site: payload?.site, roomNo: payload?.roomNo
+      });
+      publicAssignment = assignmentResult?.assignment || null;
+      if (!publicAssignment?.employeeNo) throw new Error('해당 동에 자동배정 가능한 하우스맨이 없습니다.');
+    }
     const realtimePayload = Object.assign({}, payload || {}, {
-      assignmentMode: 'UNASSIGNED',
+      assignmentMode: role === 'PUBLIC' ? 'AUTO' : 'UNASSIGNED',
       assignedEmployeeNo: '',
+      realtimeAssignmentSnapshot: publicAssignment,
       requester: state.bootstrap?.user?.name || '',
       handover: false
     });
@@ -8835,10 +8859,11 @@
     try {
       realtime = await novaRealtimeCreateHousemanOrder_(realtimePayload);
     } catch (error) {
-      if (role !== 'QM') throw error;
-      console.warn('[NOVA QM] 하우스맨 DB 우선등록 실패 · 기존 모바일 요청으로 fallback', error);
+      if (!['QM', 'PUBLIC'].includes(role)) throw error; // PUBLIC_HOUSEMAN_REQUEST_V1
+      console.warn(`[NOVA ${role}] 하우스맨 DB 우선등록 실패 · 기존 모바일 요청으로 fallback`, error);
       const legacy = await callServer('createMobileHousemanRequest', state.token, Object.assign({}, payload || {}, {
-        requestSource: 'QM', createdFrom: 'MOBILE', assignmentMode: 'UNASSIGNED', handover: false
+        requestSource: role, createdFrom: 'MOBILE', assignmentMode: role === 'PUBLIC' ? 'AUTO' : 'UNASSIGNED',
+        realtimeAssignmentSnapshot: publicAssignment, handover: false
       }));
       return Object.assign({}, legacy || {}, { realtime: false, fallback: true, mirrorPromise: Promise.resolve(legacy) });
     }
@@ -8866,8 +8891,12 @@
   }
   window.novaCreateRoommaidHousemanRequestFast_ = createRoommaidHousemanRequestFast_;
 
-  function openMobileHousemanRequest_(roomNo) { // (모바일 하우스맨 요청 등록창)
-    const parts = state.mobile.data?.codes?.orderParts || [];
+  function openMobileHousemanRequest_(roomNo) { // (모바일 하우스맨 요청 등록창) // PUBLIC_HOUSEMAN_REQUEST_V1
+    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
+    const rawParts = state.mobile.data?.codes?.orderParts || [];
+    const parts = role === 'PUBLIC'
+      ? [{ label: '습득물' }, { label: '기타' }]
+      : rawParts;
     const itemSuggestions = state.mobile.data?.codes?.orderItems || [];
     const itemDatalist = `<datalist id="mobileHousemanItemSuggestions">${itemSuggestions.map(item => `<option value="${escapeAttr(item.label)}"></option>`).join('')}</datalist>`;
     openModal(`<div class="modal-card"><div class="modal-header"><h2>${escapeHtml(roomNo)} 하우스맨 요청</h2><button class="modal-close" data-close-modal>×</button></div><div class="modal-body">${itemDatalist}<div class="modal-grid"><label class="modal-field"><span>파트</span><select id="mobileRequestPart"><option value="">선택</option>${parts.map(part => `<option value="${escapeAttr(part.label)}">${escapeHtml(part.label)}</option>`).join('')}</select></label><label class="modal-field"><span>수량</span><input id="mobileRequestQty" type="number" min="1" max="99" value="1"></label><label class="modal-field full"><span>품목</span><input id="mobileRequestItem" list="mobileHousemanItemSuggestions" placeholder="예: 타월, 생수"></label><label class="modal-field full"><span>추가내용</span><textarea id="mobileRequestNote" placeholder="필요한 내용을 입력하세요."></textarea></label></div><div class="modal-actions"><button id="mobileRequestSubmit" class="action-button primary" type="button">요청 등록</button></div></div></div>`);
@@ -8881,7 +8910,7 @@
         note: $('mobileRequestNote').value.trim(), requester: state.bootstrap.user.name
       };
       const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
-      if (!['ROOMMAID', 'QM'].includes(role)) { // QM_HOUSEMAN_REQUEST_PARITY_V1
+      if (!['ROOMMAID', 'QM', 'PUBLIC'].includes(role)) { // QM_HOUSEMAN_REQUEST_PARITY_V1 · PUBLIC_HOUSEMAN_REQUEST_V1
         closeModal();
         await runMobileAction_('createMobileHousemanRequest', payload, event.currentTarget);
         return;

@@ -1,5 +1,5 @@
 /**
- * 룸메이드 하우스맨 요청 사진
+ * 룸메이드·QM·객실퍼블릭 하우스맨 요청 사진 // PUBLIC_HOUSEMAN_REQUEST_V1
  * - 기존 Client.html·10_Mobile.gs·07_Houseman.gs를 수정하지 않고 별도 연결
  * - 기존 업무이력 스키마 변경 없이 HOUSEMAN_ORDER 세부내용JSON에 사진 메타정보만 저장
  */
@@ -17,7 +17,7 @@ function getMobileHousemanRequestPhotoCapability(token) { // (룸메이드 요�
     const role = String(auth.user.role || '').trim().toUpperCase();
     return {
       ok: true,
-      enabled: ['ROOMMAID', 'QM'].includes(role), // QM_HOUSEMAN_REQUEST_PARITY_V1
+      enabled: ['ROOMMAID', 'QM', 'PUBLIC'].includes(role), // QM_HOUSEMAN_REQUEST_PARITY_V1
       role,
       maxPhotoBytes: NOVA_HOUSEMAN_REQUEST_PHOTO.MAX_PHOTO_BYTES,
       maxPhotos: NOVA_HOUSEMAN_REQUEST_PHOTO.MAX_PHOTOS_PER_ORDER
@@ -31,7 +31,7 @@ function uploadMobileHousemanRequestPhoto(token, payload) { // (룸메이드 모
     if (!auth.ok) throw new Error('로그인이 필요합니다.');
     const user = auth.user;
     const role = String(user.role || '').trim().toUpperCase();
-    if (!['ROOMMAID', 'QM'].includes(role)) throw new Error('하우스맨 요청사진 등록 권한이 없습니다.'); // QM_HOUSEMAN_REQUEST_PARITY_V1
+    if (!['ROOMMAID', 'QM', 'PUBLIC'].includes(role)) throw new Error('하우스맨 요청사진 등록 권한이 없습니다.'); // QM_HOUSEMAN_REQUEST_PARITY_V1
 
     const safe = payload || {};
     const orderId = String(safe.orderId || '').trim();
@@ -174,7 +174,7 @@ function validateHousemanRequestPhotoOrder_(orderInfo, user) { // (사진 연결
   const role = String(user.role || '').trim().toUpperCase();
   const requestSource = String(detail.requestSource || '').trim().toUpperCase();
   if (String(detail.createdFrom || '').trim().toUpperCase() !== 'MOBILE'
-      || !['ROOMMAID', 'QM'].includes(role)
+      || !['ROOMMAID', 'QM', 'PUBLIC'].includes(role)
       || requestSource !== role) {
     throw new Error('본인이 모바일에서 등록한 하우스맨 요청에만 사진을 추가할 수 있습니다.');
   } // QM_HOUSEMAN_REQUEST_PARITY_V1
