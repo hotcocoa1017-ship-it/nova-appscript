@@ -1,0 +1,223 @@
+<script>
+(() => {
+  'use strict';
+
+  // NOVA_I18N_V1
+  const STORAGE_KEY = 'novaUiLanguage';
+  const SUPPORTED = new Set(['ko', 'en', 'th', 'mn']);
+  const textOriginal = new WeakMap();
+  const attrOriginal = new WeakMap();
+  let applying = false;
+
+  const DICT = {
+    en: {
+      '언어': 'Language', '로그인': 'Login', '로그아웃': 'Logout', '사업장': 'Site', '이름': 'Name', '사번': 'Employee No.',
+      '이름·사번 저장': 'Remember name & ID', '개인 기기에서만 사용하세요.': 'Use only on your personal device.',
+      '일반 직원은 사업장 · 이름 · 사번 순으로 로그인합니다. 관리자·오더테이커는 사업장 선택을 생략할 수 있습니다.': 'Employees sign in with site, name, and employee number. Admins and order takers may skip site selection.',
+      '관리자·오더테이커는 선택하지 않음': 'Admins / order takers: no selection', '연결 준비 중': 'Preparing connection',
+      '객실 정비': 'Room Cleaning', 'QM 점검': 'QM Inspection', '객실퍼블릭': 'Room Public', '하우스맨': 'Houseman',
+      '통합 인디게이터': 'Integrated Indicator', '월별조회': 'Monthly View', '설정': 'Settings', '습득물 관리 ↗': 'Lost & Found ↗',
+      'NOVA 통합 인사시스템 ↗': 'NOVA HR System ↗', '업무일자': 'Work Date', '전체 사업장': 'All Sites',
+      '전체 동': 'All Buildings', '전체 층': 'All Floors', '동': 'Building', '층': 'Floor', '진행': 'Active', '완료': 'Done', '전체': 'All',
+      '검색': 'Search', '새로고침': 'Refresh', '점검대상': 'Inspection Targets', '당일 청소완료': 'Cleaned Today', '공실': 'Vacant',
+      '하우스맨 요청': 'Houseman Request', '파트': 'Category', '선택': 'Select', '수량': 'Qty', '품목': 'Item', '추가내용': 'Notes',
+      '요청 등록': 'Submit Request', '등록 중…': 'Submitting…', '반영 중…': 'Saving…', '시작 중…': 'Starting…',
+      '요청 사진': 'Request Photos', '사진 촬영': 'Take Photo', '사진 추가 촬영': 'Add Photo', '삭제': 'Delete',
+      '처리불가': 'Unable to Process', '처리불가 사유': 'Unable Reason', '처리불가 완료': 'Mark Unable',
+      '재정비 요청': 'Rework Request', '재정비 사유': 'Rework Reason', '즉시 재정비': 'Immediate Rework',
+      '점검 시작': 'Start Inspection', '점검 계속': 'Continue Inspection', '청소 시작': 'Start Cleaning', '청소 완료': 'Complete Cleaning',
+      'D/S 시작': 'Start D/S', 'D/S 완료': 'Complete D/S', '접수': 'Accept', '접수·바로 시작': 'Accept & Start', '처리 시작': 'Start Work',
+      '중요': 'Important', '인수인계': 'Handover', '공동 전달': 'Shared Assignment', '퇴실지연': 'Late Checkout', '퇴실 확인': 'Checked Out', '퇴실예정': 'Due Out',
+      '일반정비': 'Regular Cleaning', '1인 배정': 'Solo', '2인1조': 'Pair', '2인1조(교육)': 'Pair (Training)',
+      '대기': 'Waiting', '배정': 'Assigned', '청소중': 'Cleaning', '청소완료': 'Cleaning Complete', 'QM대기': 'QM Waiting',
+      'QM점검중': 'QM Inspecting', 'QM완료': 'QM Complete', '재정비': 'Rework', '고장': 'Out of Order', '객실확인': 'Room Check',
+      '습득물': 'Lost & Found', '기타': 'Other', '등록': 'Registered', '접수완료': 'Accepted', '처리중': 'Processing', '처리완료': 'Completed',
+      '예: 타월, 생수': 'e.g. towel, water', '필요한 내용을 입력하세요.': 'Enter details.', '사유를 입력하세요.': 'Enter a reason.',
+      '확인된 내용을 입력하세요.': 'Enter the details found.', '이름·사번 검색': 'Search name / employee no.', '표시할 오더가 없습니다.': 'No orders to display.',
+      '업무를 불러오고 있습니다.': 'Loading tasks.', '시스템을 준비하고 있습니다.': 'Preparing system.'
+    },
+    th: {
+      '언어': 'ภาษา', '로그인': 'เข้าสู่ระบบ', '로그아웃': 'ออกจากระบบ', '사업장': 'สถานที่', '이름': 'ชื่อ', '사번': 'รหัสพนักงาน',
+      '이름·사번 저장': 'จำชื่อและรหัสพนักงาน', '개인 기기에서만 사용하세요.': 'ใช้เฉพาะอุปกรณ์ส่วนตัวเท่านั้น',
+      '일반 직원은 사업장 · 이름 · 사번 순으로 로그인합니다. 관리자·오더테이커는 사업장 선택을 생략할 수 있습니다.': 'พนักงานเข้าสู่ระบบด้วยสถานที่ ชื่อ และรหัสพนักงาน ผู้ดูแลและผู้รับออเดอร์สามารถข้ามการเลือกสถานที่ได้',
+      '관리자·오더테이커는 선택하지 않음': 'ผู้ดูแล/ผู้รับออเดอร์ไม่ต้องเลือก', '연결 준비 중': 'กำลังเตรียมการเชื่อมต่อ',
+      '객실 정비': 'ทำความสะอาดห้อง', 'QM 점검': 'ตรวจสอบ QM', '객실퍼블릭': 'พื้นที่ส่วนกลางห้องพัก', '하우스맨': 'Houseman',
+      '통합 인디게이터': 'ตัวชี้วัดรวม', '월별조회': 'ดูรายเดือน', '설정': 'ตั้งค่า', '습득물 관리 ↗': 'จัดการของหาย ↗',
+      'NOVA 통합 인사시스템 ↗': 'ระบบ HR NOVA ↗', '업무일자': 'วันที่ทำงาน', '전체 사업장': 'ทุกสถานที่',
+      '전체 동': 'ทุกอาคาร', '전체 층': 'ทุกชั้น', '동': 'อาคาร', '층': 'ชั้น', '진행': 'กำลังดำเนินการ', '완료': 'เสร็จสิ้น', '전체': 'ทั้งหมด',
+      '검색': 'ค้นหา', '새로고침': 'รีเฟรช', '점검대상': 'รายการตรวจ', '당일 청소완료': 'ทำความสะอาดวันนี้', '공실': 'ห้องว่าง',
+      '하우스맨 요청': 'เรียก Houseman', '파트': 'หมวด', '선택': 'เลือก', '수량': 'จำนวน', '품목': 'รายการ', '추가내용': 'รายละเอียดเพิ่มเติม',
+      '요청 등록': 'ส่งคำขอ', '등록 중…': 'กำลังส่ง…', '반영 중…': 'กำลังบันทึก…', '시작 중…': 'กำลังเริ่ม…',
+      '요청 사진': 'รูปคำขอ', '사진 촬영': 'ถ่ายรูป', '사진 추가 촬영': 'ถ่ายรูปเพิ่ม', '삭제': 'ลบ',
+      '처리불가': 'ไม่สามารถดำเนินการ', '처리불가 사유': 'เหตุผลที่ทำไม่ได้', '처리불가 완료': 'ยืนยันทำไม่ได้',
+      '재정비 요청': 'ขอทำใหม่', '재정비 사유': 'เหตุผลที่ต้องทำใหม่', '즉시 재정비': 'ทำใหม่ทันที',
+      '점검 시작': 'เริ่มตรวจ', '점검 계속': 'ตรวจต่อ', '청소 시작': 'เริ่มทำความสะอาด', '청소 완료': 'ทำความสะอาดเสร็จ',
+      'D/S 시작': 'เริ่ม D/S', 'D/S 완료': 'เสร็จ D/S', '접수': 'รับงาน', '접수·바로 시작': 'รับและเริ่มทันที', '처리 시작': 'เริ่มดำเนินการ',
+      '중요': 'สำคัญ', '인수인계': 'ส่งต่องาน', '공동 전달': 'ส่งร่วม', '퇴실지연': 'เช็กเอาต์ล่าช้า', '퇴실 확인': 'เช็กเอาต์แล้ว', '퇴실예정': 'กำหนดเช็กเอาต์',
+      '일반정비': 'ทำความสะอาดทั่วไป', '1인 배정': 'มอบหมาย 1 คน', '2인1조': 'ทีม 2 คน', '2인1조(교육)': 'ทีม 2 คน (ฝึกงาน)',
+      '대기': 'รอ', '배정': 'มอบหมายแล้ว', '청소중': 'กำลังทำความสะอาด', '청소완료': 'ทำความสะอาดเสร็จ', 'QM대기': 'รอ QM',
+      'QM점검중': 'QM กำลังตรวจ', 'QM완료': 'QM เสร็จ', '재정비': 'ทำใหม่', '고장': 'ชำรุด', '객실확인': 'ตรวจสอบห้อง',
+      '습득물': 'ของหาย/ของที่พบ', '기타': 'อื่นๆ', '등록': 'ลงทะเบียน', '접수완료': 'รับงานแล้ว', '처리중': 'กำลังดำเนินการ', '처리완료': 'เสร็จสิ้น',
+      '예: 타월, 생수': 'เช่น ผ้าเช็ดตัว น้ำดื่ม', '필요한 내용을 입력하세요.': 'กรอกรายละเอียดที่ต้องการ', '사유를 입력하세요.': 'กรอกเหตุผล',
+      '확인된 내용을 입력하세요.': 'กรอกรายละเอียดที่พบ', '이름·사번 검색': 'ค้นหาชื่อ/รหัสพนักงาน', '표시할 오더가 없습니다.': 'ไม่มีออเดอร์ที่จะแสดง',
+      '업무를 불러오고 있습니다.': 'กำลังโหลดงาน', '시스템을 준비하고 있습니다.': 'กำลังเตรียมระบบ'
+    },
+    mn: {
+      '언어': 'Хэл', '로그인': 'Нэвтрэх', '로그아웃': 'Гарах', '사업장': 'Ажлын байр', '이름': 'Нэр', '사번': 'Ажилтны дугаар',
+      '이름·사번 저장': 'Нэр, дугаарыг санах', '개인 기기에서만 사용하세요.': 'Зөвхөн хувийн төхөөрөмж дээр ашиглана уу.',
+      '일반 직원은 사업장 · 이름 · 사번 순으로 로그인합니다. 관리자·오더테이커는 사업장 선택을 생략할 수 있습니다.': 'Ажилтан ажлын байр, нэр, ажилтны дугаараар нэвтэрнэ. Админ болон захиалга хүлээн авагч ажлын байрыг сонгохгүй байж болно.',
+      '관리자·오더테이커는 선택하지 않음': 'Админ/захиалга хүлээн авагч сонгохгүй', '연결 준비 중': 'Холболтыг бэлтгэж байна',
+      '객실 정비': 'Өрөө цэвэрлэгээ', 'QM 점검': 'QM шалгалт', '객실퍼블릭': 'Өрөөний нийтийн хэсэг', '하우스맨': 'Houseman',
+      '통합 인디게이터': 'Нэгдсэн индикатор', '월별조회': 'Сарын харагдац', '설정': 'Тохиргоо', '습득물 관리 ↗': 'Олдсон эд зүйл ↗',
+      'NOVA 통합 인사시스템 ↗': 'NOVA HR систем ↗', '업무일자': 'Ажлын огноо', '전체 사업장': 'Бүх ажлын байр',
+      '전체 동': 'Бүх байр', '전체 층': 'Бүх давхар', '동': 'Байр', '층': 'Давхар', '진행': 'Явагдаж буй', '완료': 'Дууссан', '전체': 'Бүгд',
+      '검색': 'Хайх', '새로고침': 'Шинэчлэх', '점검대상': 'Шалгах өрөө', '당일 청소완료': 'Өнөөдөр цэвэрлэсэн', '공실': 'Сул өрөө',
+      '하우스맨 요청': 'Houseman хүсэлт', '파트': 'Ангилал', '선택': 'Сонгох', '수량': 'Тоо', '품목': 'Зүйл', '추가내용': 'Нэмэлт мэдээлэл',
+      '요청 등록': 'Хүсэлт бүртгэх', '등록 중…': 'Бүртгэж байна…', '반영 중…': 'Хадгалж байна…', '시작 중…': 'Эхлүүлж байна…',
+      '요청 사진': 'Хүсэлтийн зураг', '사진 촬영': 'Зураг авах', '사진 추가 촬영': 'Зураг нэмж авах', '삭제': 'Устгах',
+      '처리불가': 'Гүйцэтгэх боломжгүй', '처리불가 사유': 'Боломжгүй шалтгаан', '처리불가 완료': 'Боломжгүй гэж тэмдэглэх',
+      '재정비 요청': 'Дахин цэвэрлэх хүсэлт', '재정비 사유': 'Дахин цэвэрлэх шалтгаан', '즉시 재정비': 'Шууд дахин цэвэрлэх',
+      '점검 시작': 'Шалгалт эхлэх', '점검 계속': 'Шалгалт үргэлжлүүлэх', '청소 시작': 'Цэвэрлэгээ эхлэх', '청소 완료': 'Цэвэрлэгээ дуусгах',
+      'D/S 시작': 'D/S эхлэх', 'D/S 완료': 'D/S дуусгах', '접수': 'Хүлээн авах', '접수·바로 시작': 'Хүлээн аваад эхлэх', '처리 시작': 'Ажил эхлэх',
+      '중요': 'Чухал', '인수인계': 'Ээлж шилжүүлэх', '공동 전달': 'Хамтын хуваарилалт', '퇴실지연': 'Гаралт хоцорсон', '퇴실 확인': 'Гарсан', '퇴실예정': 'Гарах төлөвтэй',
+      '일반정비': 'Ердийн цэвэрлэгээ', '1인 배정': '1 хүн', '2인1조': '2 хүний баг', '2인1조(교육)': '2 хүний баг (сургалт)',
+      '대기': 'Хүлээж байна', '배정': 'Хуваарилсан', '청소중': 'Цэвэрлэгээ хийж байна', '청소완료': 'Цэвэрлэгээ дууссан', 'QM대기': 'QM хүлээж байна',
+      'QM점검중': 'QM шалгаж байна', 'QM완료': 'QM дууссан', '재정비': 'Дахин цэвэрлэх', '고장': 'Эвдрэл', '객실확인': 'Өрөө шалгах',
+      '습득물': 'Олдсон эд зүйл', '기타': 'Бусад', '등록': 'Бүртгэсэн', '접수완료': 'Хүлээн авсан', '처리중': 'Гүйцэтгэж байна', '처리완료': 'Гүйцэтгэсэн',
+      '예: 타월, 생수': 'Ж: алчуур, ус', '필요한 내용을 입력하세요.': 'Шаардлагатай мэдээллийг оруулна уу.', '사유를 입력하세요.': 'Шалтгааныг оруулна уу.',
+      '확인된 내용을 입력하세요.': 'Илэрсэн мэдээллийг оруулна уу.', '이름·사번 검색': 'Нэр/ажилтны дугаар хайх', '표시할 오더가 없습니다.': 'Харуулах захиалга алга.',
+      '업무를 불러오고 있습니다.': 'Ажлыг ачаалж байна.', '시스템을 준비하고 있습니다.': 'Системийг бэлтгэж байна.'
+    }
+  };
+
+  function normalizeLanguage(value) {
+    const lang = String(value || 'ko').trim().toLowerCase();
+    return SUPPORTED.has(lang) ? lang : 'ko';
+  }
+
+  function getLanguage() {
+    try { return normalizeLanguage(localStorage.getItem(STORAGE_KEY) || 'ko'); }
+    catch (ignore) { return 'ko'; }
+  }
+
+  function patternTranslate(source, lang) {
+    if (lang === 'ko') return source;
+    let match = source.match(/^(\d+)층$/);
+    if (match) return lang === 'en' ? `Floor ${match[1]}` : lang === 'th' ? `ชั้น ${match[1]}` : `${match[1]}-р давхар`;
+    match = source.match(/^(\d+)실$/);
+    if (match) return lang === 'en' ? `${match[1]} rooms` : lang === 'th' ? `${match[1]} ห้อง` : `${match[1]} өрөө`;
+    match = source.match(/^(\d+)건$/);
+    if (match) return lang === 'en' ? `${match[1]} items` : lang === 'th' ? `${match[1]} รายการ` : `${match[1]} зүйл`;
+    match = source.match(/^(.+?) 하우스맨 요청$/);
+    if (match) return lang === 'en' ? `${match[1]} Houseman Request` : lang === 'th' ? `${match[1]} เรียก Houseman` : `${match[1]} Houseman хүсэлт`;
+    match = source.match(/^(.+?) 재정비 요청$/);
+    if (match) return lang === 'en' ? `${match[1]} Rework Request` : lang === 'th' ? `${match[1]} ขอทำใหม่` : `${match[1]} Дахин цэвэрлэх хүсэлт`;
+    return source;
+  }
+
+  function translate(source, lang = getLanguage()) {
+    const original = String(source == null ? '' : source);
+    if (lang === 'ko' || !original.trim()) return original;
+    const leading = original.match(/^\s*/)?.[0] || '';
+    const trailing = original.match(/\s*$/)?.[0] || '';
+    const core = original.trim();
+    const translated = (DICT[lang] && DICT[lang][core]) || patternTranslate(core, lang);
+    return `${leading}${translated}${trailing}`;
+  }
+
+  function shouldSkipTextNode(node) {
+    const parent = node && node.parentElement;
+    if (!parent) return true;
+    if (parent.closest('[data-i18n-skip]')) return true;
+    return ['SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'NOSCRIPT'].includes(parent.tagName);
+  }
+
+  function translateTextNode(node, lang) {
+    if (!node || shouldSkipTextNode(node)) return;
+    if (!textOriginal.has(node)) textOriginal.set(node, node.nodeValue || '');
+    const original = textOriginal.get(node) || '';
+    const next = translate(original, lang);
+    if (node.nodeValue !== next) node.nodeValue = next;
+  }
+
+  function translateAttributes(element, lang) {
+    if (!(element instanceof Element) || element.closest('[data-i18n-skip]')) return;
+    let originals = attrOriginal.get(element);
+    if (!originals) {
+      originals = {};
+      attrOriginal.set(element, originals);
+    }
+    ['placeholder', 'title', 'aria-label'].forEach(attr => {
+      if (!element.hasAttribute(attr)) return;
+      if (!Object.prototype.hasOwnProperty.call(originals, attr)) originals[attr] = element.getAttribute(attr) || '';
+      const next = translate(originals[attr], lang);
+      if (element.getAttribute(attr) !== next) element.setAttribute(attr, next);
+    });
+  }
+
+  function applySubtree(root, lang = getLanguage()) {
+    if (!root || applying) return;
+    applying = true;
+    try {
+      if (root.nodeType === Node.TEXT_NODE) {
+        translateTextNode(root, lang);
+        return;
+      }
+      if (!(root instanceof Element) && root !== document) return;
+      if (root instanceof Element) translateAttributes(root, lang);
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node) {
+        if (node.nodeType === Node.TEXT_NODE) translateTextNode(node, lang);
+        else translateAttributes(node, lang);
+        node = walker.nextNode();
+      }
+    } finally {
+      applying = false;
+    }
+  }
+
+  function applyLanguage(lang) {
+    const normalized = normalizeLanguage(lang);
+    document.documentElement.lang = normalized;
+    const select = document.getElementById('loginLanguage');
+    if (select && select.value !== normalized) select.value = normalized;
+    applySubtree(document, normalized);
+  }
+
+  function setLanguage(value) {
+    const lang = normalizeLanguage(value);
+    try { localStorage.setItem(STORAGE_KEY, lang); } catch (ignore) {}
+    applyLanguage(lang);
+    return lang;
+  }
+
+  function init() {
+    const select = document.getElementById('loginLanguage');
+    const language = getLanguage();
+    if (select) {
+      select.value = language;
+      select.addEventListener('change', event => setLanguage(event.currentTarget.value));
+    }
+    applyLanguage(language);
+    const observer = new MutationObserver(mutations => {
+      if (applying) return;
+      const lang = getLanguage();
+      mutations.forEach(mutation => {
+        if (mutation.type === 'characterData') applySubtree(mutation.target, lang);
+        else mutation.addedNodes.forEach(node => applySubtree(node, lang));
+      });
+    });
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+  }
+
+  window.NOVA_I18N = Object.freeze({
+    getLanguage,
+    setLanguage,
+    translate,
+    apply: () => applyLanguage(getLanguage())
+  });
+
+  window.setTimeout(init, 0);
+})();
+</script>
