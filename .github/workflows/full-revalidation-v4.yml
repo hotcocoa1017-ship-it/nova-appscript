@@ -1,0 +1,248 @@
+name: NOVA Full Revalidation V4
+
+on:
+  push:
+    branches: [full-revalidation-20260904-v4]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout current main snapshot
+        uses: actions/checkout@v4
+
+      - name: Apply exact generic production patch chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_sync_status_autohide.py
+          python3 scripts/patch_telegram_self_connect.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          python3 scripts/patch_roommaid_performance_attribution.py
+          python3 scripts/patch_roommaid_close_read_acceleration.py
+          python3 scripts/fix_patch_site_scope_v2.py
+          python3 scripts/patch_site_scope_indicator_close_v2.py
+          python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
+          python3 scripts/patch_houseman_realtime_push.py
+          python3 scripts/patch_concurrent_write_resilience_v1.py
+          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
+          python3 scripts/patch_mobile_view_state_persistence_20260904.py
+
+      - name: Official regression gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_order_site_context_v1.py
+          python3 scripts/validate_nova_release.py
+
+      - name: Validate login, persistent session and remembered credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'LOGIN_TOKEN_HOURS: 12' 00_Config.js
+          grep -q 'persistentSessionToken: mobilePersistent ? createPersistentLoginSession_(user)' 03_Auth.js
+          grep -q 'function resumePersistentLogin' 03_Auth.js
+          grep -q 'function revokePersistentLogin' 03_Auth.js
+          grep -q 'PERSISTENT_ACCOUNT_DISABLED' 03_Auth.js
+          grep -q 'PERSISTENT_SITE_CHANGED' 03_Auth.js
+          grep -q 'PERSISTENT_SESSION_REVOKED' 03_Auth.js
+          grep -q 'id="loginRemember"' Index.html
+          grep -q '이름·사번 저장' Index.html
+          grep -q "NOVA_REMEMBER_LOGIN_KEY_ = 'novaRememberLoginV1'" Client.html
+          grep -q "NOVA_PERSISTENT_SESSION_KEY_ = 'novaPersistentSessionV1'" Client.html
+          grep -q 'restoreRememberedLogin_();' Client.html
+          grep -q 'handleVisibilityChange_' Client.html
+
+      - name: Validate QM direct rework separation
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'QM_REWORK_OPERATIONAL_STATUS_V1' 10_Mobile.js
+          grep -q "updates\[indicatorRoomOperationalStatusHeader_()\] = 'REWORK'" 10_Mobile.js
+          grep -q "const targetCleaningStatus = 'QM_COMPLETED'" 16_QmChecklist.js
+          grep -q 'qualityOnly: true' 16_QmChecklist.js
+          grep -q 'reworkRequested: false' 16_QmChecklist.js
+          grep -q "\['REWORK', '재정비'\]" 06_Indicator.js
+
+      - name: Validate mobile current-view persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'MOBILE_LOCATION_FILTER_PERSIST_V1' Client.html
+          grep -q 'MOBILE_VIEW_STATE_PERSIST_V2' Client.html
+          grep -q 'function restoreMobileViewPreference_' Client.html
+          grep -q 'function saveMobileViewPreference_' Client.html
+          grep -q 'restoreScrollPending: true' Client.html
+          grep -q "role === 'PUBLIC' || role === 'ROOMMAID' || (role === 'QM'" Client.html
+          grep -q 'qmBrowseView' Client.html
+          grep -q 'scrollY' Client.html
+
+      - name: Validate Roommaid QM Public Houseman request parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "if (!\['ROOMMAID', 'QM', 'PUBLIC'\].includes(role))" Client.html
+          grep -q 'const result = await createRoommaidHousemanRequestFast_(payload);' Client.html
+          grep -q 'requestSource: role' Client.html
+          grep -q '하우스맨 DB 우선등록 실패 · 기존 모바일 요청으로 fallback' Client.html
+          grep -q "runMobileAction_('createMobileHousemanRequest'" Client.html
+          grep -q "enabled: \['ROOMMAID', 'QM', 'PUBLIC'\].includes(role)" HousemanRequestPhoto.js
+          grep -q "if (!\['ROOMMAID', 'QM', 'PUBLIC'\].includes(role))" HousemanRequestPhoto.js
+          grep -q 'requestSource !== role' HousemanRequestPhoto.js
+
+      - name: Validate Public request routing and acceleration
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'PUBLIC_HOUSEMAN_REQUEST_V1' Client.html
+          grep -q 'PUBLIC_HOUSEMAN_REQUEST_FAST_V2' Client.html
+          grep -q 'PUBLIC_HOUSEMAN_REQUEST_FAST_V2' 10_Mobile.js
+          grep -q 'PUBLIC_HOUSEMAN_REQUEST_FAST_V2' 12_Shifts.js
+          grep -q 'function resolveHousemanPublicFastAssignee_' 12_Shifts.js
+          grep -q 'prefetchPublicHousemanAssignment_' Client.html
+          grep -q "? \[{ label: '습득물' }, { label: '기타' }\]" Client.html
+          grep -q "\['습득물', '기타'\]" 10_Mobile.js
+
+      - name: Validate Houseman realtime, ordering and lost-found shortcut
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'HOUSEMAN_REALTIME_PUSH_V1' Client.html
+          grep -q 'HOUSEMAN_LATEST_FIRST_V1' 07_Houseman.js
+          grep -q 'HOUSEMAN_LATEST_FIRST_V1' 10_Mobile.js
+          grep -q 'HOUSEMAN_LOST_FOUND_SHORTCUT_V1' Client.html
+          grep -q "if (role === 'HOUSEMAN') return items;" Client.html
+          grep -q "label: '습득물 관리 ↗'" Client.html
+
+      - name: Validate Houseman monthly view
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'MONTHLY_HOUSEMAN_COLUMNS_V1' 11_Monthly.js
+          grep -q 'registeredByName' 11_Monthly.js
+          grep -q 'handlerEmployeeNo' 11_Monthly.js
+          grep -q 'handlerName' 11_Monthly.js
+          grep -q '의뢰자(등록)' Client.html
+          grep -q '담당자(접수.처리)' Client.html
+          grep -q '등록.시작' Client.html
+
+      - name: Validate multilingual UI and Korean operational order storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'NOVA_I18N_COMPLETE_V2' I18nClient.html
+          grep -q 'NOVA_I18N_COMPLETE_V2' I18nServer.js
+          grep -q "'비품': 'ของใช้'" I18nClient.html
+          grep -q "'린넨': 'ผ้าลินิน'" I18nClient.html
+          grep -q "'시설': 'งานซ่อมบำรุง'" I18nClient.html
+          grep -q "'문의': 'สอบถาม'" I18nClient.html
+          grep -q 'MutationObserver' I18nClient.html
+          grep -q 'flushAutoTranslations' I18nClient.html
+          grep -q 'wrapNativeDialogs_' I18nClient.html
+          grep -q 'function translateNovaUiTextBatch' I18nServer.js
+          grep -q 'function prepareNovaHousemanOrderPayloadForStorage_' I18nServer.js
+          grep -q 'function translateNovaHousemanOrderPayload' I18nServer.js
+          grep -q "translatedTo: 'ko'" I18nServer.js
+          grep -q 'originalItems' I18nServer.js
+          grep -q 'originalNote' I18nServer.js
+          grep -q 'translatedItemsKo' I18nServer.js
+          grep -q 'translatedNoteKo' I18nServer.js
+          grep -q 'ORDER_TRANSLATION_FAILED' I18nServer.js
+          ! grep -q 'nova_rooms_current' I18nServer.js
+          ! grep -q 'cleaning_status' I18nServer.js
+          ! grep -q 'operational_status' I18nServer.js
+
+      - name: Validate key server JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check 00_Config.js
+          node --check 03_Auth.js
+          node --check 05_Performance.js
+          node --check 06_Indicator.js
+          node --check 07_Houseman.js
+          node --check 10_Mobile.js
+          node --check 11_Monthly.js
+          node --check 12_Shifts.js
+          node --check 16_QmChecklist.js
+          node --check 17_RoommaidPerformance.js
+          node --check 19_RoommaidCloseJournal.js
+          node --check HousemanRequestPhoto.js
+          node --check I18nServer.js
+          node --check QmMobileBrowse.js
+          node --check RealtimeDailySync.js
+          node --check TelegramSelfConnect.js
+
+      - name: Validate key client JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+          sources = ['Client.html','HousemanRequestPhotoClient.html','HousemanUiPerformancePatch.html','I18nClient.html','IndicatorUiHotfix.html','RoommaidDueOutGuard.html']
+          checked = 0
+          for source in sources:
+              text = Path(source).read_text(encoding='utf-8')
+              scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S|re.I)
+              if not scripts:
+                  continue
+              merged = '\n'.join(re.sub(r'<\?[!=].*?\?>','null',s,flags=re.S) for s in scripts)
+              target = Path('/tmp') / (Path(source).stem + '.js')
+              target.write_text(merged, encoding='utf-8')
+              subprocess.run(['node','--check',str(target)], check=True)
+              checked += 1
+          if checked < 4:
+              raise SystemExit(f'Only {checked} client sources checked')
+          print(f'Validated {checked} client JavaScript sources')
+          PY
+
+      - name: Validate generic production patch-chain idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          tracked=(Index.html 02_Repository.js 03_Auth.js 05_Performance.js 06_Indicator.js 10_Mobile.js 16_QmChecklist.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js)
+          before="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_sync_status_autohide.py
+          python3 scripts/patch_telegram_self_connect.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          python3 scripts/patch_roommaid_performance_attribution.py
+          python3 scripts/patch_roommaid_close_read_acceleration.py
+          python3 scripts/fix_patch_site_scope_v2.py
+          python3 scripts/patch_site_scope_indicator_close_v2.py
+          python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
+          python3 scripts/patch_houseman_realtime_push.py
+          python3 scripts/patch_concurrent_write_resilience_v1.py
+          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
+          python3 scripts/patch_mobile_view_state_persistence_20260904.py
+          after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Summary
+        run: |
+          echo 'NOVA FULL REVALIDATION V4 PASS'
+          echo 'Validation only; production source and deployment were not changed.'
