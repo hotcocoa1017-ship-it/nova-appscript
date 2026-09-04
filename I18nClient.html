@@ -2,12 +2,19 @@
 (() => {
   'use strict';
 
-  // NOVA_I18N_V1
+  // NOVA_I18N_V1 · NOVA_I18N_COMPLETE_V2
   const STORAGE_KEY = 'novaUiLanguage';
+  const AUTO_CACHE_PREFIX = 'novaUiAutoTranslateV2:';
   const SUPPORTED = new Set(['ko', 'en', 'th', 'mn']);
   const textOriginal = new WeakMap();
   const attrOriginal = new WeakMap();
+  const autoCache = new Map();
+  const pending = new Map();
+  const failedRecently = new Map();
   let applying = false;
+  let flushTimer = null;
+  let flushInFlight = false;
+  const originalTitle = document.title || '';
 
   const DICT = {
     en: {
@@ -21,6 +28,7 @@
       '전체 동': 'All Buildings', '전체 층': 'All Floors', '동': 'Building', '층': 'Floor', '진행': 'Active', '완료': 'Done', '전체': 'All',
       '검색': 'Search', '새로고침': 'Refresh', '점검대상': 'Inspection Targets', '당일 청소완료': 'Cleaned Today', '공실': 'Vacant',
       '하우스맨 요청': 'Houseman Request', '파트': 'Category', '선택': 'Select', '수량': 'Qty', '품목': 'Item', '추가내용': 'Notes',
+      '비품': 'Supplies', '린넨': 'Linen', '시설': 'Maintenance', '문의': 'Inquiry',
       '요청 등록': 'Submit Request', '등록 중…': 'Submitting…', '반영 중…': 'Saving…', '시작 중…': 'Starting…',
       '요청 사진': 'Request Photos', '사진 촬영': 'Take Photo', '사진 추가 촬영': 'Add Photo', '삭제': 'Delete',
       '처리불가': 'Unable to Process', '처리불가 사유': 'Unable Reason', '처리불가 완료': 'Mark Unable',
@@ -47,6 +55,7 @@
       '전체 동': 'ทุกอาคาร', '전체 층': 'ทุกชั้น', '동': 'อาคาร', '층': 'ชั้น', '진행': 'กำลังดำเนินการ', '완료': 'เสร็จสิ้น', '전체': 'ทั้งหมด',
       '검색': 'ค้นหา', '새로고침': 'รีเฟรช', '점검대상': 'รายการตรวจ', '당일 청소완료': 'ทำความสะอาดวันนี้', '공실': 'ห้องว่าง',
       '하우스맨 요청': 'เรียก Houseman', '파트': 'หมวด', '선택': 'เลือก', '수량': 'จำนวน', '품목': 'รายการ', '추가내용': 'รายละเอียดเพิ่มเติม',
+      '비품': 'ของใช้', '린넨': 'ผ้าลินิน', '시설': 'งานซ่อมบำรุง', '문의': 'สอบถาม',
       '요청 등록': 'ส่งคำขอ', '등록 중…': 'กำลังส่ง…', '반영 중…': 'กำลังบันทึก…', '시작 중…': 'กำลังเริ่ม…',
       '요청 사진': 'รูปคำขอ', '사진 촬영': 'ถ่ายรูป', '사진 추가 촬영': 'ถ่ายรูปเพิ่ม', '삭제': 'ลบ',
       '처리불가': 'ไม่สามารถดำเนินการ', '처리불가 사유': 'เหตุผลที่ทำไม่ได้', '처리불가 완료': 'ยืนยันทำไม่ได้',
@@ -58,6 +67,10 @@
       '대기': 'รอ', '배정': 'มอบหมายแล้ว', '청소중': 'กำลังทำความสะอาด', '청소완료': 'ทำความสะอาดเสร็จ', 'QM대기': 'รอ QM',
       'QM점검중': 'QM กำลังตรวจ', 'QM완료': 'QM เสร็จ', '재정비': 'ทำใหม่', '고장': 'ชำรุด', '객실확인': 'ตรวจสอบห้อง',
       '습득물': 'ของหาย/ของที่พบ', '기타': 'อื่นๆ', '등록': 'ลงทะเบียน', '접수완료': 'รับงานแล้ว', '처리중': 'กำลังดำเนินการ', '처리완료': 'เสร็จสิ้น',
+      '저장': 'บันทึก', '취소': 'ยกเลิก', '닫기': 'ปิด', '확인': 'ยืนยัน', '적용': 'นำไปใช้', '조회': 'ดูข้อมูล', '미배정': 'ยังไม่มอบหมาย',
+      '객실상태': 'สถานะห้อง', '청소상태': 'สถานะทำความสะอาด', '정비유형': 'ประเภทการทำความสะอาด', '배정유형': 'ประเภทการมอบหมาย',
+      '운영표시': 'สถานะดำเนินงาน', '객실조치': 'การดำเนินการห้อง', '상태변경': 'เปลี่ยนสถานะ', '퇴실': 'เช็กเอาต์', '배정 초기화': 'ล้างการมอบหมาย',
+      'QM배정': 'มอบหมาย QM', 'QM배정 취소': 'ยกเลิก QM', '청소 초기화': 'ล้างสถานะทำความสะอาด', '동 미지정': 'ไม่ระบุอาคาร', '층 미지정': 'ไม่ระบุชั้น',
       '예: 타월, 생수': 'เช่น ผ้าเช็ดตัว น้ำดื่ม', '필요한 내용을 입력하세요.': 'กรอกรายละเอียดที่ต้องการ', '사유를 입력하세요.': 'กรอกเหตุผล',
       '확인된 내용을 입력하세요.': 'กรอกรายละเอียดที่พบ', '이름·사번 검색': 'ค้นหาชื่อ/รหัสพนักงาน', '표시할 오더가 없습니다.': 'ไม่มีออเดอร์ที่จะแสดง',
       '업무를 불러오고 있습니다.': 'กำลังโหลดงาน', '시스템을 준비하고 있습니다.': 'กำลังเตรียมระบบ'
@@ -73,6 +86,7 @@
       '전체 동': 'Бүх байр', '전체 층': 'Бүх давхар', '동': 'Байр', '층': 'Давхар', '진행': 'Явагдаж буй', '완료': 'Дууссан', '전체': 'Бүгд',
       '검색': 'Хайх', '새로고침': 'Шинэчлэх', '점검대상': 'Шалгах өрөө', '당일 청소완료': 'Өнөөдөр цэвэрлэсэн', '공실': 'Сул өрөө',
       '하우스맨 요청': 'Houseman хүсэлт', '파트': 'Ангилал', '선택': 'Сонгох', '수량': 'Тоо', '품목': 'Зүйл', '추가내용': 'Нэмэлт мэдээлэл',
+      '비품': 'Хангамж', '린넨': 'Цагаан хэрэглэл', '시설': 'Засвар үйлчилгээ', '문의': 'Лавлагаа',
       '요청 등록': 'Хүсэлт бүртгэх', '등록 중…': 'Бүртгэж байна…', '반영 중…': 'Хадгалж байна…', '시작 중…': 'Эхлүүлж байна…',
       '요청 사진': 'Хүсэлтийн зураг', '사진 촬영': 'Зураг авах', '사진 추가 촬영': 'Зураг нэмж авах', '삭제': 'Устгах',
       '처리불가': 'Гүйцэтгэх боломжгүй', '처리불가 사유': 'Боломжгүй шалтгаан', '처리불가 완료': 'Боломжгүй гэж тэмдэглэх',
@@ -86,7 +100,7 @@
       '습득물': 'Олдсон эд зүйл', '기타': 'Бусад', '등록': 'Бүртгэсэн', '접수완료': 'Хүлээн авсан', '처리중': 'Гүйцэтгэж байна', '처리완료': 'Гүйцэтгэсэн',
       '예: 타월, 생수': 'Ж: алчуур, ус', '필요한 내용을 입력하세요.': 'Шаардлагатай мэдээллийг оруулна уу.', '사유를 입력하세요.': 'Шалтгааныг оруулна уу.',
       '확인된 내용을 입력하세요.': 'Илэрсэн мэдээллийг оруулна уу.', '이름·사번 검색': 'Нэр/ажилтны дугаар хайх', '표시할 오더가 없습니다.': 'Харуулах захиалга алга.',
-      '업무를 불러오고 있습니다.': 'Ажлыг ачаалж байна.', '시스템을 준비하고 있습니다.': 'Системийг бэлтгэж байна.'
+      '업무를 불러오고 있습니다.': 'Ажлыг ачаалж байна.', '시스템을 준비하고 байна.': 'Системийг бэлтгэж байна.'
     }
   };
 
@@ -98,6 +112,28 @@
   function getLanguage() {
     try { return normalizeLanguage(localStorage.getItem(STORAGE_KEY) || 'ko'); }
     catch (ignore) { return 'ko'; }
+  }
+
+  function readAutoCache(lang) {
+    if (autoCache.has(lang)) return autoCache.get(lang);
+    let value = {};
+    try {
+      const parsed = JSON.parse(localStorage.getItem(`${AUTO_CACHE_PREFIX}${lang}`) || '{}');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) value = parsed;
+    } catch (ignore) {}
+    autoCache.set(lang, value);
+    return value;
+  }
+
+  function writeAutoCache(lang) {
+    const value = readAutoCache(lang);
+    try {
+      const keys = Object.keys(value);
+      if (keys.length > 500) {
+        keys.slice(0, keys.length - 500).forEach(key => delete value[key]);
+      }
+      localStorage.setItem(`${AUTO_CACHE_PREFIX}${lang}`, JSON.stringify(value));
+    } catch (ignore) {}
   }
 
   function patternTranslate(source, lang) {
@@ -112,17 +148,102 @@
     if (match) return lang === 'en' ? `${match[1]} Houseman Request` : lang === 'th' ? `${match[1]} เรียก Houseman` : `${match[1]} Houseman хүсэлт`;
     match = source.match(/^(.+?) 재정비 요청$/);
     if (match) return lang === 'en' ? `${match[1]} Rework Request` : lang === 'th' ? `${match[1]} ขอทำใหม่` : `${match[1]} Дахин цэвэрлэх хүсэлт`;
+    match = source.match(/^(\d+)호 객실 작업$/);
+    if (match) return lang === 'en' ? `Room ${match[1]} Work` : lang === 'th' ? `งานห้อง ${match[1]}` : `${match[1]} өрөөний ажил`;
+    match = source.match(/^공동접수\s+(\d+)명$/);
+    if (match) return lang === 'en' ? `Shared ${match[1]}` : lang === 'th' ? `รับร่วม ${match[1]} คน` : `Хамтран ${match[1]} хүн`;
     return source;
   }
 
-  function translate(source, lang = getLanguage()) {
+  function likelyPersonalOrIdentifierText(core, element) {
+    if (!core) return true;
+    if (['쏘라노', '별관', 'NOVA'].includes(core)) return true;
+    if (/^[가-힣]{2,4}$/.test(core)) {
+      const tag = element && element.tagName;
+      if (!['BUTTON', 'OPTION', 'LABEL', 'TH'].includes(tag)) return true;
+    }
+    if (/^[가-힣]{2,4}\s*\(\d{4,8}\)$/.test(core)) return true;
+    if (element && element.closest('#userText, .mobile-assigned-names, [data-i18n-skip], [data-user-name], [data-employee-no]')) return true;
+    return false;
+  }
+
+  function shouldAutoTranslate(core, element) {
+    if (!core || core.length > 180 || !/[가-힣]/.test(core)) return false;
+    const forceContent = Boolean(element && element.closest('.mobile-task-title, .mobile-task-card > p, .mobile-unable-reason span'));
+    if (!forceContent && likelyPersonalOrIdentifierText(core, element)) return false;
+    return true;
+  }
+
+  function queueAutoTranslation(core, lang, element) {
+    if (lang === 'ko' || !shouldAutoTranslate(core, element)) return;
+    const cache = readAutoCache(lang);
+    if (cache[core]) return;
+    const failedAt = Number(failedRecently.get(`${lang}|${core}`) || 0);
+    if (failedAt && Date.now() - failedAt < 60000) return;
+    if (!pending.has(lang)) pending.set(lang, new Set());
+    pending.get(lang).add(core);
+    if (!flushTimer) flushTimer = window.setTimeout(flushAutoTranslations, 80);
+  }
+
+  function callUiTranslationBatch_(lang, texts) {
+    return new Promise((resolve, reject) => {
+      if (!window.google || !google.script || !google.script.run) {
+        reject(new Error('Apps Script bridge unavailable'));
+        return;
+      }
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(reject)
+        .translateNovaUiTextBatch({ targetLanguage: lang, texts });
+    });
+  }
+
+  async function flushAutoTranslations() {
+    flushTimer = null;
+    if (flushInFlight) {
+      flushTimer = window.setTimeout(flushAutoTranslations, 120);
+      return;
+    }
+    const entry = [...pending.entries()].find(([, set]) => set && set.size);
+    if (!entry) return;
+    const [lang, set] = entry;
+    const texts = [...set].slice(0, 40);
+    texts.forEach(text => set.delete(text));
+    flushInFlight = true;
+    try {
+      const result = await callUiTranslationBatch_(lang, texts);
+      const translations = result && result.translations && typeof result.translations === 'object'
+        ? result.translations
+        : {};
+      const cache = readAutoCache(lang);
+      texts.forEach(text => {
+        const translated = String(translations[text] || '').trim();
+        if (translated && translated !== text) cache[text] = translated;
+        else failedRecently.set(`${lang}|${text}`, Date.now());
+      });
+      writeAutoCache(lang);
+      applyLanguage(getLanguage());
+    } catch (error) {
+      texts.forEach(text => failedRecently.set(`${lang}|${text}`, Date.now()));
+      console.warn('[NOVA I18N] UI 자동번역 지연:', error);
+    } finally {
+      flushInFlight = false;
+      if ([...pending.values()].some(set => set && set.size)) flushTimer = window.setTimeout(flushAutoTranslations, 120);
+    }
+  }
+
+  function translate(source, lang = getLanguage(), element = null) {
     const original = String(source == null ? '' : source);
     if (lang === 'ko' || !original.trim()) return original;
     const leading = original.match(/^\s*/)?.[0] || '';
     const trailing = original.match(/\s*$/)?.[0] || '';
     const core = original.trim();
-    const translated = (DICT[lang] && DICT[lang][core]) || patternTranslate(core, lang);
-    return `${leading}${translated}${trailing}`;
+    const direct = (DICT[lang] && DICT[lang][core]) || patternTranslate(core, lang);
+    if (direct !== core) return `${leading}${direct}${trailing}`;
+    const cached = String(readAutoCache(lang)[core] || '').trim();
+    if (cached) return `${leading}${cached}${trailing}`;
+    queueAutoTranslation(core, lang, element);
+    return original;
   }
 
   function shouldSkipTextNode(node) {
@@ -136,7 +257,7 @@
     if (!node || shouldSkipTextNode(node)) return;
     if (!textOriginal.has(node)) textOriginal.set(node, node.nodeValue || '');
     const original = textOriginal.get(node) || '';
-    const next = translate(original, lang);
+    const next = translate(original, lang, node.parentElement);
     if (node.nodeValue !== next) node.nodeValue = next;
   }
 
@@ -150,9 +271,14 @@
     ['placeholder', 'title', 'aria-label'].forEach(attr => {
       if (!element.hasAttribute(attr)) return;
       if (!Object.prototype.hasOwnProperty.call(originals, attr)) originals[attr] = element.getAttribute(attr) || '';
-      const next = translate(originals[attr], lang);
+      const next = translate(originals[attr], lang, element);
       if (element.getAttribute(attr) !== next) element.setAttribute(attr, next);
     });
+    if (element.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(String(element.type || '').toLowerCase())) {
+      if (!Object.prototype.hasOwnProperty.call(originals, 'value')) originals.value = element.value || '';
+      const nextValue = translate(originals.value, lang, element);
+      if (element.value !== nextValue) element.value = nextValue;
+    }
   }
 
   function applySubtree(root, lang = getLanguage()) {
@@ -183,6 +309,7 @@
     const select = document.getElementById('loginLanguage');
     if (select && select.value !== normalized) select.value = normalized;
     applySubtree(document, normalized);
+    if (originalTitle) document.title = translate(originalTitle, normalized, document.documentElement);
   }
 
   function setLanguage(value) {
@@ -192,6 +319,17 @@
     return lang;
   }
 
+  function wrapNativeDialogs_() {
+    if (window.__novaI18nDialogsWrapped) return;
+    window.__novaI18nDialogsWrapped = true;
+    const nativeAlert = window.alert ? window.alert.bind(window) : null;
+    const nativeConfirm = window.confirm ? window.confirm.bind(window) : null;
+    const nativePrompt = window.prompt ? window.prompt.bind(window) : null;
+    if (nativeAlert) window.alert = message => nativeAlert(translate(message, getLanguage()));
+    if (nativeConfirm) window.confirm = message => nativeConfirm(translate(message, getLanguage()));
+    if (nativePrompt) window.prompt = (message, defaultValue) => nativePrompt(translate(message, getLanguage()), defaultValue);
+  }
+
   function init() {
     const select = document.getElementById('loginLanguage');
     const language = getLanguage();
@@ -199,6 +337,7 @@
       select.value = language;
       select.addEventListener('change', event => setLanguage(event.currentTarget.value));
     }
+    wrapNativeDialogs_();
     applyLanguage(language);
     const observer = new MutationObserver(mutations => {
       if (applying) return;
@@ -215,7 +354,8 @@
     getLanguage,
     setLanguage,
     translate,
-    apply: () => applyLanguage(getLanguage())
+    apply: () => applyLanguage(getLanguage()),
+    flush: () => flushAutoTranslations()
   });
 
   window.setTimeout(init, 0);
