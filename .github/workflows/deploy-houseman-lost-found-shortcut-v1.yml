@@ -1,11 +1,9 @@
 name: Deploy Houseman Lost Found Shortcut V1
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'scripts/patch_houseman_lost_found_shortcut_v1.py'
-      - '.github/workflows/deploy-houseman-lost-found-shortcut-v1.yml'
+  workflow_run:
+    workflows: ['Deploy NOVA Apps Script']
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -20,11 +18,14 @@ env:
 
 jobs:
   deploy:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.head_commit.message, 'Fix houseman shortcut deployment ordering'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Checkout
+      - name: Checkout main after generic deployment
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Apply houseman lost-found shortcut patch
         run: python3 scripts/patch_houseman_lost_found_shortcut_v1.py
