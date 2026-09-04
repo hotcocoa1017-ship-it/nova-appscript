@@ -8,6 +8,7 @@ on:
       - '.github/workflows/deploy-public-houseman-request-v1.yml'
   workflow_dispatch:
 
+# PUBLIC_HOUSEMAN_REQUEST_V1 deployment trigger
 permissions:
   contents: write
 
