@@ -1,0 +1,142 @@
+name: Apply mobile persistent login patch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-mobile-persistent-login-20260904.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply mobile persistent login patch
+        run: |
+          python scripts/patch_mobile_persistent_login_20260904.py
+          python scripts/patch_mobile_persistent_login_visibility_20260904.py
+
+      - name: Validate diff and login behavior anchors
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          auth = Path('03_Auth.js').read_text(encoding='utf-8')
+          index = Path('Index.html').read_text(encoding='utf-8')
+          styles = Path('Styles.html').read_text(encoding='utf-8')
+          client = Path('Client.html').read_text(encoding='utf-8')
+          config = Path('00_Config.js').read_text(encoding='utf-8')
+
+          # Existing short-lived access token remains unchanged.
+          assert "LOGIN_TOKEN_HOURS: 12" in config
+          assert "expiresAt: now + NOVA.LOGIN_TOKEN_HOURS * 60 * 60 * 1000" in auth
+
+          # Mobile login receives a separate revocable persistent session.
+          assert "persistentSessionToken: mobilePersistent ? createPersistentLoginSession_(user) : ''" in auth
+          assert "function resumePersistentLogin(" in auth
+          assert "function revokePersistentLogin(" in auth
+          assert "PERSISTENT_ACCOUNT_DISABLED" in auth
+          assert "PERSISTENT_SITE_CHANGED" in auth
+          assert "PERSISTENT_SESSION_REVOKED" in auth
+          assert "getActiveUserByEmployeeNo_" in auth
+          assert "properties.deleteProperty(key)" in auth
+
+          # Remember-login UI and local-only credential persistence.
+          assert 'id="loginRemember"' in index
+          assert '이름·사번 저장' in index
+          assert '개인 기기에서만 사용하세요.' in index
+          assert '.login-remember-option {' in styles
+          assert "const NOVA_REMEMBER_LOGIN_KEY_ = 'novaRememberLoginV1'" in client
+          assert "name: String(name || '')" in client
+          assert "employeeNo: String(employeeNo || '')" in client
+          assert "site: String(site || '')" in client
+          assert "restoreRememberedLogin_();" in client
+
+          # Mobile persistent resume/refresh/logout flow.
+          assert "const NOVA_PERSISTENT_SESSION_KEY_ = 'novaPersistentSessionV1'" in client
+          assert "await refreshPersistentLogin_(true)" in client
+          assert "schedulePersistentLoginRefresh_();" in client
+          assert "expiresAt - Date.now() - 30 * 60 * 1000" in client
+          assert "async function handleVisibilityChange_()" in client
+          assert "await refreshPersistentLogin_(false)" in client
+          logout = re.search(r"function handleLogout\(\).*?\n  \}\n\n  /\* ORDER_SHARED_SITE_CONTEXT_V1", client, re.S)
+          assert logout
+          block = logout.group(0)
+          assert "setPersistentSessionToken_('')" in block
+          assert "localStorage.removeItem('novaToken')" in block
+          assert "revokePersistentLogin" in block
+          assert "restoreRememberedLogin_(true)" in block
+
+          # Desktop must not receive persistent session from normal client flow.
+          assert "clientType === 'mobile'" in client
+          assert "clientType !== 'mobile'" in client
+          print('Persistent mobile login static validation passed.')
+          PY
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check 00_Config.js
+          node --check 03_Auth.js
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          for source, target in [('Client.html','/tmp/NovaPersistentClient.js')]:
+              text = Path(source).read_text(encoding='utf-8')
+              scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+              if not scripts:
+                  raise SystemExit(f'No script block found in {source}')
+              Path(target).write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaPersistentClient.js
+
+      - name: Validate remembered-login scenarios
+        run: |
+          python - <<'PY'
+          def remember(checked, name='홍길동', employee='123456', site='쏘라노'):
+              return {'enabled': True, 'name': name, 'employeeNo': employee, 'site': site} if checked else None
+
+          assert remember(True)['employeeNo'] == '123456'
+          assert remember(True)['site'] == '쏘라노'
+          assert remember(False) is None
+
+          # Persistent session is independent from credential remember checkbox.
+          def persistent(client_type, requested=True):
+              return client_type == 'mobile' and requested is not False
+          assert persistent('mobile', True)
+          assert persistent('mobile', False) is False
+          assert persistent('desktop', True) is False
+          print('Remember/persistent login scenarios passed.')
+          PY
+
+      - name: Commit source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add 03_Auth.js Index.html Styles.html Client.html
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+            exit 0
+          fi
+          git commit -m "feat: keep mobile login until explicit logout"
+          git push origin HEAD:main
