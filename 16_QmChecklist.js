@@ -446,7 +446,7 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
     const completedAt = nowText_();
     const startedAt = String(priorDetail.startedAt || draftInfo.data['등록일시'] || completedAt).trim();
     const durationMinutes = minutesBetween_(startedAt, completedAt);
-    const targetCleaningStatus = passed ? 'QM_COMPLETED' : 'REWORK';
+    const targetCleaningStatus = 'QM_COMPLETED'; // QM_REWORK_OPERATIONAL_STATUS_V1 · FAIL은 품질자료만 기록
     const updates = { '청소상태': targetCleaningStatus, '수정일시': completedAt };
     // Realtime이 이미 같은 최종상태를 Sheet에 미러했다면 상태행을 다시 쓰지 않는다.
     // 아직 미러 전이면 기존과 동일하게 Sheet도 즉시 최종상태로 맞춘다.
@@ -464,6 +464,8 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
     const finalDetail = Object.assign({}, priorDetail, {
       revision: checklist.revision,
       result: passed ? 'PASS' : 'FAIL',
+      qualityOnly: true,
+      reworkRequested: false,
       startedAt,
       completedAt,
       durationMinutes,
@@ -514,18 +516,18 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
       site: String(rowInfo.data['사업장'] || site).trim(),
       roomNo,
       targetEmployeeNo: user.employeeNo,
-      status: passed ? 'QM_COMPLETE' : 'QM_REWORK',
+      status: 'QM_COMPLETE',
       registeredBy: user.employeeNo,
       startedAt,
       completedAt,
       version,
       detail: {
-        action: passed ? 'COMPLETE' : 'REWORK', role: 'QM', reason: failSummary,
+        action: 'COMPLETE', role: 'QM', qualityResult: passed ? 'PASS' : 'FAIL', reason: failSummary,
         checklistRecordId, checklistRevision: checklist.revision, failedCount: defects.length,
         durationMinutes, locationSummary,
         beforeCleaningStatus: rowInfo.data['청소상태'],
         previousRoomStatus: String(rowInfo.data['객실상태'] || '').trim().toUpperCase(),
-        sourceRoomStatus: passed ? String(rowInfo.data['객실상태'] || '').trim().toUpperCase() : '',
+        sourceRoomStatus: String(rowInfo.data['객실상태'] || '').trim().toUpperCase(),
         roomStatus: updates['객실상태'] || rowInfo.data['객실상태'],
         cleaningStatus: updates['청소상태'], cleaningType, assignmentType,
         primaryEmployeeNo: roommaidNo, secondaryEmployeeNo: secondaryRoommaidNo,
@@ -533,20 +535,7 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
       }
     });
 
-    if (!passed) {
-      const usersByEmployeeNo = getUserIndex_().byEmployeeNo;
-      [roommaidNo, secondaryRoommaidNo].filter(Boolean).forEach(employeeNo => {
-        if (!usersByEmployeeNo[employeeNo]) return;
-        queueRoommaidReworkTelegram_({
-          businessDate, site: String(rowInfo.data['사업장'] || site).trim(), roomNo,
-          targetUser: usersByEmployeeNo[employeeNo], reason: failSummary,
-          preassigned: normalizeYesNo_(rowInfo.data['선배정여부']) === 'Y',
-          vip: normalizeYesNo_(rowInfo.data['VIP여부']) === 'Y',
-          importantRoom: normalizeYesNo_(rowInfo.data['중요객실여부']) === 'Y',
-          registeredBy: user.employeeNo, version
-        });
-      });
-    }
+    // 체크리스트 FAIL은 품질자료 전용이며 룸메이드 재정비 알림을 생성하지 않습니다.
 
     const refreshed = Object.assign({}, rowInfo.data, updates);
     return {
@@ -567,7 +556,7 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
         qmEmployeeNo: user.employeeNo,
         version
       },
-      message: passed ? `QM 점검을 완료했습니다. (${durationMinutes == null ? '-' : durationMinutes}분)` : `하자 ${defects.length}건으로 재정비를 요청했습니다.`
+      message: passed ? `QM 점검을 완료했습니다. (${durationMinutes == null ? '-' : durationMinutes}분)` : `QM 점검을 완료했습니다. (불량 ${defects.length}건 기록 · ${durationMinutes == null ? '-' : durationMinutes}분)`
     };
      } finally {
       writeLock.releaseLock();

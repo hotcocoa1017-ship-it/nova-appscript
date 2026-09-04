@@ -274,7 +274,8 @@ function updateMobileRoomOperation(token, payload) { // (룸메이드·QM 모바
       } else if (action === 'REWORK') {
         const reason = String(safe.reason || '').trim();
         if (!reason) throw new Error('재정비 사유를 입력하세요.');
-        updates['청소상태'] = 'REWORK';
+        ensureIndicatorRoomOperationalStatusHeader_();
+        updates[indicatorRoomOperationalStatusHeader_()] = 'REWORK'; // QM_REWORK_OPERATIONAL_STATUS_V1
         updates.__reason = reason;
       } else {
         throw new Error('지원하지 않는 QM 작업입니다.');
@@ -299,13 +300,17 @@ function updateMobileRoomOperation(token, payload) { // (룸메이드·QM 모바
         action,
         role,
         reason,
+        previousOperationalStatus: normalizeIndicatorRoomOperationalStatus_(rowInfo.data[indicatorRoomOperationalStatusHeader_()]),
+        operationalStatus: role === 'QM' && action === 'REWORK'
+          ? 'REWORK'
+          : normalizeIndicatorRoomOperationalStatus_(rowInfo.data[indicatorRoomOperationalStatusHeader_()]),
         beforeCleaningStatus: rowInfo.data['청소상태'],
         previousRoomStatus: String(rowInfo.data['객실상태'] || '').trim().toUpperCase(),
         sourceRoomStatus: role === 'ROOMMAID' && action === 'COMPLETE'
           ? String(rowInfo.data['객실상태'] || '').trim().toUpperCase()
           : '',
         roomStatus: updates['객실상태'] || rowInfo.data['객실상태'],
-        cleaningStatus: updates['청소상태'],
+        cleaningStatus: updates['청소상태'] || rowInfo.data['청소상태'],
         cleaningType,
         assignmentType,
         primaryEmployeeNo: roommaidNo,
@@ -529,8 +534,8 @@ function buildQmSummary_(rooms) { // (QM 요약)
   return {
     total: rooms.length,
     waiting: rooms.filter(room => ['QM_WAITING', 'COMPLETED'].includes(room.cleaningStatus)).length,
-    checking: rooms.filter(room => room.cleaningStatus === 'QM_CHECKING').length,
-    rework: rooms.filter(room => room.cleaningStatus === 'REWORK').length,
+    checking: rooms.filter(room => room.cleaningStatus === 'QM_CHECKING' && room.operationalStatus !== 'REWORK').length,
+    rework: rooms.filter(room => room.operationalStatus === 'REWORK').length,
     completed: rooms.filter(room => room.cleaningStatus === 'QM_COMPLETED').length
   };
 }

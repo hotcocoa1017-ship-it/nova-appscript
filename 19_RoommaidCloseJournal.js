@@ -964,7 +964,11 @@ function isRoommaidCloseDuplicateCycleBoundary_(event) { // (정상 다회 정�
     return ['ASSIGN_ROOMMAID', 'CLEANING_START', 'CLEAR_ASSIGNMENT', 'REWORK'].includes(action || status);
   }
   if (type === NOVA.RECORD_TYPES.QM && (status.includes('REWORK') || action.includes('REWORK'))) return true;
-  if (type === NOVA.RECORD_TYPES.QM_CHECKLIST && (status === 'FAIL' || action.includes('REWORK'))) return true;
+  if (type === NOVA.RECORD_TYPES.QM_CHECKLIST) { // QM_REWORK_OPERATIONAL_STATUS_V1
+    const detail = event.detail || {};
+    if (action.includes('REWORK')) return true;
+    if (status === 'FAIL' && detail.reworkRequested !== false && detail.qualityOnly !== true) return true;
+  }
   return false;
 }
 

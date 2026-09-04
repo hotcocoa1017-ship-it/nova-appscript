@@ -1175,6 +1175,20 @@
       return callServer(legacyMethod, state.token, legacySafe);
     }
 
+    if (mappedAction === 'QM_REWORK') { // QM_REWORK_OPERATIONAL_STATUS_V1 · Cloud Run 청소상태 REWORK 경로 우회
+      const directResult = await callServer(legacyMethod, state.token, legacySafe);
+      if (!directResult?.ok) throw new Error(directResult?.message || '재정비 상태를 저장하지 못했습니다.');
+      void callServer('syncNovaRealtimeRoomForAction', state.token, {
+        businessDate: safe.businessDate,
+        site: safe.site,
+        roomNo: safe.roomNo,
+        action: 'UPDATE_ROOM_OPERATION_STATUS'
+      }).catch(syncError => {
+        console.warn('[NOVA Realtime] 재정비 객실조치 DB 단건 동기화는 정기 동기화로 넘깁니다.', syncError);
+      });
+      return Object.assign({}, directResult, { reworkOperationalSafePath: true });
+    }
+
     const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
       || (mappedAction === 'CHANGE_ROOM_STATUS'
         && String(safe.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT');
@@ -4657,7 +4671,8 @@
       { code: 'CLEANING_ONLY', label: '청소중' }
     ].concat(state.indicator.data?.codes?.roomStatuses || []).concat([
       { code: 'OPERATION_ROOM_CHECK', label: '객실확인' },
-      { code: 'OPERATION_BROKEN', label: '고장객실' }
+      { code: 'OPERATION_BROKEN', label: '고장객실' },
+      { code: 'OPERATION_REWORK', label: '재정비' }
     ]);
 
     filterContainer.innerHTML = filters.map(filter => `
@@ -4711,7 +4726,8 @@
       ALL: (rooms || []).length,
       CLEANING_ONLY: 0,
       OPERATION_ROOM_CHECK: 0,
-      OPERATION_BROKEN: 0
+      OPERATION_BROKEN: 0,
+      OPERATION_REWORK: 0
     };
     (data.codes?.roomStatuses || []).forEach(code => { counts[code.code] = 0; });
     (rooms || []).forEach(room => {
@@ -4721,6 +4737,7 @@
       if (cleaningStatusCode === 'CLEANING') counts.CLEANING_ONLY += 1;
       if (operationalStatusCode === 'ROOM_CHECK') counts.OPERATION_ROOM_CHECK += 1;
       if (operationalStatusCode === 'BROKEN') counts.OPERATION_BROKEN += 1;
+      if (operationalStatusCode === 'REWORK') counts.OPERATION_REWORK += 1;
       if (Object.prototype.hasOwnProperty.call(counts, roomStatusCode)) counts[roomStatusCode] += 1;
     });
     return counts;
@@ -5036,6 +5053,8 @@
       if (operationalStatusCode !== 'ROOM_CHECK') return false;
     } else if (state.indicator.filter === 'OPERATION_BROKEN') {
       if (operationalStatusCode !== 'BROKEN') return false;
+    } else if (state.indicator.filter === 'OPERATION_REWORK') {
+      if (operationalStatusCode !== 'REWORK') return false;
     } else if (state.indicator.filter !== 'ALL' && roomStatusCode !== state.indicator.filter) {
       return false;
     }
@@ -5056,12 +5075,13 @@
     return (state.indicator.data?.rooms || []).filter(roomMatchesIndicatorFilter_);
   }
 
-  function normalizeIndicatorRoomOperationalStatus_(value) { // (통합 인디게이터 고장·객실확인 코드 정리)
+  function normalizeIndicatorRoomOperationalStatus_(value) { // (통합 인디게이터 고장·객실확인·재정비 코드 정리)
     const raw = String(value || '').trim();
     const upper = raw.toUpperCase().replace(/\s+/g, '_');
     if (!raw) return '';
     if (['BROKEN', 'OUT_OF_ORDER', 'OOO', 'O.O.O', '0.0.0', '고장'].includes(upper) || raw === '고장') return 'BROKEN';
     if (['ROOM_CHECK', 'ROOMCHECK', 'CHECK_ROOM', '객실확인'].includes(upper) || raw === '객실확인') return 'ROOM_CHECK';
+    if (['REWORK', '재정비'].includes(upper) || raw === '재정비') return 'REWORK';
     return '';
   }
 
@@ -5069,12 +5089,13 @@
     const code = normalizeIndicatorRoomOperationalStatus_(value);
     if (code === 'BROKEN') return '(0.0.0)';
     if (code === 'ROOM_CHECK') return '객실확인';
+    if (code === 'REWORK') return '재정비';
     return '';
   }
 
   function indicatorRoomOperationalStatusClass_(value) { // (객실 조치상태 카드 클래스명)
     const code = normalizeIndicatorRoomOperationalStatus_(value);
-    return code === 'BROKEN' ? 'broken' : code === 'ROOM_CHECK' ? 'room-check' : '';
+    return code === 'BROKEN' ? 'broken' : code === 'ROOM_CHECK' ? 'room-check' : code === 'REWORK' ? 'room-check' : '';
   }
 
   function indicatorRoomCardBaseStatusCode_(room) { // (객실카드 현재 정비주기 기준 객실상태)
@@ -7472,8 +7493,8 @@
     if (state.qmChecklist.autosaveTimer) window.clearTimeout(state.qmChecklist.autosaveTimer);
     state.qmChecklist.autosaveTimer = null;
     const passed = !items.some(item => answerMap[item.code]?.result === 'FAIL') && !(draft.defects || []).length;
-    const realtimeAction = passed ? 'QM_COMPLETE' : 'QM_REWORK';
-    const targetStatus = passed ? 'QM_COMPLETED' : 'REWORK';
+    const realtimeAction = 'QM_COMPLETE'; // QM_REWORK_OPERATIONAL_STATUS_V1 · FAIL은 품질자료만 기록
+    const targetStatus = 'QM_COMPLETED';
     const requestId = novaRealtimeRequestId_(realtimeAction, active.roomNo);
     const room = (state.mobile.data?.rooms || []).find(item => String(item.roomNo || '') === String(active.roomNo || ''));
 
@@ -7510,7 +7531,7 @@
       active.roomVersion = Number(realtime.version || realtime.room?.version || active.roomVersion || 0);
       state.qmChecklist.activeInspection = null;
       closeModal();
-      showToast(passed ? 'QM 점검완료를 반영했습니다.' : `하자 ${(draft.defects || []).length + items.filter(item => answerMap[item.code]?.result === 'FAIL').length}건 · 재정비를 반영했습니다.`);
+      showToast(passed ? 'QM 점검완료를 반영했습니다.' : `QM 점검완료 · 불량 ${(draft.defects || []).length + items.filter(item => answerMap[item.code]?.result === 'FAIL').length}건 기록`);
 
       // 무거운 Sheet 체크리스트/품질이력 저장은 사용자 응답 경로 밖에서 이어서 처리한다.
       const persistDetail = async () => {
@@ -7903,7 +7924,8 @@
     const operationBadges = [
       room.preassigned ? '<span class="mobile-operation-badge preassigned">선배정</span>' : '',
       room.vip ? '<span class="mobile-operation-badge vip">VIP</span>' : '',
-      room.importantRoom ? '<span class="mobile-operation-badge important">중요</span>' : ''
+      room.importantRoom ? '<span class="mobile-operation-badge important">중요</span>' : '',
+      normalizeIndicatorRoomOperationalStatus_(room.operationalStatus) === 'REWORK' ? '<span class="mobile-operation-badge important">재정비</span>' : ''
     ].filter(Boolean).join('');
     const viewLabel = view === 'CLEANED' ? '당일 청소완료' : '공실';
     let actions = '';
@@ -8135,7 +8157,8 @@
     const operationBadges = [
       room.preassigned ? '<span class="mobile-operation-badge preassigned">선배정</span>' : '',
       room.vip ? '<span class="mobile-operation-badge vip">VIP</span>' : '',
-      room.importantRoom ? '<span class="mobile-operation-badge important">중요</span>' : ''
+      room.importantRoom ? '<span class="mobile-operation-badge important">중요</span>' : '',
+      normalizeIndicatorRoomOperationalStatus_(room.operationalStatus) === 'REWORK' ? '<span class="mobile-operation-badge important">재정비</span>' : ''
     ].filter(Boolean).join('');
     let actions = '';
     const mobileCleaningActive = role === 'ROOMMAID' && isCleaningActiveStatus_(room.cleaningStatus, state.mobile.data?.codes?.cleaningStatuses);
@@ -8147,7 +8170,7 @@
       actions += `<button data-houseman-request="${escapeAttr(room.roomNo)}">하우스맨 요청</button>`;
     } else if (role === 'QM') {
       if (['QM_WAITING', 'COMPLETED'].includes(room.cleaningStatus)) actions += `<button class="primary" data-room-action="START" data-room-no="${escapeAttr(room.roomNo)}">점검 시작</button>`;
-      if (room.cleaningStatus === 'QM_CHECKING') actions += `<button class="primary" data-room-action="CONTINUE" data-room-no="${escapeAttr(room.roomNo)}">점검 계속</button><button data-room-action="REWORK" data-room-no="${escapeAttr(room.roomNo)}">즉시 재정비</button>`;
+      if (room.cleaningStatus === 'QM_CHECKING' && normalizeIndicatorRoomOperationalStatus_(room.operationalStatus) !== 'REWORK') actions += `<button class="primary" data-room-action="CONTINUE" data-room-no="${escapeAttr(room.roomNo)}">점검 계속</button><button data-room-action="REWORK" data-room-no="${escapeAttr(room.roomNo)}">즉시 재정비</button>`;
       actions += `<button data-houseman-request="${escapeAttr(room.roomNo)}">하우스맨 요청</button>`;
     }
     return `<article class="mobile-room-card${roommaidMobileCardClass_(room, role)}${mobileCleaningActive ? ' mobile-card-cleaning' : ''}">
