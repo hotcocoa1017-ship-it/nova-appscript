@@ -8624,9 +8624,9 @@
     }
   }
 
-  async function createRoommaidHousemanRequestFast_(payload) { // (룸메이드 오더 PostgreSQL 선확정·Sheet 후행)
+  async function createRoommaidHousemanRequestFast_(payload) { // (ROOMMAID·QM 하우스맨 요청 PostgreSQL 선확정·Sheet 후행) // QM_HOUSEMAN_REQUEST_PARITY_V1
     const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
-    if (role !== 'ROOMMAID') {
+    if (!['ROOMMAID', 'QM'].includes(role)) {
       const legacy = await callServer('createMobileHousemanRequest', state.token, payload);
       return Object.assign({}, legacy || {}, { realtime: false, mirrorPromise: Promise.resolve(legacy) });
     }
@@ -8643,11 +8643,21 @@
       requester: state.bootstrap?.user?.name || '',
       handover: false
     });
-    const realtime = await novaRealtimeCreateHousemanOrder_(realtimePayload);
+    let realtime;
+    try {
+      realtime = await novaRealtimeCreateHousemanOrder_(realtimePayload);
+    } catch (error) {
+      if (role !== 'QM') throw error;
+      console.warn('[NOVA QM] 하우스맨 DB 우선등록 실패 · 기존 모바일 요청으로 fallback', error);
+      const legacy = await callServer('createMobileHousemanRequest', state.token, Object.assign({}, payload || {}, {
+        requestSource: 'QM', createdFrom: 'MOBILE', assignmentMode: 'UNASSIGNED', handover: false
+      }));
+      return Object.assign({}, legacy || {}, { realtime: false, fallback: true, mirrorPromise: Promise.resolve(legacy) });
+    }
     const mirrorPayload = Object.assign({}, realtime.mirrorPayload || realtimePayload, {
       realtimeOrderId: realtime.orderId || realtime.order?.orderId || '',
       requester: state.bootstrap?.user?.name || '',
-      requestSource: 'ROOMMAID',
+      requestSource: role, // QM_HOUSEMAN_REQUEST_PARITY_V1
       createdFrom: 'MOBILE',
       assignmentMode: 'UNASSIGNED',
       handover: false
@@ -8683,7 +8693,7 @@
         note: $('mobileRequestNote').value.trim(), requester: state.bootstrap.user.name
       };
       const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
-      if (role !== 'ROOMMAID') {
+      if (!['ROOMMAID', 'QM'].includes(role)) { // QM_HOUSEMAN_REQUEST_PARITY_V1
         closeModal();
         await runMobileAction_('createMobileHousemanRequest', payload, event.currentTarget);
         return;
