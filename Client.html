@@ -3198,13 +3198,14 @@
         <details class="monthly-staff-panel"><summary>직원별 집계 보기</summary><div id="monthlyStaffSummary" class="monthly-staff-summary"></div></details>
         <div class="monthly-table-wrap">
           <table class="monthly-table">
-            <thead><tr><th>업무일자</th><th>구분</th><th>사업장</th><th>객실</th><th>담당자</th><th>상태</th><th>업무내용</th><th>사진</th><th>등록/시작</th><th>완료</th><th>소요</th></tr></thead>
+            <thead><tr id="monthlyTableHeaderRow"><th>업무일자</th><th>구분</th><th>사업장</th><th>객실</th><th>담당자</th><th>상태</th><th>업무내용</th><th>사진</th><th>등록/시작</th><th>완료</th><th>소요</th></tr></thead>
             <tbody id="monthlyTableBody"><tr><td colspan="11" class="table-empty">조회 데이터를 불러오는 중입니다.</td></tr></tbody>
           </table>
         </div>
         <div id="monthlyPagination" class="monthly-pagination"></div>
       </section>`;
     bindMonthlyControls_();
+    renderMonthlyTableHeader_(); // MONTHLY_HOUSEMAN_COLUMNS_V1
   }
 
   function bindMonthlyControls_() { // (월별·일별 조회 이벤트 연결)
@@ -3545,6 +3546,11 @@
       employeeNo: assignedEmployeeNo,
       employeeName: assignedName || assignedEmployeeNo || '-',
       employeeDisplay: assignedEmployeeNo ? `${assignedName || assignedEmployeeNo} (${assignedEmployeeNo})` : '-',
+      registeredByEmployeeNo: String(state.bootstrap?.user?.employeeNo || ''), // MONTHLY_HOUSEMAN_COLUMNS_V1
+      registeredByName: String(state.bootstrap?.user?.name || state.bootstrap?.user?.employeeNo || '-'),
+      acceptedByEmployeeNo: '',
+      handlerEmployeeNo: '',
+      handlerName: '-',
       statusCode: String(order?.statusCode || (assignedEmployeeNo ? 'ASSIGNED' : 'REGISTERED')),
       statusLabel: String(order?.statusLabel || (assignedEmployeeNo ? '배정' : '등록')),
       requestSource: 'MONTHLY_HISTORY',
@@ -4125,25 +4131,63 @@
     $('monthlyStaffSummary').innerHTML = `<table><thead><tr><th>직원</th><th>직무</th><th>기록</th><th>완료</th><th>처리불가</th><th>인정 정비수</th><th>평균</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.employeeNo)}</small></td><td>${escapeHtml(item.job || '-')}</td><td>${Number(item.total || 0).toLocaleString('ko-KR')}</td><td>${Number(item.completed || 0).toLocaleString('ko-KR')}</td><td>${Number(item.unable || 0).toLocaleString('ko-KR')}</td><td>${Number(item.recognizedUnits || 0).toLocaleString('ko-KR')}</td><td>${formatMonthlyMinutes_(item.averageMinutes)}</td></tr>`).join('')}</tbody></table>`;
   }
 
-  function renderMonthlyTable_(items) { // (월별·일별 이력 목록·하우스맨 사진보기)
+  function renderMonthlyTableHeader_() { // (하우스맨 전용 요청자·등록자·실처리자 열) // MONTHLY_HOUSEMAN_COLUMNS_V1
+    const row = $('monthlyTableHeaderRow');
+    const houseman = String(state.monthly.type || '').trim().toUpperCase() === 'HOUSEMAN';
+    if (row) {
+      const headers = houseman
+        ? ['업무일자', '구분', '사업장', '객실', '의뢰자(등록)', '담당자(접수.처리)', '상태', '업무내용', '사진', '등록.시작', '완료', '소요']
+        : ['업무일자', '구분', '사업장', '객실', '담당자', '상태', '업무내용', '사진', '등록/시작', '완료', '소요'];
+      row.innerHTML = headers.map(label => `<th>${escapeHtml(label)}</th>`).join('');
+    }
+    return houseman ? 12 : 11;
+  }
+
+  function renderMonthlyTable_(items) { // (월별·일별 이력 목록·하우스맨 사진보기) // MONTHLY_HOUSEMAN_COLUMNS_V1
+    const houseman = String(state.monthly.type || '').trim().toUpperCase() === 'HOUSEMAN';
+    const columnCount = renderMonthlyTableHeader_();
     if (!items.length) {
-      $('monthlyTableBody').innerHTML = '<tr><td colspan="11" class="table-empty">선택한 조건의 이력이 없습니다.</td></tr>';
+      $('monthlyTableBody').innerHTML = `<tr><td colspan="${columnCount}" class="table-empty">선택한 조건의 이력이 없습니다.</td></tr>`;
       return;
     }
-    $('monthlyTableBody').innerHTML = items.map(item => `
-      <tr>
-        <td>${escapeHtml(item.businessDate)}</td>
-        <td><span class="monthly-type type-${escapeAttr(item.typeCode)}">${escapeHtml(item.typeLabel)}</span></td>
-        <td>${escapeHtml(item.site || '-')}</td>
-        <td class="room-cell">${escapeHtml(item.roomNo || '-')}</td>
-        <td>${escapeHtml(item.employeeDisplay || '-')}</td>
-        <td><span class="monthly-status">${escapeHtml(item.statusLabel || '-')}</span>${item.canDelete ? `<button class="monthly-order-cancel" type="button" data-monthly-order-cancel="${escapeAttr(item.recordId)}">등록취소</button>` : ''}</td>
-        <td class="monthly-detail" title="${escapeAttr(item.detailText || '')}">${escapeHtml(item.detailText || '-')}</td>
-        <td class="monthly-photo-cell">${item.typeCode === 'HOUSEMAN' && Number(item.photoCount || 0) > 0 ? `<button class="monthly-photo-button" type="button" data-monthly-photo-order="${escapeAttr(item.recordId)}">사진보기</button>` : '-'}</td>
-        <td>${escapeHtml(item.startedAt || item.acceptedAt || item.registeredAt || '-')}</td>
-        <td>${escapeHtml(item.completedAt || '-')}</td>
-        <td>${formatMonthlyMinutes_(item.durationMinutes)}</td>
-      </tr>`).join('');
+    $('monthlyTableBody').innerHTML = items.map(item => {
+      if (houseman) {
+        const requester = String(item.requester || '').trim() || '-';
+        const registeredByName = String(item.registeredByName || '').trim() || '-';
+        const registeredByEmployeeNo = String(item.registeredByEmployeeNo || '').trim();
+        const handlerName = String(item.handlerName || '').trim() || '-';
+        const handlerEmployeeNo = String(item.handlerEmployeeNo || '').trim();
+        return `
+          <tr>
+            <td>${escapeHtml(item.businessDate)}</td>
+            <td><span class="monthly-type type-${escapeAttr(item.typeCode)}">${escapeHtml(item.typeLabel)}</span></td>
+            <td>${escapeHtml(item.site || '-')}</td>
+            <td class="room-cell">${escapeHtml(item.roomNo || '-')}</td>
+            <td><strong>${escapeHtml(requester)}</strong><small>등록 ${escapeHtml(registeredByName)}${registeredByEmployeeNo && registeredByName !== registeredByEmployeeNo ? ` (${escapeHtml(registeredByEmployeeNo)})` : ''}</small></td>
+            <td>${handlerName !== '-' ? `<strong>${escapeHtml(handlerName)}</strong>${handlerEmployeeNo && handlerName !== handlerEmployeeNo ? `<small>${escapeHtml(handlerEmployeeNo)}</small>` : ''}` : '-'}</td>
+            <td><span class="monthly-status">${escapeHtml(item.statusLabel || '-')}</span>${item.canDelete ? `<button class="monthly-order-cancel" type="button" data-monthly-order-cancel="${escapeAttr(item.recordId)}">등록취소</button>` : ''}</td>
+            <td class="monthly-detail" title="${escapeAttr(item.detailText || '')}">${escapeHtml(item.detailText || '-')}</td>
+            <td class="monthly-photo-cell">${Number(item.photoCount || 0) > 0 ? `<button class="monthly-photo-button" type="button" data-monthly-photo-order="${escapeAttr(item.recordId)}">사진보기</button>` : '-'}</td>
+            <td><span>등록 ${escapeHtml(item.registeredAt || '-')}</span><small>시작 ${escapeHtml(item.startedAt || '-')}</small></td>
+            <td>${escapeHtml(item.completedAt || '-')}</td>
+            <td>${formatMonthlyMinutes_(item.durationMinutes)}</td>
+          </tr>`;
+      }
+      return `
+        <tr>
+          <td>${escapeHtml(item.businessDate)}</td>
+          <td><span class="monthly-type type-${escapeAttr(item.typeCode)}">${escapeHtml(item.typeLabel)}</span></td>
+          <td>${escapeHtml(item.site || '-')}</td>
+          <td class="room-cell">${escapeHtml(item.roomNo || '-')}</td>
+          <td>${escapeHtml(item.employeeDisplay || '-')}</td>
+          <td><span class="monthly-status">${escapeHtml(item.statusLabel || '-')}</span>${item.canDelete ? `<button class="monthly-order-cancel" type="button" data-monthly-order-cancel="${escapeAttr(item.recordId)}">등록취소</button>` : ''}</td>
+          <td class="monthly-detail" title="${escapeAttr(item.detailText || '')}">${escapeHtml(item.detailText || '-')}</td>
+          <td class="monthly-photo-cell">${item.typeCode === 'HOUSEMAN' && Number(item.photoCount || 0) > 0 ? `<button class="monthly-photo-button" type="button" data-monthly-photo-order="${escapeAttr(item.recordId)}">사진보기</button>` : '-'}</td>
+          <td>${escapeHtml(item.startedAt || item.acceptedAt || item.registeredAt || '-')}</td>
+          <td>${escapeHtml(item.completedAt || '-')}</td>
+          <td>${formatMonthlyMinutes_(item.durationMinutes)}</td>
+        </tr>`;
+    }).join('');
     $('monthlyTableBody').querySelectorAll('[data-monthly-photo-order]').forEach(button => {
       button.addEventListener('click', () => openMonthlyHousemanPhotoViewer_(button.dataset.monthlyPhotoOrder, 0));
     });

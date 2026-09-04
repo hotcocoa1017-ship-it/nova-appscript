@@ -422,7 +422,7 @@ function groupConsecutiveRows_(rowNumbers) { // (연속 행 구간 묶기)
   return groups;
 }
 
-function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업무이력 행을 월별조회 객체로 변환)
+function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업무이력 행을 월별조회 객체로 변환) // MONTHLY_HOUSEMAN_COLUMNS_V1
   const recordType = String(data['기록구분'] || '').trim();
   const typeCodeMap = {
     [NOVA.RECORD_TYPES.CLEANING]: 'CLEANING',
@@ -456,6 +456,10 @@ function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업�
   const employeeNos = Array.from(new Set([targetEmployeeNo, assignedEmployeeNo, processorEmployeeNo, qmReceiverEmployeeNo].filter(Boolean)));
   const primaryEmployeeNo = processorEmployeeNo || assignedEmployeeNo || targetEmployeeNo || qmReceiverEmployeeNo;
   const primaryUser = users[primaryEmployeeNo];
+  const acceptedByEmployeeNo = String(detail.acceptedByEmployeeNo || '').trim(); // MONTHLY_HOUSEMAN_COLUMNS_V1
+  const handlerEmployeeNo = processorEmployeeNo || acceptedByEmployeeNo;
+  const registeredByUser = users[registeredEmployeeNo];
+  const handlerUser = users[handlerEmployeeNo];
   const statusCode = String(data['처리상태'] || '').trim().toUpperCase();
   const statusLabel = monthlyStatusLabel_(typeCode, statusCode, orderStatusMap);
   const registeredAt = String(data['등록일시'] || '').trim();
@@ -487,6 +491,11 @@ function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업�
     employeeNo: primaryEmployeeNo,
     employeeName: primaryUser ? primaryUser.name : (primaryEmployeeNo || '-'),
     employeeDisplay: primaryUser ? `${primaryUser.name} (${primaryEmployeeNo})` : (primaryEmployeeNo || '-'),
+    registeredByEmployeeNo: registeredEmployeeNo, // MONTHLY_HOUSEMAN_COLUMNS_V1
+    registeredByName: registeredByUser ? registeredByUser.name : (registeredEmployeeNo || '-'),
+    acceptedByEmployeeNo,
+    handlerEmployeeNo,
+    handlerName: handlerUser ? handlerUser.name : (handlerEmployeeNo || '-'),
     statusCode,
     statusLabel,
     requestSource: String(detail.requestSource || '').trim(),
