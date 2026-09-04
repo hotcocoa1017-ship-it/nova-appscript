@@ -80,6 +80,9 @@ jobs:
       - name: Apply concurrent write resilience V1
         run: python3 scripts/patch_concurrent_write_resilience_v1.py
 
+      - name: Apply mobile location filter persistence V1
+        run: python3 scripts/patch_mobile_location_filter_persistence_20260904.py
+
       - name: Validate full Realtime routing
         shell: bash
         run: |
@@ -127,6 +130,10 @@ jobs:
           grep -q "S.mode==='ROOMMAID'" HousemanUiPerformancePatch.html
           grep -q "function qmItem" HousemanUiPerformancePatch.html
           grep -q "function roommaidItem" HousemanUiPerformancePatch.html
+          grep -q "MOBILE_LOCATION_FILTER_PERSIST_V1" Client.html
+          grep -q "function restoreMobileLocationPreference_" Client.html
+          grep -q "function restoreQmBrowseLocationPreference_" Client.html
+          grep -q "role === 'PUBLIC' || role === 'ROOMMAID' || (role === 'QM'" Client.html
           if grep -q "include_('OperationalStatusHotfix')" Index.html; then
             echo "::error::OperationalStatusHotfix must not intercept the Realtime path."
             exit 2
@@ -199,6 +206,7 @@ jobs:
           python3 scripts/patch_order_site_context_v2.py
           python3 scripts/patch_houseman_realtime_push.py
           python3 scripts/patch_concurrent_write_resilience_v1.py
+          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
           python3 scripts/validate_site_scope_indicator_close_v2.py
           python3 scripts/validate_order_site_context_v1.py
           after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
