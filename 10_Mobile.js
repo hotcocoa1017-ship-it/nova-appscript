@@ -492,14 +492,16 @@ function getCurrentRoomsForMobile_(businessDate, site, usersByEmployeeNo) { // (
     .map(item => currentRoomObject_(item.data, item.rowNumber, {}, usersByEmployeeNo));
 }
 
-function compareMobileOrders_(a, b) { // (모바일 오더 우선순위 정렬)
+function compareMobileOrders_(a, b) { // (모바일 오더 최신 등록 우선 정렬 · HOUSEMAN_LATEST_FIRST_V1)
   const completed = new Set(['COMPLETED', 'UNABLE']);
   const aDone = completed.has(a.statusCode) ? 1 : 0;
   const bDone = completed.has(b.statusCode) ? 1 : 0;
   if (aDone !== bDone) return aDone - bDone;
+  const registeredCompare = String(b.registeredAt || '').localeCompare(String(a.registeredAt || ''));
+  if (registeredCompare) return registeredCompare;
   if (a.important !== b.important) return a.important ? -1 : 1;
   if (a.handover !== b.handover) return a.handover ? -1 : 1;
-  return String(b.updatedAt).localeCompare(String(a.updatedAt));
+  return Number(b.rowNumber || 0) - Number(a.rowNumber || 0);
 }
 
 function compareMobileCleaningRooms_(a, b) { // (룸메이드 진행객실 우선 정렬)

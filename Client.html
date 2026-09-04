@@ -913,7 +913,7 @@
       }
     });
     if (changed) {
-      orders.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')) || String(b.registeredAt || '').localeCompare(String(a.registeredAt || '')));
+      orders.sort((a, b) => String(b.registeredAt || '').localeCompare(String(a.registeredAt || '')) || Number(b.rowNumber || 0) - Number(a.rowNumber || 0)); // HOUSEMAN_LATEST_FIRST_V1
       renderOrderList();
       renderIndicatorSummary();
     }

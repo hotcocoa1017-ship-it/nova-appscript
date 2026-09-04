@@ -1350,16 +1350,14 @@ function getHousemanOrdersForDate_(
       )
       .sort(
         (a, b) =>
-          String(b.updatedAt)
+          String(b.registeredAt || '')
             .localeCompare(
-              String(a.updatedAt)
+              String(a.registeredAt || '')
             )
           ||
-          String(b.registeredAt)
-            .localeCompare(
-              String(a.registeredAt)
-            )
-      );
+          Number(b.rowNumber || 0)
+            - Number(a.rowNumber || 0)
+      ); // HOUSEMAN_LATEST_FIRST_V1 · 신규 등록시간 최신순
 
   putCachedJson_(
     cacheKey,
