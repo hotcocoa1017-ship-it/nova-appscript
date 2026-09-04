@@ -1,0 +1,81 @@
+name: Validate Houseman Latest First V1
+
+on:
+  push:
+    branches: [feature/houseman-latest-first-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+
+      - name: Apply production patch chain
+        run: python3 scripts/patch_order_site_context_v2.py
+
+      - name: Validate latest-first markers and behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "HOUSEMAN_LATEST_FIRST_V1" 07_Houseman.js
+          grep -q "HOUSEMAN_LATEST_FIRST_V1" 10_Mobile.js
+          grep -q "HOUSEMAN_LATEST_FIRST_V1" Client.html
+          grep -q "String(b.registeredAt || '')" 07_Houseman.js
+          grep -q "const registeredCompare = String(b.registeredAt || '').localeCompare(String(a.registeredAt || ''))" 10_Mobile.js
+          grep -q "if (aDone !== bDone) return aDone - bDone" 10_Mobile.js
+          grep -q "orders.sort((a, b) => String(b.registeredAt || '')" Client.html
+          if grep -q "String(b.updatedAt).*String(a.updatedAt).*String(b.registeredAt)" 07_Houseman.js; then
+            echo "::error::Old updatedAt-first server ordering remains."
+            exit 2
+          fi
+
+      - name: Validate existing NOVA regression gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check 07_Houseman.js
+          node --check 10_Mobile.js
+          node --check HousemanRequestPhoto.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('Client.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if not scripts:
+              raise SystemExit('Client script block missing')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum 07_Houseman.js 10_Mobile.js Client.html HousemanRequestPhoto.js | sha256sum | awk '{print $1}')"
+          python3 scripts/patch_order_site_context_v2.py
+          after="$(sha256sum 07_Houseman.js 10_Mobile.js Client.html HousemanRequestPhoto.js | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Persist validated feature sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          generated=(07_Houseman.js 10_Mobile.js Client.html HousemanRequestPhoto.js)
+          if git diff --quiet -- "${generated[@]}"; then
+            echo "Validated sources already persisted."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "${generated[@]}"
+          git commit -m 'Persist validated houseman latest-first V1 [skip ci]'
+          git push origin HEAD:feature/houseman-latest-first-v1
