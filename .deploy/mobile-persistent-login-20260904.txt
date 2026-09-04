@@ -1,0 +1,4 @@
+NOVA production deployment trigger
+2026-09-04
+Mobile persistent login + remembered name/employeeNo/site
+source commit: 594fe457a6043c035026497b553e41e07f4c22aa
