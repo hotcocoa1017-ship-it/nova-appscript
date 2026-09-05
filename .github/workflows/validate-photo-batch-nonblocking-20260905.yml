@@ -6,6 +6,9 @@ on:
     paths:
       - HousemanRequestPhotoBatch.js
       - HousemanRequestPhotoBatchClient.html
+      - HousemanRequestPhotoMetadata.js
+      - HousemanRequestPhoto.js
+      - 11_Monthly.js
       - Index.html
       - PhotoBatchPerfDiag.js
       - PhotoBatchPerfDiagWeb.js
@@ -29,31 +32,37 @@ jobs:
           set -euo pipefail
           git fetch origin main
           node --check HousemanRequestPhotoBatch.js
+          node --check HousemanRequestPhotoMetadata.js
+          node --check HousemanRequestPhoto.js
+          node --check 11_Monthly.js
           node --check PhotoBatchPerfDiag.js
           node --check PhotoBatchPerfDiagWeb.js
           python3 - <<'PY'
           from pathlib import Path
           import re
-          for source, target in [
-              ('HousemanRequestPhotoBatchClient.html', '/tmp/NovaPhotoBatchClient.js'),
-          ]:
-              text = Path(source).read_text(encoding='utf-8')
-              scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
-              if len(scripts) != 1:
-                  raise SystemExit(f'Expected one script in {source}, got {len(scripts)}')
-              Path(target).write_text(scripts[0], encoding='utf-8')
+          text = Path('HousemanRequestPhotoBatchClient.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if len(scripts) != 1:
+              raise SystemExit(f'Expected one photo batch script, got {len(scripts)}')
+          Path('/tmp/NovaPhotoBatchClient.js').write_text(scripts[0], encoding='utf-8')
           index = Path('Index.html').read_text(encoding='utf-8')
           old = "<?!= include_('HousemanRequestPhotoClient'); ?>"
           new = "<?!= include_('HousemanRequestPhotoBatchClient'); ?>"
           if old not in index or new not in index or index.index(new) < index.index(old):
               raise SystemExit('Photo batch client must load after existing photo UI client')
+          server = Path('HousemanRequestPhotoBatch.js').read_text(encoding='utf-8')
+          upload_block = server.split('function uploadMobileHousemanRequestPhotos', 1)[1].split('function readHousemanRequestPhotoMetadata_', 1)[0]
+          if 'LockService' in upload_block or 'acquireWriteLock_' in upload_block:
+              raise SystemExit('Photo upload path must not acquire any Apps Script lock')
           PY
           node --check /tmp/NovaPhotoBatchClient.js
-          grep -q "HOUSEMAN_PHOTO_BATCH_FAST_V1" HousemanRequestPhotoBatch.js
+          grep -q "HOUSEMAN_PHOTO_BATCH_FAST_V2" HousemanRequestPhotoBatch.js
           grep -q "window.addEventListener('click', handlePhotoBatchClickCapture_, true)" HousemanRequestPhotoBatchClient.html
           grep -q "void persistPhotosAfterMirror_" HousemanRequestPhotoBatchClient.html
           grep -q "event.stopImmediatePropagation" HousemanRequestPhotoBatchClient.html
-          grep -q "lock.tryLock(250)" HousemanRequestPhotoBatch.js
+          grep -q "NOVA_HOUSEMAN_PHOTO_METADATA_HEADER_ = '요청사진JSON'" HousemanRequestPhotoBatch.js
+          grep -q "HOUSEMAN_PHOTO_METADATA_COLUMN_V1" HousemanRequestPhoto.js
+          grep -q "HOUSEMAN_PHOTO_METADATA_COLUMN_V1" 11_Monthly.js
 
       - name: Apply production patch chain
         shell: bash
@@ -84,7 +93,12 @@ jobs:
           python3 scripts/validate_order_site_context_v1.py
           python3 scripts/validate_nova_release.py
           grep -q "include_('HousemanRequestPhotoBatchClient')" Index.html
+          grep -q "HOUSEMAN_PHOTO_METADATA_COLUMN_V1" HousemanRequestPhoto.js
+          grep -q "HOUSEMAN_PHOTO_METADATA_COLUMN_V1" 11_Monthly.js
           node --check HousemanRequestPhotoBatch.js
+          node --check HousemanRequestPhotoMetadata.js
+          node --check HousemanRequestPhoto.js
+          node --check 11_Monthly.js
           python3 - <<'PY'
           from pathlib import Path
           import re
@@ -121,27 +135,38 @@ jobs:
       - name: Push diagnostic branch to Apps Script HEAD
         run: clasp push --force
 
-      - name: Create temporary deployment and benchmark batch contention
+      - name: Create temporary deployment and benchmark zero-lock photo path
         id: diag
         shell: bash
         run: |
           set -euo pipefail
-          DEPLOY_OUTPUT="$(clasp create-deployment --description 'TEMP NOVA photo batch nonblocking diag 20260905')"
+          DEPLOY_OUTPUT="$(clasp create-deployment --description 'TEMP NOVA photo batch zero-lock diag 20260905')"
           printf '%s\n' "$DEPLOY_OUTPUT"
           DEPLOY_ID="$(printf '%s\n' "$DEPLOY_OUTPUT" | grep -oE 'AKfy[a-zA-Z0-9_-]+' | tail -1)"
           test -n "$DEPLOY_ID"
           echo "deployment_id=$DEPLOY_ID" >> "$GITHUB_OUTPUT"
           URL="https://script.google.com/macros/s/${DEPLOY_ID}/exec"
 
+          echo 'PHOTO_BATCH_PREPARE_BEGIN'
+          curl --max-time 60 -fsSL -d '' "${URL}?mode=prepare" > /tmp/photo-prepare.json
+          cat /tmp/photo-prepare.json
+          echo
+          python3 - <<'PY'
+          import json
+          p=json.load(open('/tmp/photo-prepare.json', encoding='utf-8'))
+          assert p.get('ok') is True, p
+          PY
+          echo 'PHOTO_BATCH_PREPARE_END'
+
           echo 'PHOTO_BATCH_BENCHMARK_BEGIN'
           curl --max-time 180 -fsSL -d '' "${URL}?mode=batch" > /tmp/photo-batch-result.json &
           BATCH_PID=$!
-          sleep 3
-          for i in 1 2 3; do
+          sleep 2
+          for i in 1 2 3 4 5; do
             curl --max-time 30 -fsSL -d '' "${URL}?mode=lockProbe" > "/tmp/photo-lock-${i}.json"
             cat "/tmp/photo-lock-${i}.json"
             echo
-            sleep 1
+            sleep 0.5
           done
           wait "$BATCH_PID"
           cat /tmp/photo-batch-result.json
@@ -154,15 +179,25 @@ jobs:
           assert batch.get('ok') is True, batch
           assert batch.get('photoCount') == 5, batch
           pp=batch.get('photoPerformance') or {}
-          assert pp.get('linkMs', 999999) < 3000, pp
+          assert pp.get('lockWaitMs') == 0, pp
+          assert pp.get('metadataWriteMs', 999999) < 3000, pp
           probes=[]
-          for i in range(1,4):
+          for i in range(1,6):
               p=json.load(open(f'/tmp/photo-lock-{i}.json', encoding='utf-8'))
               probes.append(p)
               assert p.get('acquired') is True, p
               assert p.get('waitMs', 999999) < 750, p
           print('PHOTO_BATCH_RESULT', json.dumps(batch, ensure_ascii=False))
           print('PHOTO_LOCK_PROBES', json.dumps(probes, ensure_ascii=False))
+          PY
+
+          curl --max-time 60 -fsSL -d '' "${URL}?mode=cleanup" > /tmp/photo-cleanup.json
+          cat /tmp/photo-cleanup.json
+          echo
+          python3 - <<'PY'
+          import json
+          c=json.load(open('/tmp/photo-cleanup.json', encoding='utf-8'))
+          assert c.get('ok') is True and c.get('cleaned') is True, c
           PY
 
       - name: Remove temporary deployment
