@@ -775,10 +775,16 @@ function monthlyItemCompleted_(item) { // (월별 완료 여부 판단)
   return ['CLEANING_COMPLETE', 'ROOMMAID_COMPLETE', 'QM_COMPLETE'].includes(item.statusCode);
 }
 
-function compareMonthlyItems_(a, b) { // (월별 최신순 정렬)
-  return String(b.businessDate).localeCompare(String(a.businessDate))
-    || String(b.eventAt).localeCompare(String(a.eventAt))
-    || String(a.roomNo).localeCompare(String(b.roomNo), 'ko', { numeric: true });
+function compareMonthlyItems_(a, b) { // (월별 최신순 정렬 · 하우스맨은 등록일시 최신 우선) // HOUSEMAN_LATEST_REGISTERED_LISTS_V1
+  const businessDateCompare = String(b.businessDate || '').localeCompare(String(a.businessDate || ''));
+  if (businessDateCompare) return businessDateCompare;
+  if (a.typeCode === 'HOUSEMAN' && b.typeCode === 'HOUSEMAN') {
+    return String(b.registeredAt || '').localeCompare(String(a.registeredAt || ''))
+      || Number(b.rowNumber || 0) - Number(a.rowNumber || 0)
+      || String(a.roomNo || '').localeCompare(String(b.roomNo || ''), 'ko', { numeric: true });
+  }
+  return String(b.eventAt || '').localeCompare(String(a.eventAt || ''))
+    || String(a.roomNo || '').localeCompare(String(b.roomNo || ''), 'ko', { numeric: true });
 }
 
 function minutesBetween_(startText, endText) { // (문자열 시각 간 분 계산)
