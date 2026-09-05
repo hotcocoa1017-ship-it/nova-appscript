@@ -46,17 +46,18 @@ jobs:
             const sig=b64web(crypto.createHmac('sha256',secret).update(body).digest());
             return `${body}.${sig}`;
           }
-          const base=new URL(serviceUrl); const agent=new https.Agent({keepAlive:true,maxSockets:20});
-          function req(method,path,tok,body){return new Promise(resolve=>{
-            const data=body===undefined?'':JSON.stringify(body);
-            const r=https.request({hostname:base.hostname,port:443,path,method,agent,timeout:15000,headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json',...(data?{'Content-Length':Buffer.byteLength(data)}:{})}},res=>{
+          const base=new URL(serviceUrl); const agent=new https.Agent({keepAlive:true,maxSockets:30});
+          function reqUrl(url,method,headers,body){return new Promise(resolve=>{
+            const u=new URL(url); const data=body===undefined?'':JSON.stringify(body);
+            const r=https.request({hostname:u.hostname,port:443,path:u.pathname+u.search,method,agent,timeout:15000,headers:{'Content-Type':'application/json',...headers,...(data?{'Content-Length':Buffer.byteLength(data)}:{})}},res=>{
               let text='';res.on('data',c=>text+=c);res.on('end',()=>{let json=null;try{json=JSON.parse(text||'null')}catch{}resolve({status:res.statusCode,json,text})});
             });r.on('timeout',()=>r.destroy(new Error('timeout')));r.on('error',e=>resolve({status:0,error:e.message,json:null,text:''}));if(data)r.write(data);r.end();
           })}
+          function req(method,path,tok,body){return reqUrl(new URL(path,serviceUrl).toString(),method,{Authorization:`Bearer ${tok}`},body)}
           function assertOk(label,r){
             const safe={status:r.status,ok:r.json?.ok,code:r.json?.code||'',message:r.json?.message||r.json?.error||''};
             console.log(label+'='+JSON.stringify(safe));
-            if(r.status<200||r.status>=300||r.json?.ok!==true) throw new Error(label+' failed');
+            if(r.status<200||r.status>=300||r.json?.ok!==true) throw new Error(label+' failed: '+JSON.stringify(safe));
           }
           function jwtClaims(jwt){
             try {
@@ -67,17 +68,25 @@ jobs:
           (async()=>{
             const orderTok=token('990001'), hmTok=token('990002'), qmTok=token('990003'), publicTok=token('990004');
             let r=await req('GET','/v1/rooms?businessDate=2099-12-31&site=LOADTEST',qmTok); assertOk('QM_ROOM_READ',r);
-            r=await req('POST','/v1/auth/realtime-token',qmTok,{}); assertOk('QM_REALTIME_TOKEN',r); console.log('QM_RT_CLAIMS='+JSON.stringify(jwtClaims(r.json?.token)));
-            r=await req('POST','/v1/auth/realtime-token',publicTok,{}); assertOk('PUBLIC_REALTIME_TOKEN',r); console.log('PUBLIC_RT_CLAIMS='+JSON.stringify(jwtClaims(r.json?.token)));
+            const qmAuth=await req('POST','/v1/auth/realtime-token',qmTok,{}); assertOk('QM_REALTIME_TOKEN',qmAuth); console.log('QM_RT_CLAIMS='+JSON.stringify(jwtClaims(qmAuth.json?.token)));
+            const publicAuth=await req('POST','/v1/auth/realtime-token',publicTok,{}); assertOk('PUBLIC_REALTIME_TOKEN',publicAuth); console.log('PUBLIC_RT_CLAIMS='+JSON.stringify(jwtClaims(publicAuth.json?.token)));
             r=await req('GET','/v1/houseman-orders?businessDate=2099-12-31&site=LOADTEST',orderTok); assertOk('HOUSEMAN_LIST',r);
             const assignment={building:'1동',employeeNo:'990002',name:'LOADTEST HOUSEMAN',employeeNos:['990002'],names:['LOADTEST HOUSEMAN'],candidates:[{employeeNo:'990002',name:'LOADTEST HOUSEMAN',shiftCodes:['A'],pendingCount:0}],shiftCodes:['A'],pendingCount:0,currentShift:'A',activeShiftCodes:['A']};
             const publicProbe=await req('POST','/v1/houseman-orders',publicTok,{orderId:'HO-20991231-LTPROBE001',requestId:'LT-PUBLIC-PROBE-'+Date.now(),businessDate:'2099-12-31',site:'LOADTEST',roomNo:'1001',part:'기타',items:[{name:'LOADTEST',quantity:1}],note:'LOADTEST',requester:'LOADTEST PUBLIC',requestSource:'PUBLIC',assignmentMode:'AUTO',important:false,handover:false,assignment,handoverTargetShift:''});
             console.log('PUBLIC_CLOUDRUN_CREATE_PROBE='+JSON.stringify({status:publicProbe.status,ok:publicProbe.json?.ok,code:publicProbe.json?.code||'',message:publicProbe.json?.message||''}));
-            if(publicProbe.status!==403||String(publicProbe.json?.code||'').toUpperCase()!=='FORBIDDEN') throw new Error('PUBLIC guard changed unexpectedly');
-            const orderId='HO-20991231-LTSMOKE02';
+            if(publicProbe.status!==403||String(publicProbe.json?.code||'').toUpperCase()!=='FORBIDDEN') throw new Error('PUBLIC Cloud Run guard changed unexpectedly');
+
+            const rpcOrderId='HO-20991231-LTRPC'+Date.now();
+            const rpcRequestId='LT-PUBLIC-RPC-'+Date.now();
+            const rpcPayload={orderId:rpcOrderId,requestId:rpcRequestId,businessDate:'2099-12-31',site:'LOADTEST',roomNo:'1004',part:'기타',items:[{name:'LOADTEST',quantity:1}],note:'LOADTEST',assignment};
+            const rpcUrl=String(publicAuth.json?.supabaseUrl||'').replace(/\/+$/,'')+'/rest/v1/rpc/nova_create_public_houseman_order';
+            r=await reqUrl(rpcUrl,'POST',{'apikey':String(publicAuth.json?.publishableKey||''),'Authorization':`Bearer ${publicAuth.json?.token||''}`},{p_payload:rpcPayload}); assertOk('PUBLIC_RPC_CREATE',r);
+            r=await req('POST',`/v1/houseman-orders/${encodeURIComponent(rpcOrderId)}/action`,hmTok,{action:'ACCEPT_START',reason:'',requestId:'LT-PUBLIC-RPC-HM-'+Date.now()}); assertOk('PUBLIC_RPC_HOUSEMAN_ACTION',r);
+
+            const orderId='HO-20991231-LTSMOKE03';
             r=await req('POST','/v1/houseman-orders',orderTok,{orderId,requestId:'LT-SMOKE-ORDER-'+Date.now(),businessDate:'2099-12-31',site:'LOADTEST',roomNo:'1002',part:'기타',items:[{name:'LOADTEST',quantity:1}],note:'LOADTEST',requester:'LOADTEST ORDER',requestSource:'ORDER',assignmentMode:'AUTO',important:false,handover:false,assignment,handoverTargetShift:''}); assertOk('ORDER_CREATE_FOR_HOUSEMAN',r);
             r=await req('POST',`/v1/houseman-orders/${encodeURIComponent(orderId)}/action`,hmTok,{action:'ACCEPT_START',reason:'',requestId:'LT-SMOKE-HM-'+Date.now()}); assertOk('HOUSEMAN_ACTION',r);
-            r=await req('POST','/v1/rooms/1003/action',qmTok,{businessDate:'2099-12-31',site:'LOADTEST',action:'QM_START',requestId:'LT-SMOKE-QM-'+Date.now(),expectedVersion:1,expectedState:{cleaningStatus:'QM_WAITING',qmEmployeeNo:'990003'}}); assertOk('QM_START',r);
-            console.log('HOUSEMAN_QM_SMOKE=PASS'); agent.destroy();
+            r=await req('POST','/v1/rooms/1005/action',qmTok,{businessDate:'2099-12-31',site:'LOADTEST',action:'QM_START',requestId:'LT-SMOKE-QM-'+Date.now(),expectedVersion:1,expectedState:{cleaningStatus:'QM_WAITING',qmEmployeeNo:'990003'}}); assertOk('QM_START',r);
+            console.log('DBFIRST_ROLE_SMOKE=PASS'); agent.destroy();
           })().catch(e=>{agent.destroy();console.error(e.stack||String(e));process.exit(1)});
           NODE
