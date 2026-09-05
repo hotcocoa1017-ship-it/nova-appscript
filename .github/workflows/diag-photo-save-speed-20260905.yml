@@ -1,0 +1,50 @@
+name: Diagnose Photo Save Speed 20260905
+
+on:
+  push:
+    branches: [diag/photo-save-speed-20260905]
+    paths:
+      - .github/workflows/diag-photo-save-speed-20260905.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install clasp
+        run: npm install --global @google/clasp
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo "::error::Apps Script OAuth secret missing"
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+      - name: Probe deployments and execution API
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== DEPLOYMENTS ==='
+          clasp deployments
+          echo '=== EXECUTION PROBE ==='
+          if clasp run getNovaRealtimeClientConfig --params '[]'; then
+            echo 'APPS_SCRIPT_EXECUTION_API=AVAILABLE'
+          else
+            echo 'APPS_SCRIPT_EXECUTION_API=UNAVAILABLE'
+          fi
