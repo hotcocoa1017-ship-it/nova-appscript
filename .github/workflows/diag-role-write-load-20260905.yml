@@ -1,0 +1,126 @@
+name: Diagnose Role Write Load 20260905
+
+on:
+  push:
+    branches: [diag/wif-cloudrun-access-20260829]
+    paths:
+      - .github/workflows/diag-role-write-load-20260905.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_REGION: asia-southeast1
+  CLOUD_RUN_SERVICE: nova-realtime-api
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: DB-first staged write load 100 300 500 1000
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/service.json
+          node <<'NODE'
+          const fs=require('fs'), crypto=require('crypto'), https=require('https');
+          const service=JSON.parse(fs.readFileSync('/tmp/service.json','utf8'));
+          const spec=service?.spec?.template?.spec||{};
+          const env=Object.fromEntries(((spec.containers||[{}])[0].env||[]).filter(e=>'value' in e).map(e=>[e.name,String(e.value||'')]));
+          const secret=env.NOVA_TOKEN_SECRET;
+          const serviceUrl=service?.status?.url;
+          if(!secret||!serviceUrl) throw new Error('required runtime configuration unavailable');
+          const pgHost=String(env.PG_HOST||'').toLowerCase();
+          console.log('DB_HOST_MODE='+(pgHost.includes('pooler')?'POOLER':'DIRECT_OR_UNKNOWN'));
+          console.log('PG_POOL_MAX='+String(env.PG_POOL_MAX||'not_literal'));
+          console.log('CLOUD_RUN_CONCURRENCY='+String(spec.containerConcurrency||'default'));
+          const ann=service?.spec?.template?.metadata?.annotations||{};
+          console.log('CLOUD_RUN_MAX_SCALE='+String(ann['autoscaling.knative.dev/maxScale']||'default'));
+
+          const b64web=b=>Buffer.from(b).toString('base64').replace(/\+/g,'-').replace(/\//g,'_');
+          function novaToken(employeeNo){
+            const payload={employeeNo:String(employeeNo),site:'LOADTEST',issuedAt:Date.now(),expiresAt:Date.now()+60*60*1000};
+            const body=b64web(Buffer.from(JSON.stringify(payload)));
+            const sig=b64web(crypto.createHmac('sha256',secret).update(body).digest());
+            return `${body}.${sig}`;
+          }
+          const agent=new https.Agent({keepAlive:true,maxSockets:1200,maxFreeSockets:300});
+          function request(url,method,headers,body){return new Promise(resolve=>{
+            const u=new URL(url); const data=body===undefined?'':JSON.stringify(body); const started=process.hrtime.bigint();
+            const req=https.request({hostname:u.hostname,port:443,path:u.pathname+u.search,method,agent,timeout:65000,headers:{'Content-Type':'application/json',...headers,...(data?{'Content-Length':Buffer.byteLength(data)}:{})}},res=>{
+              let text='';res.on('data',c=>text+=c);res.on('end',()=>{let json=null;try{json=JSON.parse(text||'null')}catch{}resolve({status:res.statusCode,json,text,ms:Number(process.hrtime.bigint()-started)/1e6})});
+            });
+            req.on('timeout',()=>req.destroy(new Error('timeout')));
+            req.on('error',e=>resolve({status:0,json:null,text:'',error:e.message,ms:Number(process.hrtime.bigint()-started)/1e6}));
+            if(data) req.write(data); req.end();
+          })}
+          const cloud=(method,path,tok,body)=>request(new URL(path,serviceUrl).toString(),method,{Authorization:`Bearer ${tok}`},body);
+          const pct=(arr,p)=>{const s=arr.slice().sort((a,b)=>a-b);return s[Math.min(s.length-1,Math.max(0,Math.ceil(s.length*p)-1))]||0};
+          async function auth(tok){
+            const r=await cloud('POST','/v1/auth/realtime-token',tok,{});
+            if(r.status!==200||r.json?.ok!==true) throw new Error('Realtime auth failed');
+            return r.json;
+          }
+          async function stage(label,n,make){
+            const started=process.hrtime.bigint();
+            const results=await Promise.all(Array.from({length:n},(_,i)=>make(i)));
+            const wallMs=Number(process.hrtime.bigint()-started)/1e6;
+            const failures=results.filter(r=>r.status<200||r.status>=300||r.json?.ok!==true);
+            const times=results.map(r=>r.ms);
+            const statusCounts=results.reduce((m,r)=>(m[String(r.status)]=(m[String(r.status)]||0)+1,m),{});
+            const codes=failures.reduce((m,r)=>{const c=String(r.json?.code||r.error||'UNKNOWN');m[c]=(m[c]||0)+1;return m;},{});
+            const out={label,n,wallMs:+wallMs.toFixed(1),p50:+pct(times,.5).toFixed(1),p95:+pct(times,.95).toFixed(1),p99:+pct(times,.99).toFixed(1),statusCounts,failures:failures.length,failureCodes:codes};
+            console.log('WRITE_STAGE='+JSON.stringify(out));
+            if(failures.length){
+              const sample=failures.slice(0,3).map(r=>({status:r.status,code:r.json?.code||'',message:String(r.json?.message||r.json?.error||r.error||'').slice(0,160)}));
+              console.log('FAILURE_SAMPLE='+JSON.stringify(sample));
+              throw new Error(`${label} failed ${failures.length}/${n}`);
+            }
+            return out;
+          }
+          (async()=>{
+            const orderTok=novaToken('990001'), hmTok=novaToken('990002'), qmTok=novaToken('990003'), publicTok=novaToken('990004');
+            const [publicAuth,qmAuth]=await Promise.all([auth(publicTok),auth(qmTok)]);
+            const supabaseUrl=String(publicAuth.supabaseUrl||'').replace(/\/+$/,'');
+            if(!supabaseUrl||!publicAuth.publishableKey||!publicAuth.token||!qmAuth.token) throw new Error('Supabase auth bundle incomplete');
+            const pubRpcUrl=supabaseUrl+'/rest/v1/rpc/nova_create_public_houseman_order';
+            const qmDraftUrl=supabaseUrl+'/rest/v1/rpc/nova_save_qm_draft';
+            const publicHeaders={'apikey':String(publicAuth.publishableKey),'Authorization':`Bearer ${publicAuth.token}`};
+            const qmHeaders={'apikey':String(qmAuth.publishableKey),'Authorization':`Bearer ${qmAuth.token}`};
+            const assignment={building:'1동',employeeNo:'990002',name:'LOADTEST HOUSEMAN',employeeNos:['990002'],names:['LOADTEST HOUSEMAN'],candidates:[{employeeNo:'990002',name:'LOADTEST HOUSEMAN',shiftCodes:['A'],pendingCount:0}],shiftCodes:['A'],pendingCount:0,currentShift:'A',activeShiftCodes:['A']};
+            const stages=[{n:100,start:1000},{n:300,start:1100},{n:500,start:1400},{n:1000,start:1900}];
+            const tag=Date.now().toString(36).toUpperCase();
+            for(const s of stages){
+              const orderIds=Array.from({length:s.n},(_,i)=>`HO-20991231-LT${s.start+i}-${tag}`);
+              await stage('PUBLIC_CREATE',s.n,i=>{
+                const roomNo=String(s.start+i), orderId=orderIds[i];
+                const payload={orderId,requestId:`LT-PUB-${roomNo}-${tag}`,businessDate:'2099-12-31',site:'LOADTEST',roomNo,part:'기타',items:[{name:'LOADTEST',quantity:1}],note:'LOADTEST',assignment};
+                return request(pubRpcUrl,'POST',publicHeaders,{p_payload:payload});
+              });
+              await new Promise(r=>setTimeout(r,800));
+              await stage('HOUSEMAN_ACCEPT_START',s.n,i=>cloud('POST',`/v1/houseman-orders/${encodeURIComponent(orderIds[i])}/action`,hmTok,{action:'ACCEPT_START',reason:'',requestId:`LT-HM-${s.start+i}-${tag}`}));
+              await new Promise(r=>setTimeout(r,800));
+              await stage('QM_START',s.n,i=>{
+                const roomNo=String(s.start+i);
+                return cloud('POST',`/v1/rooms/${roomNo}/action`,qmTok,{businessDate:'2099-12-31',site:'LOADTEST',action:'QM_START',requestId:`LT-QMS-${roomNo}-${tag}`,expectedVersion:1,expectedState:{cleaningStatus:'QM_WAITING',qmEmployeeNo:'990003'}});
+              });
+              await new Promise(r=>setTimeout(r,800));
+              await stage('QM_DRAFT_INSERT',s.n,i=>{
+                const roomNo=String(s.start+i);
+                return request(qmDraftUrl,'POST',qmHeaders,{p_draft_id:`QMDRAFT-LT-${roomNo}-${tag}`,p_business_date:'2099-12-31',p_site:'LOADTEST',p_room_no:roomNo,p_checklist_revision:'LOADTEST-V1',p_answers:[],p_defects:[],p_expected_version:0,p_request_id:`LT-QMD-${roomNo}-${tag}`});
+              });
+              await new Promise(r=>setTimeout(r,1200));
+            }
+            console.log('ROLE_WRITE_LOAD_RAMP=PASS');
+            agent.destroy();
+          })().catch(e=>{agent.destroy();console.error(e.stack||String(e));process.exit(1)});
+          NODE
