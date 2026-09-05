@@ -86,6 +86,12 @@ jobs:
       - name: Apply mobile full view state persistence V2
         run: python3 scripts/patch_mobile_view_state_persistence_20260904.py
 
+      - name: Apply QM direct DB-first start patch
+        run: python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
+
+      - name: Validate QM direct DB-first start
+        run: python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
+
       - name: Validate full Realtime routing
         shell: bash
         run: |
@@ -217,8 +223,10 @@ jobs:
           python3 scripts/patch_concurrent_write_resilience_v1.py
           python3 scripts/patch_mobile_location_filter_persistence_20260904.py
           python3 scripts/patch_mobile_view_state_persistence_20260904.py
+          python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
           python3 scripts/validate_site_scope_indicator_close_v2.py
           python3 scripts/validate_order_site_context_v1.py
+          python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
           after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
           test "$before" = "$after"
 
