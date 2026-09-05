@@ -1,0 +1,169 @@
+name: Validate DB-first 1000 concurrency
+
+on:
+  push:
+    branches:
+      - test/dbfirst-1000-20260905
+    paths:
+      - .github/workflows/validate-dbfirst-1000-20260905.yml
+
+permissions:
+  contents: read
+
+jobs:
+  loadtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SUPABASE_URL: https://evoetxfjmkkjptucwxsv.supabase.co
+      SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV2b2V0eGZqbWtranB0dWN3eHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0MTI4NzgsImV4cCI6MjEwMjk4ODg3OH0.wNWMvTIFfCU2lN-c7LBFj2QYE2S4FiFg1moOXm-F_C8
+    steps:
+      - name: Run staged isolated load test
+        shell: bash
+        run: |
+          node <<'NODE'
+          const https = require('https');
+          const { URL } = require('url');
+          const base = new URL(process.env.SUPABASE_URL);
+          const key = process.env.SUPABASE_ANON_KEY;
+          const agent = new https.Agent({ keepAlive: true, maxSockets: 1000, maxFreeSockets: 1000 });
+
+          function rpc(name, body) {
+            return new Promise((resolve) => {
+              const payload = JSON.stringify(body || {});
+              const started = process.hrtime.bigint();
+              const req = https.request({
+                hostname: base.hostname,
+                port: 443,
+                path: `/rest/v1/rpc/${name}`,
+                method: 'POST',
+                agent,
+                headers: {
+                  'apikey': key,
+                  'Authorization': `Bearer ${key}`,
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(payload),
+                  'Connection': 'keep-alive'
+                },
+                timeout: 30000
+              }, (res) => {
+                let data = '';
+                res.on('data', c => data += c);
+                res.on('end', () => {
+                  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+                  let json = null;
+                  try { json = JSON.parse(data || 'null'); } catch (_) {}
+                  resolve({ status: res.statusCode, elapsedMs, json, text: data });
+                });
+              });
+              req.on('timeout', () => req.destroy(new Error('timeout')));
+              req.on('error', (error) => {
+                const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+                resolve({ status: 0, elapsedMs, error: error.message, json: null, text: '' });
+              });
+              req.end(payload);
+            });
+          }
+
+          function pct(values, p) {
+            if (!values.length) return 0;
+            const sorted = values.slice().sort((a,b) => a-b);
+            const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * p) - 1));
+            return sorted[idx];
+          }
+
+          async function reset() {
+            const r = await rpc('nova_loadtest_dbfirst_reset', {});
+            if (r.status !== 200 || !r.json?.ok) throw new Error(`reset failed: ${r.status} ${r.text}`);
+          }
+
+          async function distinctStage(n) {
+            await reset();
+            await new Promise(r => setTimeout(r, 500));
+            const wallStart = process.hrtime.bigint();
+            const promises = Array.from({length:n}, (_,i) => rpc('nova_loadtest_dbfirst_write', {
+              p_room_id: i + 1,
+              p_request_id: `gh-${n}-${Date.now()}-${i+1}`,
+              p_expected_version: 1
+            }));
+            const results = await Promise.all(promises);
+            const wallMs = Number(process.hrtime.bigint() - wallStart) / 1e6;
+            const ok = results.filter(r => r.status === 200 && r.json?.ok === true).length;
+            const httpFail = results.filter(r => r.status !== 200).length;
+            const logicalFail = results.filter(r => r.status === 200 && r.json?.ok !== true).length;
+            const lat = results.map(r => r.elapsedMs);
+            const summary = {
+              stage: `distinct-${n}`,
+              requests: n,
+              ok,
+              httpFail,
+              logicalFail,
+              wallMs: +wallMs.toFixed(1),
+              throughputRps: +(n/(wallMs/1000)).toFixed(1),
+              p50Ms: +pct(lat,.50).toFixed(1),
+              p95Ms: +pct(lat,.95).toFixed(1),
+              p99Ms: +pct(lat,.99).toFixed(1),
+              maxMs: +Math.max(...lat).toFixed(1)
+            };
+            console.log(JSON.stringify(summary));
+            if (ok !== n) {
+              const examples = results.filter(r => !(r.status === 200 && r.json?.ok === true)).slice(0,10);
+              console.error('FAIL examples:', JSON.stringify(examples));
+              throw new Error(`${n} distinct concurrent writes: ${ok}/${n} success`);
+            }
+            return summary;
+          }
+
+          async function conflictStage() {
+            await reset();
+            const n = 100;
+            const reqs = Array.from({length:n}, (_,i) => rpc('nova_loadtest_dbfirst_write', {
+              p_room_id: 1,
+              p_request_id: `gh-conflict-${Date.now()}-${i+1}`,
+              p_expected_version: 1
+            }));
+            const results = await Promise.all(reqs);
+            const success = results.filter(r => r.status === 200 && r.json?.ok === true).length;
+            const conflict = results.filter(r => r.status === 200 && r.json?.code === 'VERSION_CONFLICT').length;
+            const transportFail = results.filter(r => r.status !== 200).length;
+            console.log(JSON.stringify({stage:'same-row-100', requests:n, success, conflict, transportFail}));
+            if (success !== 1 || conflict !== 99 || transportFail !== 0) {
+              throw new Error(`same-row conflict safety failed: success=${success}, conflict=${conflict}, transport=${transportFail}`);
+            }
+          }
+
+          async function duplicateStage() {
+            await reset();
+            const n = 100;
+            const requestId = `gh-duplicate-${Date.now()}`;
+            const reqs = Array.from({length:n}, () => rpc('nova_loadtest_dbfirst_write', {
+              p_room_id: 1,
+              p_request_id: requestId,
+              p_expected_version: 1
+            }));
+            const results = await Promise.all(reqs);
+            const httpOk = results.filter(r => r.status === 200).length;
+            const logicalOk = results.filter(r => r.status === 200 && r.json?.ok === true).length;
+            console.log(JSON.stringify({stage:'duplicate-request-100', requests:n, httpOk, logicalOk}));
+            if (httpOk !== n || logicalOk !== n) {
+              throw new Error(`duplicate replay safety failed: http=${httpOk}, logical=${logicalOk}`);
+            }
+          }
+
+          (async () => {
+            const summaries = [];
+            for (const n of [100, 300, 500, 1000]) {
+              summaries.push(await distinctStage(n));
+              await new Promise(r => setTimeout(r, 1000));
+            }
+            await conflictStage();
+            await duplicateStage();
+            agent.destroy();
+            console.log('DBFIRST_1000_VALIDATION_SUCCESS');
+            console.log(JSON.stringify(summaries, null, 2));
+          })().catch(err => {
+            agent.destroy();
+            console.error(err.stack || err.message || String(err));
+            process.exit(1);
+          });
+          NODE
