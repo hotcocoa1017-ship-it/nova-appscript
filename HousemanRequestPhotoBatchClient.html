@@ -2,9 +2,9 @@
 (() => {
   'use strict';
 
-  // HOUSEMAN_PHOTO_BATCH_FAST_V1
-  // 기존 사진 UI/카메라 기능은 그대로 사용하고, 사진이 포함된 '요청 등록' 클릭만 window capture 단계에서
-  // 먼저 받아 DB 오더를 즉시 확정한 뒤 사진 저장을 완전히 후행 처리합니다.
+  // HOUSEMAN_PHOTO_BATCH_FAST_V2
+  // 기존 사진 UI/카메라/압축은 그대로 사용하고, 사진이 포함된 제출만 window capture 단계에서 선처리합니다.
+  // 오더 DB 확정 후 모달을 즉시 닫고 사진 저장은 후행 처리하므로 사진 저장시간이 사용자 업무대기에 포함되지 않습니다.
   const PHOTO_FIELD_ID = 'novaHmRequestPhotoField';
   const PHOTO_STATUS_ID = 'novaHmRequestPhotoStatus';
   const PHOTO_PREVIEW_LIST_ID = 'novaHmRequestPhotoPreviewList';
@@ -22,7 +22,7 @@
     const requestButton = target && target.closest ? target.closest('[data-houseman-request]') : null;
     if (requestButton) {
       activeRoomNo = String(requestButton.dataset.housemanRequest || '').trim();
-      return; // 기존 HousemanRequestPhotoClient가 그대로 사진 UI를 엽니다.
+      return; // 기존 HousemanRequestPhotoClient가 사진 UI를 그대로 담당합니다.
     }
 
     const submitButton = target && target.closest ? target.closest('#mobileRequestSubmit') : null;
@@ -35,11 +35,11 @@
     const hasPreparedPhoto = Boolean(previewList && previewList.querySelector('img[src^="data:image/jpeg;base64,"]'));
     const preparing = /사진을 준비하고 있습니다/.test(String(status && status.textContent || ''));
 
-    // 사진이 전혀 없으면 기존 무사진 등록 경로를 100% 그대로 통과시킵니다.
+    // 사진이 없으면 기존 무사진 등록 경로를 100% 그대로 통과시킵니다.
     if (!hasPreparedPhoto && !preparing) return;
 
     event.preventDefault();
-    event.stopImmediatePropagation(); // document/target의 기존 순차 사진저장 핸들러까지 내려가지 않게 합니다.
+    event.stopImmediatePropagation(); // 기존 1장씩 순차 저장 핸들러가 실행되지 않도록 window 단계에서 종료
     if (submitBusy) return;
     submitBusy = true;
 
@@ -100,7 +100,7 @@
     const orderId = String(order.orderId || '').trim();
     if (!orderId) throw new Error('사진 연결용 요청번호를 확인하지 못했습니다.');
 
-    // 여기서 사용자 대기는 끝납니다. 사진 저장시간은 이후 오더/객실 상태 저장속도에 포함되지 않습니다.
+    // 사용자 대기는 여기서 끝납니다. 사진 저장시간은 이후 오더/객실 상태 저장속도와 분리됩니다.
     closeRequestModal_();
     showPhotoBatchToast_(`하우스맨 요청 등록 완료 · 사진 ${photos.length}장 후행 저장 중…`, false);
 
@@ -128,33 +128,25 @@
     const rowNumber = Number(sheetOrder && sheetOrder.rowNumber || 0);
     const batches = buildTransportBatches_(photos);
     let savedCount = 0;
+    let duplicateCount = 0;
 
     for (const batch of batches) {
-      let result = await callUploadHousemanRequestPhotosServer_(token, {
+      const result = await callUploadHousemanRequestPhotosServer_(token, {
         orderId,
         rowNumber,
         photos: batch
       });
-
-      // 운영 저장이 순간적으로 락을 사용 중이면 사진만 한 번 늦춰 재시도합니다. 오더/상태 저장은 기다리지 않습니다.
-      if (result && result.ok === false && String(result.code || '') === 'BUSY_RETRY') {
-        await delay_(700);
-        result = await callUploadHousemanRequestPhotosServer_(token, {
-          orderId,
-          rowNumber,
-          photos: batch
-        });
-      }
-
       if (!result || !result.ok) {
         const message = result && result.message ? result.message : '사진 저장 실패';
         if (savedCount > 0) throw new Error(`사진 ${savedCount}/${photos.length}장 저장 후 중단 · ${message}`);
         throw new Error(message);
       }
-      savedCount += Number(result.savedCount || batch.length || 0);
+      savedCount += Number(result.savedCount || 0);
+      duplicateCount += Number(result.duplicateCount || 0);
     }
 
-    showPhotoBatchToast_(`하우스맨 요청 사진 ${savedCount}장 저장 완료`, false);
+    const completedCount = Math.min(photos.length, savedCount + duplicateCount);
+    showPhotoBatchToast_(`하우스맨 요청 사진 ${completedCount}장 저장 완료`, false);
   }
 
   async function waitAndCollectPreparedPhotos_() {
@@ -164,18 +156,23 @@
       const status = document.getElementById(PHOTO_STATUS_ID);
       const statusText = String(status && status.textContent || '');
       const preparing = /사진을 준비하고 있습니다/.test(statusText);
-      const images = list ? Array.from(list.querySelectorAll('img[src^="data:image/jpeg;base64,"]')) : [];
+      const items = list ? Array.from(list.querySelectorAll('.nova-hm-photo-preview-item')) : [];
 
       if (!preparing) {
-        if (status && status.classList.contains('error') && !images.length) {
+        const preparedItems = items.filter(item => item.querySelector('img[src^="data:image/jpeg;base64,"]'));
+        if (status && status.classList.contains('error') && !preparedItems.length) {
           throw new Error(statusText || '사진 준비 오류');
         }
-        return images.map((image, index) => {
-          const source = String(image.src || '');
+        return preparedItems.map((item, index) => {
+          const image = item.querySelector('img[src^="data:image/jpeg;base64,"]');
+          const removeButton = item.querySelector('[data-hm-photo-remove]');
+          const source = String(image && image.src || '');
           const comma = source.indexOf(',');
           const base64 = comma >= 0 ? source.slice(comma + 1) : '';
           if (!base64) throw new Error(`사진 ${index + 1} 데이터를 확인하지 못했습니다.`);
+          const localId = String(removeButton && removeButton.dataset.hmPhotoRemove || '').trim();
           return {
+            clientPhotoId: localId || `hm_batch_${Date.now()}_${index + 1}`,
             fileName: `photo_${String(index + 1).padStart(2, '0')}.jpg`,
             mimeType: 'image/jpeg',
             base64,
@@ -200,6 +197,7 @@
         currentBytes = 0;
       }
       current.push({
+        clientPhotoId: photo.clientPhotoId,
         fileName: photo.fileName,
         mimeType: photo.mimeType,
         base64: photo.base64
