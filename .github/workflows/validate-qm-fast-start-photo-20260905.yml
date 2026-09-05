@@ -1,0 +1,170 @@
+name: Validate QM Fast Start Photo 20260905
+
+on:
+  push:
+    branches: [feat/qm-fast-start-photo-20260905]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: qm-fast-start-photo-20260905
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout feature
+        uses: actions/checkout@v4
+        with:
+          ref: feat/qm-fast-start-photo-20260905
+          fetch-depth: 0
+
+      - name: Apply existing production patch chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts=(
+            scripts/patch_realtime_client.py
+            scripts/patch_sync_status_autohide.py
+            scripts/patch_telegram_self_connect.py
+            scripts/patch_realtime_subscription_resilience.py
+            scripts/patch_qm_mobile_browse.py
+            scripts/patch_qm_mobile_browse_v2.py
+            scripts/patch_qm_immediate_checklist.py
+            scripts/patch_qm_roommaid_name_display.py
+            scripts/patch_qm_notification_bell.py
+            scripts/patch_roommaid_notification_bell.py
+            scripts/patch_realtime_assignment_batch_merge.py
+            scripts/patch_roommaid_performance_attribution.py
+            scripts/patch_roommaid_close_read_acceleration.py
+            scripts/fix_patch_site_scope_v2.py
+            scripts/patch_site_scope_indicator_close_v2.py
+            scripts/patch_order_site_context_v1.py
+            scripts/patch_order_site_context_v2.py
+            scripts/patch_houseman_realtime_push.py
+            scripts/patch_concurrent_write_resilience_v1.py
+            scripts/patch_mobile_location_filter_persistence_20260904.py
+            scripts/patch_mobile_view_state_persistence_20260904.py
+          )
+          for script in "${scripts[@]}"; do python3 "$script"; done
+
+      - name: Apply QM fast-path source patch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          path = Path('scripts/patch_qm_fast_start_photo_20260905.py')
+          spec = importlib.util.spec_from_file_location('qmfast', path)
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          mod.patch_index()
+          mod.patch_client()
+          mod.patch_qm_server()
+          mod.patch_realtime_mirror()
+          print('QM_FAST_SOURCE_PATCH=PASS')
+          PY
+
+      - name: Validate QM fast path
+        run: python3 scripts/validate_qm_fast_start_photo_20260905.py
+
+      - name: Validate existing release simulations
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_order_site_context_v1.py
+          python3 scripts/validate_nova_release.py
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check 16_QmChecklist.js
+          node --check RealtimeDailySync.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for source, target in [
+              ('Client.html', '/tmp/NovaClient.js'),
+              ('QmFastPathClient.html', '/tmp/NovaQmFast.js'),
+              ('HousemanUiPerformancePatch.html', '/tmp/NovaNotification.js'),
+          ]:
+              source_text = Path(source).read_text(encoding='utf-8')
+              scripts = re.findall(r'<script[^>]*>(.*?)</script>', source_text, flags=re.S | re.I)
+              if not scripts:
+                  raise SystemExit(f'No script block found in {source}')
+              Path(target).write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+          node --check /tmp/NovaQmFast.js
+          node --check /tmp/NovaNotification.js
+
+      - name: Validate QM patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          tracked=(Index.html Client.html QmFastPathClient.html 16_QmChecklist.js RealtimeDailySync.js)
+          before="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          path = Path('scripts/patch_qm_fast_start_photo_20260905.py')
+          spec = importlib.util.spec_from_file_location('qmfast', path)
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          mod.patch_index(); mod.patch_client(); mod.patch_qm_server(); mod.patch_realtime_mirror()
+          PY
+          after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Re-run production patch chain and verify preservation
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts=(
+            scripts/patch_realtime_client.py
+            scripts/patch_sync_status_autohide.py
+            scripts/patch_telegram_self_connect.py
+            scripts/patch_realtime_subscription_resilience.py
+            scripts/patch_qm_mobile_browse.py
+            scripts/patch_qm_mobile_browse_v2.py
+            scripts/patch_qm_immediate_checklist.py
+            scripts/patch_qm_roommaid_name_display.py
+            scripts/patch_qm_notification_bell.py
+            scripts/patch_roommaid_notification_bell.py
+            scripts/patch_realtime_assignment_batch_merge.py
+            scripts/patch_roommaid_performance_attribution.py
+            scripts/patch_roommaid_close_read_acceleration.py
+            scripts/fix_patch_site_scope_v2.py
+            scripts/patch_site_scope_indicator_close_v2.py
+            scripts/patch_order_site_context_v1.py
+            scripts/patch_order_site_context_v2.py
+            scripts/patch_houseman_realtime_push.py
+            scripts/patch_concurrent_write_resilience_v1.py
+            scripts/patch_mobile_location_filter_persistence_20260904.py
+            scripts/patch_mobile_view_state_persistence_20260904.py
+          )
+          for script in "${scripts[@]}"; do python3 "$script"; done
+          python3 scripts/validate_qm_fast_start_photo_20260905.py
+          python3 scripts/validate_nova_release.py
+
+      - name: Persist materialized QM sources to feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(Index.html Client.html 16_QmChecklist.js RealtimeDailySync.js)
+          if git diff --quiet -- "${files[@]}"; then
+            echo "QM fast-path sources already materialized."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${files[@]}"
+          git commit -m "Materialize QM fast start and private photo sources"
+          git push origin HEAD:feat/qm-fast-start-photo-20260905
