@@ -1,0 +1,90 @@
+name: Validate Photo Final 20260905
+
+on:
+  push:
+    branches: [validate/photo-final-20260905]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate final delta and syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          node --check HousemanRequestPhotoBatch.js
+          node --check HousemanRequestPhotoMetadata.js
+          node --check HousemanRequestPhoto.js
+          node --check 11_Monthly.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('HousemanRequestPhotoBatchClient.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          assert len(scripts) == 1, len(scripts)
+          Path('/tmp/PhotoBatchClient.js').write_text(scripts[0], encoding='utf-8')
+          index = Path('Index.html').read_text(encoding='utf-8')
+          assert "include_('HousemanRequestPhotoClient')" in index
+          assert "include_('HousemanRequestPhotoBatchClient')" in index
+          assert index.index("include_('HousemanRequestPhotoBatchClient')") > index.index("include_('HousemanRequestPhotoClient')")
+          server = Path('HousemanRequestPhotoBatch.js').read_text(encoding='utf-8')
+          upload = server.split('function uploadMobileHousemanRequestPhotos',1)[1].split('function readHousemanRequestPhotoMetadata_',1)[0]
+          assert 'LockService' not in upload
+          assert 'acquireWriteLock_' not in upload
+          assert "NOVA_HOUSEMAN_PHOTO_METADATA_HEADER_ = '요청사진JSON'" in server
+          monthly = Path('11_Monthly.js').read_text(encoding='utf-8')
+          client = Path('Client.html').read_text(encoding='utf-8')
+          houseman = Path('07_Houseman.js').read_text(encoding='utf-8')
+          assert 'HOUSEMAN_LATEST_REGISTERED_LISTS_V1' in monthly
+          assert "String(b.registeredAt || '').localeCompare(String(a.registeredAt || ''))" in monthly
+          assert 'HOUSEMAN_LATEST_REGISTERED_LISTS_V1' in client
+          assert "String(b.registeredAt || '').localeCompare(String(a.registeredAt || ''))" in client
+          assert 'HOUSEMAN_LATEST_FIRST_V1' in houseman
+          assert "String(b.registeredAt || '')" in houseman
+          PY
+          node --check /tmp/PhotoBatchClient.js
+
+      - name: Apply production patch chain and release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_sync_status_autohide.py
+          python3 scripts/patch_telegram_self_connect.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          python3 scripts/patch_roommaid_performance_attribution.py
+          python3 scripts/patch_roommaid_close_read_acceleration.py
+          python3 scripts/fix_patch_site_scope_v2.py
+          python3 scripts/patch_site_scope_indicator_close_v2.py
+          python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
+          python3 scripts/patch_houseman_realtime_push.py
+          python3 scripts/patch_concurrent_write_resilience_v1.py
+          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
+          python3 scripts/patch_mobile_view_state_persistence_20260904.py
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_order_site_context_v1.py
+          python3 scripts/validate_nova_release.py
+          grep -q "HOUSEMAN_LATEST_REGISTERED_LISTS_V1" Client.html
+          grep -q "HOUSEMAN_LATEST_REGISTERED_LISTS_V1" 11_Monthly.js
+          grep -q "include_('HousemanRequestPhotoBatchClient')" Index.html
+          node --check HousemanRequestPhotoBatch.js
+          node --check HousemanRequestPhotoMetadata.js
+          node --check HousemanRequestPhoto.js
+          node --check 11_Monthly.js
