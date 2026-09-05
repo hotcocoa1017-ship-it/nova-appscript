@@ -1,0 +1,35 @@
+name: Validate 1500 cleaning with realtime
+
+on:
+  push:
+    branches:
+      - test/dbfirst-1000-20260905
+    paths:
+      - .github/workflows/validate-1500-cleaning-realtime-20260905.yml
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SUPABASE_URL: https://evoetxfjmkkjptucwxsv.supabase.co
+      SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV2b2V0eGZqbWtranB0dWN3eHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0MTI4NzgsImV4cCI6MjEwMjk4ODg3OH0.wNWMvTIFfCU2lN-c7LBFj2QYE2S4FiFg1moOXm-F_C8
+    steps:
+      - name: Benchmark top batch sizes with real broadcast trigger
+        shell: bash
+        run: |
+          node <<'NODE'
+          const https=require('https'); const {URL}=require('url');
+          const base=new URL(process.env.SUPABASE_URL), key=process.env.SUPABASE_ANON_KEY;
+          const agent=new https.Agent({keepAlive:true,maxSockets:100,maxFreeSockets:50});
+          function rpc(name,body){return new Promise(resolve=>{const payload=JSON.stringify(body||{}),s=process.hrtime.bigint();const req=https.request({hostname:base.hostname,port:443,path:`/rest/v1/rpc/${name}`,method:'POST',agent,headers:{apikey:key,Authorization:`Bearer ${key}`,'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload),Connection:'keep-alive'},timeout:60000},res=>{let data='';res.on('data',c=>data+=c);res.on('end',()=>{let json=null;try{json=JSON.parse(data||'null')}catch{} resolve({status:res.statusCode,json,text:data,elapsedMs:Number(process.hrtime.bigint()-s)/1e6})})});req.on('timeout',()=>req.destroy(new Error('timeout')));req.on('error',e=>resolve({status:0,error:e.message,json:null,text:'',elapsedMs:Number(process.hrtime.bigint()-s)/1e6}));req.end(payload)})}
+          const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+          async function reset(){const r=await rpc('nova_loadtest_1500_reset',{});if(r.status!==200||!r.json?.ok)throw new Error(`reset ${r.status} ${r.text}`)}
+          function chunks(size){const a=[];for(let s=1;s<=1500;s+=size){const e=Math.min(1500,s+size-1);a.push(Array.from({length:e-s+1},(_,i)=>s+i))}return a}
+          async function run(size,rep){await reset();await sleep(250);const cs=chunks(size);const one=async action=>{const t=Date.now(),s=process.hrtime.bigint();const rs=await Promise.all(cs.map((ids,i)=>rpc('nova_loadtest_1500_bulk_write',{p_room_ids:ids,p_action:action,p_batch_request_id:`rt-${size}-${rep}-${action}-${t}-${i}`})));const ms=Number(process.hrtime.bigint()-s)/1e6;const bad=rs.filter(r=>r.status!==200||!r.json?.ok);const updated=rs.reduce((n,r)=>n+Number(r.json?.updated||0),0);if(bad.length||updated!==1500)throw new Error(`${size} ${action} bad=${bad.length} updated=${updated}`);return ms};const start=await one('CLEANING_START');await sleep(150);const complete=await one('CLEANING_COMPLETE');return {size,batches:cs.length,rep,startMs:+start.toFixed(1),completeMs:+complete.toFixed(1),totalMs:+(start+complete).toFixed(1)}}
+          const median=a=>{a=[...a].sort((x,y)=>x-y);return a[Math.floor(a.length/2)]};
+          (async()=>{const sizes=[250,375,500,750,1500],all=[];for(const size of sizes){for(let rep=1;rep<=3;rep++){const r=await run(size,rep);all.push(r);console.log(JSON.stringify(r));await sleep(400)}}const rank=sizes.map(size=>{const rs=all.filter(r=>r.size===size);return {batchSize:size,batches:rs[0].batches,medianStartMs:+median(rs.map(r=>r.startMs)).toFixed(1),medianCompleteMs:+median(rs.map(r=>r.completeMs)).toFixed(1),medianTotalMs:+median(rs.map(r=>r.totalMs)).toFixed(1),bestTotalMs:+Math.min(...rs.map(r=>r.totalMs)).toFixed(1),worstTotalMs:+Math.max(...rs.map(r=>r.totalMs)).toFixed(1)}}).sort((a,b)=>a.medianTotalMs-b.medianTotalMs);console.log('REALTIME_ACCELERATION_SUMMARY');console.log(JSON.stringify(rank,null,2));console.log('REALTIME_FASTEST_BATCH='+rank[0].batchSize);console.log('VALIDATE_1500_REALTIME_ACCELERATION_SUCCESS');agent.destroy()})().catch(e=>{agent.destroy();console.error(e.stack||String(e));process.exit(1)})
+          NODE
