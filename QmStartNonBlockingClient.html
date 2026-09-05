@@ -1,0 +1,202 @@
+<script>
+(() => {
+  'use strict';
+
+  // QM_START_NONBLOCKING_V1
+  // 추가조회 점검 시작 확정 전에도 양호/불량·메모 입력은 허용합니다.
+  // 사진·임시저장·점검완료는 객실 선점이 확정된 뒤에만 활성화합니다.
+  if (typeof window.startQmBrowseInspection_ !== 'function') return;
+  if (window.startQmBrowseInspection_.__novaQmStartNonBlockingV1) return;
+
+  const originalScheduleAutosave = typeof window.scheduleQmInspectionAutosave_ === 'function'
+    ? window.scheduleQmInspectionAutosave_
+    : null;
+
+  if (originalScheduleAutosave && !originalScheduleAutosave.__novaQmPendingLocalOnlyV1) {
+    const wrappedScheduleAutosave = function() {
+      const active = state.qmChecklist?.activeInspection;
+      if (active?.startPending) {
+        active.localDirty = true;
+        if (typeof collectQmInspectionForm_ === 'function') collectQmInspectionForm_();
+        const status = $('qmDraftSaveStatus');
+        if (status) status.textContent = '점검 시작 처리 중 · 입력 내용 임시 보관';
+        return;
+      }
+      return originalScheduleAutosave.apply(this, arguments);
+    };
+    wrappedScheduleAutosave.__novaQmPendingLocalOnlyV1 = true;
+    wrappedScheduleAutosave.__novaOriginalAutosave = originalScheduleAutosave;
+    window.scheduleQmInspectionAutosave_ = wrappedScheduleAutosave;
+  }
+
+  function lockPendingOnlyActions_() {
+    const modalRoot = $('modalRoot');
+    if (!modalRoot) return;
+
+    // 결과 선택·메모 textarea/select는 사용 가능하게 둡니다.
+    modalRoot.querySelectorAll('.qm-checklist-modal [data-qm-photo-input], .qm-checklist-modal #qmInspectionSaveOnly, .qm-checklist-modal #qmChecklistSubmit, .qm-checklist-modal .qm-add-defect, .qm-checklist-modal [data-qm-photo-delete]')
+      .forEach(control => {
+        control.disabled = true;
+        control.setAttribute('aria-disabled', 'true');
+      });
+  }
+
+  function mergePendingDraft_(serverDraft, localDraft) {
+    const server = serverDraft || {};
+    const local = localDraft || { answers: [], defects: [] };
+    return Object.assign({}, server, local, {
+      draftId: String(server.draftId || local.draftId || ''),
+      rowNumber: Number(server.rowNumber || local.rowNumber || 0),
+      startedAt: String(server.startedAt || local.startedAt || ''),
+      savedAt: String(server.savedAt || local.savedAt || ''),
+      dbVersion: Number(server.dbVersion || local.dbVersion || 0)
+    });
+  }
+
+  const nonBlockingStart = async function(roomNo, button) {
+    const view = qmMobileBrowseView_();
+    const key = qmMobileBrowseKey_(view);
+    const browse = state.mobile.qmBrowseData;
+    const room = browse?.key === key && Array.isArray(browse.rooms)
+      ? browse.rooms.find(item => String(item.roomNo || '') === String(roomNo || ''))
+      : null;
+    if (!room) {
+      showToast('점검할 객실을 다시 불러와 주세요.');
+      return;
+    }
+
+    const checklist = state.mobile.data?.qmChecklist || {};
+    if (!(checklist.items || []).length && !(checklist.groups || []).length) {
+      showToast('QM 체크리스트를 먼저 불러와 주세요.');
+      return;
+    }
+
+    const originalText = button?.textContent || '';
+    if (button) {
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      button.textContent = '시작 중…';
+    }
+
+    const previewActive = {
+      roomNo: String(room.roomNo || ''),
+      checklist,
+      draft: { answers: [], defects: [], startedAt: '', savedAt: '' },
+      roomVersion: Number(room.version || 0),
+      sheetExpectedVersion: 0,
+      localDirty: false,
+      realtime: true,
+      initPromise: null,
+      startPending: true
+    };
+
+    state.qmChecklist.activeInspection = previewActive;
+    openQmInspectionModal_();
+    lockPendingOnlyActions_();
+    const pendingStatus = $('qmDraftSaveStatus');
+    if (pendingStatus) pendingStatus.textContent = '점검 시작 처리 중 · 체크는 바로 가능합니다.';
+
+    state.mobile.actionInFlight = Number(state.mobile.actionInFlight || 0) + 1;
+    const clickedAt = performance.now();
+    try {
+      const result = await callServer('startQmMobileBrowseInspection', state.token, {
+        businessDate: state.mobile.businessDate || state.bootstrap.app.businessDate,
+        site: room.site || state.mobile.site,
+        roomNo: room.roomNo,
+        rowNumber: Number(room.rowNumber || 0),
+        view
+      });
+      if (!result?.ok) throw new Error(result?.message || 'QM 점검을 시작하지 못했습니다.');
+
+      // 확인 중 사용자가 입력한 값을 DOM에서 한 번 더 회수합니다.
+      const pendingDraft = typeof collectQmInspectionForm_ === 'function'
+        ? (collectQmInspectionForm_() || previewActive.draft)
+        : previewActive.draft;
+      const hadLocalInput = Boolean(previewActive.localDirty);
+
+      const confirmedChecklist = result.checklist || checklist;
+      if (!(confirmedChecklist.items || []).length && !(confirmedChecklist.groups || []).length) {
+        throw new Error('QM 체크리스트를 불러오지 못했습니다.');
+      }
+
+      const confirmed = Object.assign({}, room, result.room || {}, {
+        rowNumber: Number(result.room?.rowNumber || room.rowNumber || 0),
+        businessDate: state.mobile.businessDate || room.businessDate,
+        site: String(result.room?.site || room.site || state.mobile.site || ''),
+        roomNo: String(room.roomNo || ''),
+        qmEmployeeNo: String(state.bootstrap?.user?.employeeNo || ''),
+        qmName: String(state.bootstrap?.user?.name || ''),
+        cleaningStatus: 'QM_CHECKING',
+        version: Number(result.room?.version || result.version || 0)
+      });
+
+      const targetRooms = state.mobile.data.rooms || (state.mobile.data.rooms = []);
+      const existingIndex = targetRooms.findIndex(item => String(item.site || '') === confirmed.site && String(item.roomNo || '') === confirmed.roomNo);
+      if (existingIndex >= 0) targetRooms[existingIndex] = Object.assign({}, targetRooms[existingIndex], confirmed);
+      else targetRooms.push(confirmed);
+      state.mobile.data.qmChecklist = confirmedChecklist;
+
+      Object.assign(previewActive, {
+        checklist: confirmedChecklist,
+        draft: hadLocalInput ? mergePendingDraft_(result.draft, pendingDraft) : (result.draft || pendingDraft),
+        roomVersion: Number(confirmed.version || result.version || 0),
+        sheetExpectedVersion: 0,
+        localDirty: hadLocalInput,
+        realtime: true,
+        startPending: false
+      });
+
+      state.mobile.qmView = 'TARGETS';
+      state.mobile.qmBrowseData = null;
+      state.mobile.qmBrowseBuilding = '';
+      state.mobile.qmBrowseFloor = '';
+      state.mobile.qmBrowseLimit = 50;
+      renderQmBrowseTabs_();
+      renderQmBrowseLocationFilters_();
+      renderMobileSummary();
+      renderMobileFilters();
+      renderMobileList();
+
+      const modalStillOpen = Boolean($('modalRoot') && !$('modalRoot').classList.contains('hidden') && $('qmChecklistInspectionItems'));
+      if (state.qmChecklist.activeInspection === previewActive && modalStillOpen) {
+        openQmInspectionModal_();
+        if (hadLocalInput && typeof scheduleQmInspectionAutosave_ === 'function') {
+          scheduleQmInspectionAutosave_();
+        }
+      }
+
+      const totalMs = Math.round(performance.now() - clickedAt);
+      const dbMs = Number(result?.timing?.qmDbFirstClientMs || 0);
+      setSyncStatus(`${confirmed.roomNo}호 QM 점검 시작 · ${totalMs}ms${dbMs ? ` · DB ${dbMs}ms` : ''}`);
+
+      if (!previewActive.draft?.draftId) {
+        void beginQmInspectionDraftInit_(previewActive).catch(error => {
+          console.error('[NOVA QM] 추가탭 체크리스트 background 준비 실패:', error);
+          if (state.qmChecklist.activeInspection === previewActive) {
+            const status = $('qmDraftSaveStatus');
+            if (status) status.textContent = `저장 준비 오류 · ${error?.message || ''}`;
+            showToast('점검은 시작됐지만 체크리스트 저장준비가 지연되고 있습니다. 저장 시 자동 재시도합니다.');
+          }
+        });
+      }
+      void loadMobileSnapshot({ silent: true, force: true }).catch(error => console.warn('[NOVA QM] 추가탭 점검시작 후 화면갱신 실패:', error));
+    } catch (error) {
+      if (state.qmChecklist.activeInspection === previewActive) state.qmChecklist.activeInspection = null;
+      const modalOpen = Boolean($('modalRoot') && !$('modalRoot').classList.contains('hidden'));
+      if (modalOpen) closeModal();
+      showToast(error?.message || 'QM 점검 시작 오류');
+    } finally {
+      state.mobile.actionInFlight = Math.max(0, Number(state.mobile.actionInFlight || 1) - 1);
+      if (button && button.isConnected) {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        button.textContent = originalText || '점검 시작';
+      }
+    }
+  };
+
+  nonBlockingStart.__novaQmStartNonBlockingV1 = true;
+  nonBlockingStart.__novaOriginalStart = window.startQmBrowseInspection_;
+  window.startQmBrowseInspection_ = nonBlockingStart;
+})();
+</script>
