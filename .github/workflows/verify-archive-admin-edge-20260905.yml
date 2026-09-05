@@ -1,0 +1,97 @@
+name: Verify Archive Admin Edge
+
+on:
+  push:
+    branches: [diag/wif-cloudrun-access-20260829]
+    paths:
+      - '.github/workflows/verify-archive-admin-edge-20260905.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_REGION: asia-southeast1
+  CLOUD_RUN_SERVICE: nova-realtime-api
+  EDGE_URL: https://evoetxfjmkkjptucwxsv.supabase.co/functions/v1/nova-archive-admin-v1
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Derive archive server key in memory
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/service.json
+          python3 - <<'PY' > /tmp/archive-key
+          import json,hmac,hashlib,base64
+          s=json.load(open('/tmp/service.json'))
+          c=((((s.get('spec') or {}).get('template') or {}).get('spec') or {}).get('containers') or [{}])[0]
+          by={str(e.get('name') or ''):str(e.get('value') or '') for e in (c.get('env') or [])}
+          secret=by.get('NOVA_TOKEN_SECRET','')
+          if len(secret)<32: raise SystemExit('NOVA token secret unavailable')
+          key=base64.urlsafe_b64encode(hmac.new(secret.encode(),b'NOVA_ARCHIVE_ADMIN_KEY_V1',hashlib.sha256).digest()).decode().rstrip('=')
+          print(key)
+          PY
+          echo "::add-mask::$(cat /tmp/archive-key)"
+          echo 'ARCHIVE_SERVER_KEY_READY=YES'
+
+      - name: Verify unauthenticated request is rejected
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 20 -o /tmp/unauth.json -w '%{http_code}' -H 'Content-Type: application/json' -d '{"action":"status","payload":{}}' "$EDGE_URL")"
+          test "$code" = '401'
+          echo 'ARCHIVE_ADMIN_UNAUTH=BLOCKED'
+
+      - name: Verify status query and restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEY="$(cat /tmp/archive-key)"
+          code="$(curl -sS --max-time 30 -o /tmp/status.json -w '%{http_code}' -H 'Content-Type: application/json' -H "X-NOVA-Archive-Admin-Key: $KEY" -d '{"action":"status","payload":{}}' "$EDGE_URL")"
+          test "$code" = '200'
+          python3 - <<'PY'
+          import json,sys
+          b=json.load(open('/tmp/status.json'))
+          if b.get('ok') is not True or b.get('healthy') is not True or (b.get('current') or {}).get('ok') is not True: sys.exit(1)
+          print('ARCHIVE_ADMIN_STATUS=OK')
+          PY
+
+          code="$(curl -sS --max-time 30 -o /tmp/query.json -w '%{http_code}' -H 'Content-Type: application/json' -H "X-NOVA-Archive-Admin-Key: $KEY" -d '{"action":"query","payload":{"sourceType":"WORK_HISTORY","limit":1}}' "$EDGE_URL")"
+          test "$code" = '200'
+          ARCHIVE_KEY="$(python3 - <<'PY'
+          import json
+          b=json.load(open('/tmp/query.json'))
+          rows=b.get('rows') or []
+          if b.get('ok') is not True or not rows or not rows[0].get('archive_key'): raise SystemExit(1)
+          print(rows[0]['archive_key'])
+          PY
+          )"
+          echo 'ARCHIVE_ADMIN_QUERY=OK'
+
+          python3 - "$ARCHIVE_KEY" <<'PY' > /tmp/restore-body.json
+          import json,sys
+          print(json.dumps({'action':'restore','payload':{'archiveKey':sys.argv[1]}}))
+          PY
+          code="$(curl -sS --max-time 60 -o /tmp/restore.json -w '%{http_code}' -H 'Content-Type: application/json' -H "X-NOVA-Archive-Admin-Key: $KEY" --data-binary @/tmp/restore-body.json "$EDGE_URL")"
+          test "$code" = '200'
+          python3 - <<'PY'
+          import json,sys
+          b=json.load(open('/tmp/restore.json'))
+          if b.get('ok') is not True or b.get('restored') is not True: sys.exit(1)
+          p=b.get('pointer') or {}; r=b.get('record') or {}
+          if str(r.get('request_id') or r.get('id') or '') != str(p.get('sourceRecordId') or ''): sys.exit(2)
+          print('ARCHIVE_ADMIN_RESTORE=OK')
+          print('ARCHIVE_ADMIN_E2E=PASS')
+          PY
