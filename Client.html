@@ -3618,7 +3618,8 @@
     return {
       sites: Array.isArray(options.sites) ? options.sites.slice() : [],
       parts: Array.isArray(options.orderParts) ? options.orderParts.slice() : [],
-      items: Array.isArray(options.orderItems) ? options.orderItems.slice() : []
+      items: Array.isArray(options.orderItems) ? options.orderItems.slice() : [],
+      housemen: Array.isArray(options.housemen) ? options.housemen.slice() : [] // MONTHLY_HOUSEMAN_MANAGEMENT_V1
     };
   }
 
@@ -3634,14 +3635,18 @@
     const items = Array.isArray(fallback?.orderItems) && fallback.orderItems.length
       ? fallback.orderItems.slice()
       : current.items;
+    const housemen = Array.isArray(fallback?.housemen) && fallback.housemen.length
+      ? fallback.housemen.slice()
+      : current.housemen;
     if (state.monthly.data) {
       state.monthly.data.options = Object.assign({}, state.monthly.data.options || {}, {
         sites,
         orderParts: parts,
-        orderItems: items
+        orderItems: items,
+        housemen
       });
     }
-    return { sites, parts, items };
+    return { sites, parts, items, housemen }; // MONTHLY_HOUSEMAN_MANAGEMENT_V1
   }
 
   function preloadMonthlyHousemanOrderOptions_() { // (하우스맨 화면 진입 즉시 파트·품목 백그라운드 사전조회)
@@ -4168,7 +4173,7 @@
             <td class="room-cell">${escapeHtml(item.roomNo || '-')}</td>
             <td><strong>${escapeHtml(requester)}</strong><small>등록 ${escapeHtml(registeredByName)}${registeredByEmployeeNo && registeredByName !== registeredByEmployeeNo ? ` (${escapeHtml(registeredByEmployeeNo)})` : ''}</small></td>
             <td>${handlerName !== '-' ? `<strong>${escapeHtml(handlerName)}</strong>${handlerEmployeeNo && handlerName !== handlerEmployeeNo ? `<small>${escapeHtml(handlerEmployeeNo)}</small>` : ''}` : '-'}</td>
-            <td><span class="monthly-status">${escapeHtml(item.statusLabel || '-')}</span>${item.canDelete ? `<button class="monthly-order-cancel" type="button" data-monthly-order-cancel="${escapeAttr(item.recordId)}">등록취소</button>` : ''}</td>
+            <td><span class="monthly-status">${escapeHtml(item.statusLabel || '-')}</span>${item.canManage !== false ? `<button class="monthly-order-manage" type="button" data-monthly-order-manage="${escapeAttr(item.recordId)}">관리</button>` : ''}</td>
             <td class="monthly-detail" title="${escapeAttr(item.detailText || '')}">${escapeHtml(item.detailText || '-')}</td>
             <td class="monthly-photo-cell">${Number(item.photoCount || 0) > 0 ? `<button class="monthly-photo-button" type="button" data-monthly-photo-order="${escapeAttr(item.recordId)}">사진보기</button>` : '-'}</td>
             <td><span>등록 ${escapeHtml(item.registeredAt || '-')}</span><small>시작 ${escapeHtml(item.startedAt || '-')}</small></td>
@@ -4194,41 +4199,239 @@
     $('monthlyTableBody').querySelectorAll('[data-monthly-photo-order]').forEach(button => {
       button.addEventListener('click', () => openMonthlyHousemanPhotoViewer_(button.dataset.monthlyPhotoOrder, 0));
     });
+    $('monthlyTableBody').querySelectorAll('[data-monthly-order-manage]').forEach(button => {
+      button.addEventListener('click', () => openMonthlyHousemanManageModal_(button.dataset.monthlyOrderManage));
+    }); // MONTHLY_HOUSEMAN_MANAGEMENT_V1
     $('monthlyTableBody').querySelectorAll('[data-monthly-order-cancel]').forEach(button => {
       button.addEventListener('click', () => cancelMonthlyHousemanOrder_(button));
     });
   }
 
-  async function cancelMonthlyHousemanOrder_(button) { // (월별조회 직접등록 오더 DB+Sheet 등록취소)
-    const orderId = String(button?.dataset?.monthlyOrderCancel || '').trim();
-    const item = (state.monthly.data?.items || []).find(row => String(row.recordId || '') === orderId);
-    if (!item || !item.canDelete) return showToast('등록취소할 수 없는 오더입니다.');
-    if (!window.confirm(`${item.roomNo || '-'}호 하우스맨 오더를 삭제할까요?\n\n접수·처리 시작 전 오더만 삭제할 수 있습니다.`)) return;
+  function monthlyHousemanManageItem_(orderId) { // MONTHLY_HOUSEMAN_MANAGEMENT_V1
+    return (state.monthly.data?.items || []).find(row => String(row.recordId || '') === String(orderId || '')) || null;
+  }
 
+  function appendMonthlyHousemanManageItemRow_(item = {}) {
+    const root = $('monthlyHousemanManageItems');
+    if (!root) return;
+    const name = String(item.name || '');
+    const quantity = Math.max(1, Math.min(99, Number(item.quantity || 1)));
+    root.insertAdjacentHTML('beforeend', `<div class="monthly-houseman-manage-item"><input data-monthly-manage-item-name list="monthlyHousemanManageItemSuggestions" value="${escapeAttr(name)}" placeholder="품목"><input data-monthly-manage-item-qty type="number" min="1" max="99" value="${quantity}"><button type="button" class="secondary-button" data-monthly-manage-item-remove>삭제</button></div>`);
+    root.lastElementChild?.querySelector('[data-monthly-manage-item-remove]')?.addEventListener('click', event => {
+      event.currentTarget.closest('.monthly-houseman-manage-item')?.remove();
+      if (!root.querySelector('[data-monthly-manage-item-name]')) appendMonthlyHousemanManageItemRow_({ quantity: 1 });
+    });
+  }
+
+  function collectMonthlyHousemanManageItems_() {
+    return Array.from(document.querySelectorAll('#monthlyHousemanManageItems .monthly-houseman-manage-item')).map(row => ({
+      name: String(row.querySelector('[data-monthly-manage-item-name]')?.value || '').trim(),
+      quantity: clampQuantity(row.querySelector('[data-monthly-manage-item-qty]')?.value || 1)
+    })).filter(item => item.name);
+  }
+
+  async function openMonthlyHousemanManageModal_(orderId) { // (월별조회 하우스맨 오더 직접 관리)
+    const item = monthlyHousemanManageItem_(orderId);
+    if (!item || item.typeCode !== 'HOUSEMAN') return showToast('관리할 하우스맨 오더를 찾을 수 없습니다.');
+    const options = state.monthly.data?.options || {};
+    const parts = Array.isArray(options.orderParts) ? options.orderParts : [];
+    const itemSuggestions = Array.isArray(options.orderItems) ? options.orderItems : [];
+    const housemen = Array.isArray(options.housemen) ? options.housemen.slice() : [];
+    if (item.assignedEmployeeNo && !housemen.some(user => String(user.employeeNo || '') === String(item.assignedEmployeeNo))) {
+      housemen.unshift({ employeeNo: item.assignedEmployeeNo, name: item.assignedName || item.assignedEmployeeNo, job: '하우스맨' });
+    }
+    const currentItems = Array.isArray(item.items) && item.items.length ? item.items : [{ name: item.itemSummary || '', quantity: 1 }];
+    const partOptions = parts.map(code => {
+      const value = String(code?.label || code?.code || '').trim();
+      return `<option value="${escapeAttr(value)}"${value === String(item.part || '') ? ' selected' : ''}>${escapeHtml(value)}</option>`;
+    }).join('');
+    const suggestionOptions = itemSuggestions.map(code => `<option value="${escapeAttr(code?.label || code?.code || '')}"></option>`).join('');
+    const staffOptions = housemen.map(user => `<option value="${escapeAttr(user.employeeNo)}"${String(user.employeeNo) === String(item.assignedEmployeeNo || '') ? ' selected' : ''}>${escapeHtml(user.name || user.employeeNo)} (${escapeHtml(user.employeeNo)})</option>`).join('');
+    openModal(`
+      <div class="modal-card monthly-houseman-manage-modal">
+        <div class="modal-header"><div><small>월별조회 · 하우스맨 관리</small><h2>${escapeHtml(item.roomNo || '-')}호 오더</h2><p>${escapeHtml(item.businessDate || '')} · ${escapeHtml(item.site || '')} · ${escapeHtml(item.statusLabel || '')}</p></div><button class="modal-close" type="button" data-close-modal>×</button></div>
+        <div class="modal-body">
+          <datalist id="monthlyHousemanManageItemSuggestions">${suggestionOptions}</datalist>
+          <div class="modal-grid">
+            <label class="modal-field"><span>파트</span><select id="monthlyManagePart"${item.canEdit ? '' : ' disabled'}>${partOptions}</select></label>
+            <label class="modal-field"><span>요청자</span><input id="monthlyManageRequester" value="${escapeAttr(item.requester || '')}"${item.canEdit ? '' : ' disabled'}></label>
+            <label class="modal-field full"><span>추가내용</span><textarea id="monthlyManageNote"${item.canEdit ? '' : ' disabled'}>${escapeHtml(item.note || '')}</textarea></label>
+            <label class="modal-field full"><span>담당 하우스맨</span><select id="monthlyManageAssignee"${item.canAssign ? '' : ' disabled'}><option value="">직원 선택</option>${staffOptions}</select></label>
+            <label class="modal-field"><span>중요</span><label class="toggle-compact"><input id="monthlyManageImportant" type="checkbox"${item.important ? ' checked' : ''}${item.canEdit ? '' : ' disabled'}> 중요 오더</label></label>
+            <label class="modal-field"><span>인수인계</span><label class="toggle-compact"><input id="monthlyManageHandover" type="checkbox"${item.handover ? ' checked' : ''}${item.canEdit ? '' : ' disabled'}> 인수인계</label></label>
+          </div>
+          <div class="monthly-houseman-manage-heading"><strong>오더 품목</strong>${item.canEdit ? '<button id="monthlyManageAddItem" class="secondary-button" type="button">품목 추가</button>' : ''}</div>
+          <div id="monthlyHousemanManageItems"></div>
+          <div class="settings-help">수정·직원변경·취소는 접수/처리 전 단계에서만 가능합니다. 삭제는 실제 행을 제거하지 않고 감사이력을 남기는 안전한 소프트삭제입니다.</div>
+          <div class="modal-actions monthly-houseman-manage-actions">
+            ${item.canEdit ? '<button id="monthlyManageSave" class="action-button primary" type="button">내용 저장</button>' : ''}
+            ${item.canAssign ? '<button id="monthlyManageAssign" class="action-button" type="button">직원 등록/변경</button>' : ''}
+            ${item.canCancel ? '<button id="monthlyManageCancel" class="secondary-button danger" type="button">오더취소</button>' : ''}
+            ${item.canDelete ? '<button id="monthlyManageDelete" class="secondary-button danger" type="button">삭제</button>' : ''}
+          </div>
+        </div>
+      </div>`);
+    currentItems.forEach(orderItem => appendMonthlyHousemanManageItemRow_(orderItem));
+    if (!currentItems.length) appendMonthlyHousemanManageItemRow_({ quantity: 1 });
+    if (!item.canEdit) document.querySelectorAll('#monthlyHousemanManageItems input, #monthlyHousemanManageItems button').forEach(element => { element.disabled = true; });
+    $('monthlyManageAddItem')?.addEventListener('click', () => appendMonthlyHousemanManageItemRow_({ quantity: 1 }));
+    $('monthlyManageSave')?.addEventListener('click', event => saveMonthlyHousemanManagedContent_(item, event.currentTarget));
+    $('monthlyManageAssign')?.addEventListener('click', event => assignMonthlyHousemanManagedOrder_(item, event.currentTarget));
+    $('monthlyManageCancel')?.addEventListener('click', event => cancelMonthlyHousemanManagedOrder_(item, event.currentTarget));
+    $('monthlyManageDelete')?.addEventListener('click', event => deleteMonthlyHousemanManagedOrder_(item, event.currentTarget));
+  }
+
+  async function saveMonthlyHousemanManagedContent_(item, button) {
+    const items = collectMonthlyHousemanManageItems_();
+    if (!items.length) return showToast('품목을 1개 이상 입력하세요.');
+    const part = String($('monthlyManagePart')?.value || '').trim();
+    if (!part) return showToast('파트를 선택하세요.');
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = '저장 중…';
+    try {
+      const result = await callServer('updateHousemanOrder', state.token, {
+        orderId: item.recordId,
+        rowNumber: Number(item.rowNumber || 0),
+        expectedVersion: Number(item.version || 0),
+        action: 'EDIT',
+        part,
+        requester: String($('monthlyManageRequester')?.value || '').trim(),
+        note: String($('monthlyManageNote')?.value || '').trim(),
+        items,
+        important: Boolean($('monthlyManageImportant')?.checked),
+        handover: Boolean($('monthlyManageHandover')?.checked)
+      });
+      if (!result?.ok) throw new Error(result?.message || '오더 내용을 수정하지 못했습니다.');
+      void syncRealtimeHousemanEditedContent_(result.order);
+      closeModal();
+      showToast(`${item.roomNo || ''}호 오더 내용을 수정했습니다.`);
+      await loadMonthlyHistory({ page: Number(state.monthly.page || 1), preserveTable: true });
+    } catch (error) {
+      showToast(error?.message || '오더 수정 오류');
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  async function assignMonthlyHousemanManagedOrder_(item, button) {
+    const employeeNo = String($('monthlyManageAssignee')?.value || '').trim();
+    if (!employeeNo) return showToast('배정할 하우스맨을 선택하세요.');
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = '배정 중…';
+    const sourceOrder = {
+      orderId: item.recordId,
+      rowNumber: Number(item.rowNumber || 0),
+      version: Number(item.version || 0),
+      roomNo: item.roomNo,
+      businessDate: item.businessDate,
+      site: item.site,
+      assignedEmployeeNo: item.assignedEmployeeNo || ''
+    };
+    try {
+      if (!novaRealtime_.configLoaded) await initNovaRealtime_();
+      let mirrored = null;
+      if (novaRealtimeIsEnabled_()) {
+        try {
+          await novaRealtimeAssignHousemanOrder_(sourceOrder, employeeNo);
+          mirrored = await mirrorRealtimeHousemanAssignmentToSheet_(sourceOrder, employeeNo);
+        } catch (realtimeError) {
+          console.warn('[NOVA 월별조회] 하우스맨 DB 수동배정 실패 · Sheet 경로로 전환', realtimeError?.message || realtimeError);
+        }
+      }
+      if (!mirrored?.ok) {
+        mirrored = await callServer('assignHousemanOrderFast', state.token, {
+          orderId: item.recordId,
+          rowNumber: Number(item.rowNumber || 0),
+          expectedVersion: Number(item.version || 0),
+          employeeNo
+        });
+        if (!mirrored?.ok) throw new Error(mirrored?.message || '직원 배정에 실패했습니다.');
+        void callServer('finalizeHousemanAssignmentAux', state.token, {
+          orderId: mirrored.order.orderId,
+          rowNumber: Number(mirrored.order.rowNumber || 0),
+          employeeNo,
+          version: Number(mirrored.version || 0)
+        }).catch(error => console.warn('[NOVA 월별조회] 배정 후속처리 지연', error));
+      }
+      closeModal();
+      showToast(`${item.roomNo || ''}호 담당직원을 변경했습니다.`);
+      await loadMonthlyHistory({ page: Number(state.monthly.page || 1), preserveTable: true });
+    } catch (error) {
+      showToast(error?.message || '직원 배정 오류');
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  async function cancelMonthlyHousemanRealtimeIfPresent_(orderId) {
+    if (!novaRealtime_.configLoaded) await initNovaRealtime_();
+    if (!novaRealtimeIsEnabled_()) return null;
+    try {
+      return await novaMonthlyRealtimeCancelHousemanOrder_(orderId);
+    } catch (error) {
+      const code = String(error?.code || '').trim().toUpperCase();
+      if (Number(error?.status || 0) === 404 || code === 'HOUSEMAN_ORDER_NOT_FOUND') return null;
+      throw error;
+    }
+  }
+
+  async function cancelMonthlyHousemanManagedOrder_(item, button) {
+    if (!item?.canCancel) return showToast('현재 상태에서는 오더를 취소할 수 없습니다.');
+    if (!window.confirm(`${item.roomNo || '-'}호 오더를 취소할까요?
+
+취소 이력은 월별조회에 남습니다.`)) return;
     const original = button.textContent;
     button.disabled = true;
     button.textContent = '취소 중…';
     try {
-      if (!novaRealtime_.configLoaded) await initNovaRealtime_();
-      if (novaRealtimeIsEnabled_()) {
-        const realtimeCancel = await novaMonthlyRealtimeCancelHousemanOrder_(orderId);
-        if (!realtimeCancel?.ok) throw new Error('Realtime 오더 등록취소에 실패했습니다.');
-      } else if (!novaRealtime_.configLoaded) {
-        throw new Error('고속 서버 연결을 확인하지 못했습니다. 잠시 후 다시 등록취소하세요.');
-      }
-
-      const result = await callServer('deleteMonthlyHousemanOrder', state.token, {
-        orderId,
+      await cancelMonthlyHousemanRealtimeIfPresent_(item.recordId);
+      const result = await callServer('cancelMonthlyManagedHousemanOrder', state.token, {
+        orderId: item.recordId,
         rowNumber: Number(item.rowNumber || 0)
       });
-      if (!result?.ok) throw new Error(result?.message || '오더를 삭제하지 못했습니다.');
-      showToast(result.message || `${item.roomNo || ''}호 오더 등록취소 완료`);
+      if (!result?.ok) throw new Error(result?.message || '오더를 취소하지 못했습니다.');
+      closeModal();
+      showToast(result.message || `${item.roomNo || ''}호 오더취소 완료`);
       await loadMonthlyHistory({ page: Number(state.monthly.page || 1), preserveTable: true });
     } catch (error) {
-      showToast(error?.message || '오더 등록취소 오류');
+      showToast(error?.message || '오더취소 오류');
       button.disabled = false;
       button.textContent = original;
     }
+  }
+
+  async function deleteMonthlyHousemanManagedOrder_(item, button) {
+    if (!item?.canDelete) return showToast('현재 상태에서는 오더를 삭제할 수 없습니다.');
+    if (!window.confirm(`${item.roomNo || '-'}호 오더를 삭제할까요?
+
+목록에서는 제거되지만 감사이력은 보존됩니다.`)) return;
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = '삭제 중…';
+    try {
+      await cancelMonthlyHousemanRealtimeIfPresent_(item.recordId);
+      const result = await callServer('deleteMonthlyHousemanOrder', state.token, {
+        orderId: item.recordId,
+        rowNumber: Number(item.rowNumber || 0)
+      });
+      if (!result?.ok) throw new Error(result?.message || '오더를 삭제하지 못했습니다.');
+      closeModal();
+      showToast(result.message || `${item.roomNo || ''}호 오더 삭제 완료`);
+      await loadMonthlyHistory({ page: Number(state.monthly.page || 1), preserveTable: true });
+    } catch (error) {
+      showToast(error?.message || '오더 삭제 오류');
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  async function cancelMonthlyHousemanOrder_(button) { // (이전 등록취소 버튼 호환)
+    const orderId = String(button?.dataset?.monthlyOrderCancel || '').trim();
+    const item = monthlyHousemanManageItem_(orderId);
+    if (!item) return showToast('관리할 오더를 찾을 수 없습니다.');
+    return deleteMonthlyHousemanManagedOrder_(item, button);
   }
 
   async function openMonthlyHousemanPhotoViewer_(orderId, index = 0) { // (월별조회 사진보기·다운로드)

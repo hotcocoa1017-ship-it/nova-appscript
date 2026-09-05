@@ -37,7 +37,96 @@ function getMonthlyHistory(token, filters) { // (월별 이력 페이지 조회)
   });
 }
 
-function deleteMonthlyHousemanOrder(token, payload) { // (월별조회 직접등록 하우스맨 오더 소프트삭제)
+function cancelMonthlyManagedHousemanOrder(token, payload) { // (월별조회 하우스맨 오더취소 · 이력 보존)
+  return measureResponse_('cancelMonthlyManagedHousemanOrder', () => {
+    const user = requireRole_(token, ['ADMIN', 'ORDER']);
+    const safe = payload || {};
+    const orderId = String(safe.orderId || '').trim();
+    if (!orderId) throw new Error('취소할 오더 번호가 없습니다.');
+
+    const lock = LockService.getScriptLock();
+    lock.waitLock(10000);
+    try {
+      const sheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
+      const found = findHousemanOrderRow_(sheet, orderId, Number(safe.rowNumber || 0));
+      if (!found) throw new Error('하우스맨 오더를 찾을 수 없습니다.');
+      if (String(found.data['기록구분'] || '').trim() !== NOVA.RECORD_TYPES.HOUSEMAN_ORDER) {
+        throw new Error('하우스맨 오더만 취소할 수 있습니다.');
+      }
+      if (String(found.data['삭제여부'] || 'N').trim().toUpperCase() === 'Y') {
+        throw new Error('이미 삭제된 오더입니다.');
+      }
+
+      const statusCode = String(found.data['처리상태'] || '').trim().toUpperCase();
+      if (statusCode === 'CANCELLED') {
+        return { ok: true, orderId, alreadyCancelled: true, message: '이미 취소된 오더입니다.' };
+      }
+      if (!['REGISTERED', 'ASSIGNED'].includes(statusCode)
+          || String(found.data['접수일시'] || '').trim()
+          || String(found.data['처리시작일시'] || '').trim()
+          || String(found.data['완료일시'] || '').trim()) {
+        throw new Error('접수 또는 처리가 시작된 오더는 취소할 수 없습니다.');
+      }
+
+      let detail = {};
+      try { detail = JSON.parse(String(found.data['세부내용JSON'] || '{}')); } catch (error) { detail = {}; }
+      const version = reserveDataVersion_({ lockHeld: true });
+      const now = nowText_();
+      detail = Object.assign({}, detail, {
+        cancelled: true,
+        cancelledAt: now,
+        cancelledBy: user.employeeNo,
+        cancelSource: 'MONTHLY_HISTORY'
+      });
+
+      updateRowByHeaders_(sheet, found.rowNumber, {
+        '처리상태': 'CANCELLED',
+        '세부내용JSON': JSON.stringify(detail),
+        '수정일시': now,
+        '변경버전': version
+      });
+
+      const users = getUserIndex_().byEmployeeNo;
+      const statusCodeMap = {};
+      getCodes_('하우스맨상태').forEach(code => { statusCodeMap[code.code] = code.label; });
+      statusCodeMap.CANCELLED = '오더취소';
+      const updatedData = Object.assign({}, found.data, {
+        '처리상태': 'CANCELLED',
+        '세부내용JSON': JSON.stringify(detail),
+        '수정일시': now,
+        '변경버전': version
+      });
+      const order = housemanOrderObject_(updatedData, found.rowNumber, users, statusCodeMap);
+      const auditRow = buildHousemanAuditRow_(sheet, order, 'CANCELLED', user.employeeNo, version, {
+        source: 'MONTHLY_HISTORY',
+        reason: 'ORDER_CANCELLED_BY_MANAGER'
+      });
+      const auditRowNumber = sheet.getLastRow() + 1;
+      ensureSheetRowCapacity_(sheet, auditRowNumber);
+      sheet.getRange(auditRowNumber, 1, 1, auditRow.length).setValues([auditRow]);
+      SpreadsheetApp.flush();
+
+      publishDataVersion_(version, {
+        domains: ['ORDER'],
+        businessDate: String(found.data['업무일자'] || '').trim(),
+        site: String(found.data['사업장'] || '').trim(),
+        lockHeld: true
+      });
+
+      return {
+        ok: true,
+        orderId,
+        version,
+        order,
+        message: `${String(found.data['객실번호'] || '').trim()}호 오더를 취소했습니다.`
+      };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+function deleteMonthlyHousemanOrder(token, payload) { // (월별조회 하우스맨 오더 소프트삭제 · 감사이력 유지)
   return measureResponse_('deleteMonthlyHousemanOrder', () => {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const safe = payload || {};
@@ -57,23 +146,20 @@ function deleteMonthlyHousemanOrder(token, payload) { // (월별조회 직접등
         throw new Error('하우스맨 오더만 삭제할 수 있습니다.');
       }
 
-      let detail = {};
-      try { detail = JSON.parse(String(found.data['세부내용JSON'] || '{}')); } catch (error) { detail = {}; }
-      if (String(detail.requestSource || '').trim().toUpperCase() !== 'MONTHLY_HISTORY') {
-        throw new Error('월별조회에서 직접 등록한 오더만 여기서 삭제할 수 있습니다.');
-      }
-
       const statusCode = String(found.data['처리상태'] || '').trim().toUpperCase();
-      if (!['REGISTERED', 'ASSIGNED'].includes(statusCode)) {
-        throw new Error('이미 접수 또는 처리가 시작된 오더는 삭제할 수 없습니다.');
+      if (!['REGISTERED', 'ASSIGNED', 'CANCELLED'].includes(statusCode)) {
+        throw new Error('접수 또는 처리가 시작된 오더는 삭제할 수 없습니다.');
       }
-      if (String(found.data['접수일시'] || '').trim() || String(found.data['처리시작일시'] || '').trim()) {
-        throw new Error('이미 접수 또는 처리가 시작된 오더는 삭제할 수 없습니다.');
+      if (String(found.data['접수일시'] || '').trim()
+          || String(found.data['처리시작일시'] || '').trim()
+          || String(found.data['완료일시'] || '').trim()) {
+        throw new Error('접수 또는 처리가 시작된 오더는 삭제할 수 없습니다.');
       }
 
       const users = getUserIndex_().byEmployeeNo;
       const statusCodeMap = {};
       getCodes_('하우스맨상태').forEach(code => { statusCodeMap[code.code] = code.label; });
+      statusCodeMap.CANCELLED = '오더취소';
       const current = housemanOrderObject_(found.data, found.rowNumber, users, statusCodeMap);
       const version = reserveDataVersion_({ lockHeld: true });
       const now = nowText_();
@@ -86,7 +172,8 @@ function deleteMonthlyHousemanOrder(token, payload) { // (월별조회 직접등
 
       const auditRow = buildHousemanAuditRow_(sheet, current, 'DELETED', user.employeeNo, version, {
         source: 'MONTHLY_HISTORY',
-        reason: 'ORDER_REGISTRATION_CANCELLED'
+        reason: 'ORDER_DELETED_BY_MANAGER',
+        previousStatus: statusCode
       });
       const auditRowNumber = sheet.getLastRow() + 1;
       ensureSheetRowCapacity_(sheet, auditRowNumber);
@@ -104,7 +191,7 @@ function deleteMonthlyHousemanOrder(token, payload) { // (월별조회 직접등
         ok: true,
         orderId,
         version,
-        message: `${String(found.data['객실번호'] || '').trim()}호 오더 등록을 취소했습니다.`
+        message: `${String(found.data['객실번호'] || '').trim()}호 오더를 삭제했습니다.`
       };
     } finally {
       lock.releaseLock();
@@ -152,6 +239,7 @@ function getMonthlyHousemanOrderOptions(token) { // (월별조회 하우스맨 �
       ok: true,
       orderParts,
       orderItems,
+      housemen: getPublicStaffList_(['HOUSEMAN']), // MONTHLY_HOUSEMAN_MANAGEMENT_V1
       sites: getMonthlyConfiguredSites_()
     };
   });
@@ -301,6 +389,7 @@ function buildMonthlyHistoryBundle_(request) { // (월별 이력 조회·필터�
   if (request.type === 'HOUSEMAN') {
     options.orderParts = getCodes_('하우스맨파트');
     options.orderItems = getCodes_('하우스맨품목');
+    options.housemen = getPublicStaffList_(['HOUSEMAN']); // MONTHLY_HOUSEMAN_MANAGEMENT_V1
   }
   const scopedItems = typedItems
     .filter(item => !request.site || item.site === request.site)
@@ -478,6 +567,19 @@ function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업�
   const creditUnit = typeCode === 'CLEANING' && ['CLEANING_COMPLETE', 'ROOMMAID_COMPLETE'].includes(statusCode)
     ? getRoommaidCleaningCreditUnit_(cleaningType)
     : 0;
+  const housemanItems = typeCode === 'HOUSEMAN'
+    ? (Array.isArray(detail.items) && detail.items.length
+        ? detail.items.map(item => ({ name: String(item && item.name || '').trim(), quantity: Math.max(1, Number(item && item.quantity || 1)) })).filter(item => item.name)
+        : (String(data['품목'] || '').trim() ? [{ name: String(data['품목'] || '').trim(), quantity: Math.max(1, Number(data['수량'] || 1)) }] : []))
+    : [];
+  const housemanPreStart = typeCode === 'HOUSEMAN'
+    && ['REGISTERED', 'ASSIGNED'].includes(statusCode)
+    && !acceptedAt && !startedAt && !completedAt;
+  const canEdit = typeCode === 'HOUSEMAN' && ['REGISTERED', 'ASSIGNED', 'ACCEPTED'].includes(statusCode) && !startedAt && !completedAt;
+  const canAssign = housemanPreStart;
+  const canCancel = housemanPreStart;
+  const canDelete = typeCode === 'HOUSEMAN'
+    && (housemanPreStart || (statusCode === 'CANCELLED' && !acceptedAt && !startedAt && !completedAt));
 
   return {
     rowNumber,
@@ -499,9 +601,16 @@ function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업�
     statusCode,
     statusLabel,
     requestSource: String(detail.requestSource || '').trim(),
-    canDelete: typeCode === 'HOUSEMAN'
-      && String(detail.requestSource || '').trim().toUpperCase() === 'MONTHLY_HISTORY'
-      && ['REGISTERED', 'ASSIGNED'].includes(statusCode),
+    version: Number(data['변경버전'] || 0), // MONTHLY_HOUSEMAN_MANAGEMENT_V1
+    assignedEmployeeNo,
+    assignedName: assignedEmployeeNo && users[assignedEmployeeNo] ? users[assignedEmployeeNo].name : (assignedEmployeeNo || ''),
+    items: housemanItems,
+    note: String(data['추가내용'] || '').trim(),
+    canManage: typeCode === 'HOUSEMAN',
+    canEdit,
+    canAssign,
+    canCancel,
+    canDelete,
     detailText: monthlyDetailText_(typeCode, data, detail, statusLabel),
     registeredAt,
     acceptedAt,
@@ -523,7 +632,10 @@ function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업�
 }
 
 function monthlyStatusLabel_(typeCode, statusCode, orderStatusMap) { // (월별 상태 표시명)
-  if (typeCode === 'HOUSEMAN') return orderStatusMap[statusCode] || statusCode || '-';
+  if (typeCode === 'HOUSEMAN') {
+    if (statusCode === 'CANCELLED') return '오더취소'; // MONTHLY_HOUSEMAN_MANAGEMENT_V1
+    return orderStatusMap[statusCode] || statusCode || '-';
+  }
   const labels = {
     ASSIGN_ROOMMAID: '룸메이드 배정', CLEANING_START: '청소 시작', CLEANING_COMPLETE: '청소 완료',
     ROOMMAID_START: '청소 시작', ROOMMAID_COMPLETE: '청소 완료', CLEAR_ASSIGNMENT: '배정 초기화',
@@ -601,6 +713,7 @@ function buildMonthlyOptions_(items, users) { // (월별 필터 선택 목록)
 function buildMonthlyStaffSummary_(items, users) { // (직원별 처리건수·평균시간 집계)
   const groups = {};
   items.forEach(item => {
+    if (item.typeCode === 'HOUSEMAN' && item.statusCode === 'CANCELLED') return; // MONTHLY_HOUSEMAN_MANAGEMENT_V1
     const employeeNo = String(item.employeeNo || '').trim();
     if (!employeeNo) return;
     if (!groups[employeeNo]) {
@@ -657,7 +770,7 @@ function buildMonthlySummary_(items) { // (월별 조회 요약 집계)
   return {
     total: items.length,
     completed,
-    active: Math.max(0, items.length - completed),
+    active: Math.max(0, items.filter(item => !monthlyItemCompleted_(item) && !(item.typeCode === 'HOUSEMAN' && item.statusCode === 'CANCELLED')).length), // MONTHLY_HOUSEMAN_MANAGEMENT_V1
     unable,
     uniqueRooms: new Set(items.map(item => `${item.site}|${item.roomNo}`).filter(value => !value.endsWith('|'))).size,
     uniqueStaff: new Set(items.flatMap(item => item.employeeNos)).size,

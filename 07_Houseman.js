@@ -1341,6 +1341,10 @@ function getHousemanOrdersForDate_(
             .toUpperCase()
             !== 'Y'
       )
+      .filter(
+        item =>
+          String(item.data['처리상태'] || '').trim().toUpperCase() !== 'CANCELLED'
+      ) // MONTHLY_HOUSEMAN_MANAGEMENT_V1 · 취소 오더는 현장 활성목록에서 제외
       .map(
         item =>
           housemanOrderObject_(
