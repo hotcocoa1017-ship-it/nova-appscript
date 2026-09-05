@@ -17,6 +17,8 @@ const NOVA_REALTIME_FINAL = Object.freeze({
   EVENT_CURSOR_TIME: 'NOVA_REALTIME_MIRROR_CURSOR_TIME',
   EVENT_CURSOR_REQUEST: 'NOVA_REALTIME_MIRROR_CURSOR_REQUEST',
   EVENT_BATCH_LIMIT: 500,
+  EVENT_DRAIN_MAX_BATCHES: 6, // REALTIME_EVENT_DRAIN_3000_V1
+  EVENT_DRAIN_TIME_BUDGET_MS: 180 * 1000,
   HISTORY_DEDUP_SCAN: 6000,
   LAST_FORWARD_SYNC_MS: 'NOVA_REALTIME_LAST_FORWARD_SYNC_MS',
   FORWARD_INTERVAL_MS: 5 * 60 * 1000
@@ -157,7 +159,7 @@ function syncNovaRealtimeQmAssignmentMirror(token, payload) { // (QM 배정 DB �
 
 function novaRealtimeScheduledFinalSync() { // (1분 최종 통합: 이벤트 미러 + 5분 간격 정방향)
   if (!novaRealtimeFinalEnabled_()) return { ok: true, skipped: true, reason: 'REALTIME_DISABLED' };
-  const mirror = mirrorNovaRealtimeEventsToSheets_();
+  const mirror = mirrorNovaRealtimeEventsDrain_(); // REALTIME_EVENT_DRAIN_3000_V1
   const props = PropertiesService.getScriptProperties();
   const nowMs = Date.now();
   const lastForwardMs = Number(props.getProperty(NOVA_REALTIME_FINAL.LAST_FORWARD_SYNC_MS) || 0);
@@ -186,15 +188,63 @@ function testNovaRealtimeCurrentBusinessDateSync() { // (N 상태에서도 수�
 
 function novaRealtimeScheduledEventMirror() { // (1분 예약: PostgreSQL -> Sheets)
   if (!novaRealtimeFinalEnabled_()) return { ok: true, skipped: true, reason: 'REALTIME_DISABLED' };
-  const result = mirrorNovaRealtimeEventsToSheets_();
+  const result = mirrorNovaRealtimeEventsDrain_(); // REALTIME_EVENT_DRAIN_3000_V1
   console.log(JSON.stringify(result));
   return result;
 }
 
 function testNovaRealtimeEventMirror() { // (수동 이벤트 미러 검증)
-  const result = mirrorNovaRealtimeEventsToSheets_();
+  const result = mirrorNovaRealtimeEventsDrain_(); // REALTIME_EVENT_DRAIN_3000_V1
   console.log(JSON.stringify(result, null, 2));
   return result;
+}
+
+function mirrorNovaRealtimeEventsDrain_(options) { // (최대 3,000 이벤트를 한 예약실행에서 500건씩 안전 배치반영) // REALTIME_EVENT_DRAIN_3000_V1
+  const safe = options || {};
+  const configuredMax = Number(safe.maxBatches || NOVA_REALTIME_FINAL.EVENT_DRAIN_MAX_BATCHES || 1);
+  const maxBatches = Math.max(1, Math.min(6, Math.floor(configuredMax)));
+  const timeBudgetMs = Math.max(30000, Number(safe.timeBudgetMs || NOVA_REALTIME_FINAL.EVENT_DRAIN_TIME_BUDGET_MS || 180000));
+  const startedAt = Date.now();
+  let batches = 0;
+  let mirrored = 0;
+  let duplicates = 0;
+  let pulled = 0;
+  let hasMore = false;
+  let cursorTime = '';
+  let cursorRequestId = '';
+  let stoppedByTimeBudget = false;
+
+  while (batches < maxBatches) {
+    const batch = mirrorNovaRealtimeEventsToSheets_();
+    batches += 1;
+    mirrored += Number(batch && batch.mirrored || 0);
+    duplicates += Number(batch && batch.duplicates || 0);
+    pulled += Number(batch && batch.pulled || 0);
+    hasMore = Boolean(batch && batch.hasMore);
+    cursorTime = String(batch && batch.cursorTime || cursorTime);
+    cursorRequestId = String(batch && batch.cursorRequestId || cursorRequestId);
+
+    if (!hasMore || Number(batch && batch.pulled || 0) <= 0) break;
+    if (Date.now() - startedAt >= timeBudgetMs) {
+      stoppedByTimeBudget = true;
+      break;
+    }
+  }
+
+  return {
+    ok: true,
+    drain: true,
+    batches,
+    maxBatches,
+    mirrored,
+    duplicates,
+    pulled,
+    hasMore,
+    stoppedByTimeBudget,
+    elapsedMs: Date.now() - startedAt,
+    cursorTime,
+    cursorRequestId
+  };
 }
 
 function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA 자료구조로 배치반영)
