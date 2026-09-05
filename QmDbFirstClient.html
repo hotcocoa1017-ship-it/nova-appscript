@@ -1,0 +1,281 @@
+<script>
+(() => {
+  'use strict';
+
+  // QM_BEGIN_DB_FIRST_V1
+  // 추가조회(CLEANED/VACANT)의 사용자 대기경로만 DB-first로 전환합니다.
+  // 일반 QM 점검/완료/재정비와 기존 Apps Script 경로는 그대로 fallback으로 유지합니다.
+  const originalCallServer = window.callServer;
+  if (typeof originalCallServer !== 'function' || originalCallServer.__novaQmBeginDbFirstV1) return;
+
+  const AUTH_CACHE_MS = 180000;
+  const trackedDrafts = new Map();
+  let authCache = null;
+  let authPromise = null;
+  let configCache = null;
+  let configPromise = null;
+
+  function sleep_(ms) {
+    return new Promise(resolve => window.setTimeout(resolve, Math.max(0, Number(ms || 0))));
+  }
+
+  function requestId_(roomNo) {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    return `QM-BEGIN-${Date.now()}-${String(roomNo || '')}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function normalizeRpcError_(response, data) {
+    const error = new Error(data?.message || data?.details || data?.hint || `QM DB 처리 오류 (${response.status})`);
+    error.status = Number(response.status || 0);
+    error.code = String(data?.code || '').trim();
+    error.data = data || null;
+    return error;
+  }
+
+  function isMissingRpc_(error) {
+    const code = String(error?.code || '').trim().toUpperCase();
+    return Number(error?.status || 0) === 404 || ['PGRST202', 'PGRST205'].includes(code);
+  }
+
+  async function getConfig_(token) {
+    if (configCache && Date.now() < Number(configCache.cachedUntil || 0)) return configCache;
+    if (configPromise) return configPromise;
+    configPromise = (async () => {
+      const result = await originalCallServer('getNovaRealtimeClientConfig', token);
+      if (!result?.ok || !result?.enabled || !result?.apiBase || !result?.qmDraftDbFirstEnabled) return null;
+      configCache = Object.assign({}, result, {
+        apiBase: String(result.apiBase || '').replace(/\/+$/, ''),
+        cachedUntil: Date.now() + AUTH_CACHE_MS
+      });
+      try { sessionStorage.setItem('novaQmDbFirstApiBaseV1', configCache.apiBase); } catch (ignore) {}
+      return configCache;
+    })().finally(() => { configPromise = null; });
+    return configPromise;
+  }
+
+  async function getAuth_(token, forceRefresh = false) {
+    if (!forceRefresh && authCache && Date.now() < Number(authCache.cachedUntil || 0)) return authCache;
+    if (!forceRefresh && authPromise) return authPromise;
+    if (forceRefresh) authCache = null;
+
+    authPromise = (async () => {
+      const config = await getConfig_(token);
+      if (!config?.apiBase) return null;
+      const response = await fetch(`${config.apiBase}/v1/auth/realtime-token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${String(token || '').trim()}`
+        },
+        body: '{}'
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.ok || !data?.token || !data?.supabaseUrl || !data?.publishableKey) {
+        throw normalizeRpcError_(response, data);
+      }
+      authCache = Object.assign({}, data, { cachedUntil: Date.now() + AUTH_CACHE_MS });
+      return authCache;
+    })().finally(() => { authPromise = null; });
+    return authPromise;
+  }
+
+  async function rpcBegin_(token, payload, requestId, attempt = 0) {
+    const auth = await getAuth_(token, attempt > 0 && attempt === 1);
+    if (!auth) return null;
+    const endpoint = `${String(auth.supabaseUrl || '').replace(/\/+$/, '')}/rest/v1/rpc/nova_qm_begin_inspection_v1`;
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${String(auth.token || '')}`,
+          'apikey': String(auth.publishableKey || '')
+        },
+        body: JSON.stringify({
+          p_business_date: String(payload.businessDate || ''),
+          p_site: String(payload.site || ''),
+          p_room_no: String(payload.roomNo || ''),
+          p_view: String(payload.view || '').trim().toUpperCase(),
+          p_request_id: requestId
+        })
+      });
+    } catch (networkError) {
+      if (attempt < 2) {
+        await sleep_([180, 520, 1100][attempt] || 1100);
+        return rpcBegin_(token, payload, requestId, attempt + 1);
+      }
+      const error = new Error('QM DB 처리 결과를 확인하지 못했습니다. 화면을 새로고침해 현재 상태를 확인해 주세요.');
+      error.code = 'QM_DB_RESULT_UNKNOWN';
+      throw error;
+    }
+
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data?.ok) return data;
+
+    const error = normalizeRpcError_(response, data);
+    const code = String(error.code || '').trim().toUpperCase();
+    if (response.status === 401 && (code === 'PGRST303' || attempt === 0) && attempt < 2) {
+      authCache = null;
+      await sleep_(220);
+      return rpcBegin_(token, payload, requestId, attempt + 1);
+    }
+    if ((response.status === 429 || response.status >= 500) && attempt < 2) {
+      await sleep_([180, 520, 1100][attempt] || 1100);
+      return rpcBegin_(token, payload, requestId, attempt + 1);
+    }
+    throw error;
+  }
+
+  function mirrorPayload_(entry) {
+    return {
+      businessDate: entry.payload.businessDate,
+      site: entry.payload.site,
+      roomNo: entry.payload.roomNo,
+      rowNumber: Number(entry.payload.rowNumber || 0),
+      draftId: String(entry.draft?.draftId || ''),
+      draft: entry.draft
+    };
+  }
+
+  async function ensureMirror_(token, entry, force = false) {
+    if (!entry || !entry.draft?.draftId) return null;
+    if (entry.mirrored && !force) return entry.mirrorResult || null;
+    if (entry.mirrorPromise && !force) return entry.mirrorPromise;
+
+    const task = (async () => {
+      const delays = [0, 350, 900, 2000, 4500];
+      let lastError = null;
+      for (let attempt = 0; attempt < delays.length; attempt += 1) {
+        if (delays[attempt]) await sleep_(delays[attempt]);
+        try {
+          const result = await originalCallServer('ensureQmDbFirstDraftSheetMirror', token, mirrorPayload_(entry));
+          if (result?.ok) {
+            entry.mirrored = true;
+            entry.mirrorResult = result;
+            return result;
+          }
+          lastError = new Error(result?.message || 'QM 기존 이력 동기화 실패');
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      console.error('[NOVA QM] DB-first Sheet 미러 실패:', lastError);
+      return null;
+    })();
+
+    entry.mirrorPromise = task;
+    try { return await task; }
+    finally {
+      if (entry.mirrorPromise === task) entry.mirrorPromise = null;
+    }
+  }
+
+  async function startBrowseDbFirst_(token, payload) {
+    const safe = Object.assign({}, payload || {});
+    const view = String(safe.view || '').trim().toUpperCase();
+    if (!['CLEANED', 'VACANT'].includes(view)
+        || !String(safe.businessDate || '').trim()
+        || !String(safe.site || '').trim()
+        || !String(safe.roomNo || '').trim()) {
+      return originalCallServer('startQmMobileBrowseInspection', token, safe);
+    }
+
+    let config = null;
+    try { config = await getConfig_(token); } catch (error) {
+      console.warn('[NOVA QM] DB-first 설정확인 실패 · 기존 경로 사용:', error?.message || error);
+    }
+    if (!config?.apiBase) return originalCallServer('startQmMobileBrowseInspection', token, safe);
+
+    const requestId = requestId_(safe.roomNo);
+    let result;
+    try {
+      result = await rpcBegin_(token, safe, requestId);
+    } catch (error) {
+      // 함수가 아직 배포되지 않은 순간에만 기존 경로로 안전하게 복귀합니다.
+      // DB 요청 결과가 불명확하거나 상태검증에 실패한 경우에는 이중처리를 피하기 위해 fallback하지 않습니다.
+      if (isMissingRpc_(error)) {
+        console.warn('[NOVA QM] DB-first RPC 미배포 · 기존 경로 사용:', error?.message || error);
+        return originalCallServer('startQmMobileBrowseInspection', token, safe);
+      }
+      throw error;
+    }
+    if (!result?.ok) throw new Error(result?.message || 'QM 점검을 시작하지 못했습니다.');
+
+    // 전환 이전부터 이미 QM_CHECKING이던 객실에 DB 초안이 없으면 기존 Sheet 초안을 그대로 이어갑니다.
+    if (result.alreadyChecking === true && !result.draft?.draftId) {
+      return originalCallServer('startQmMobileBrowseInspection', token, safe);
+    }
+    if (!result.draft?.draftId) throw new Error('QM 점검 초안을 준비하지 못했습니다.');
+
+    const draft = Object.assign({ answers: [], defects: [] }, result.draft || {});
+    const entry = {
+      token,
+      payload: safe,
+      draft,
+      mirrored: false,
+      mirrorResult: null,
+      mirrorPromise: null,
+      createdAt: Date.now()
+    };
+    trackedDrafts.set(String(draft.draftId), entry);
+
+    // 사용자 응답은 기다리지 않고 기존 Sheet/이력 호환만 후행 보완합니다.
+    void ensureMirror_(token, entry).catch(error => {
+      console.error('[NOVA QM] 점검시작 후 이력 동기화 오류:', error);
+    });
+
+    return {
+      ok: true,
+      realtime: true,
+      dbFirst: true,
+      version: Number(result.version || result.room?.version || 0),
+      room: Object.assign({}, result.room || {}, {
+        rowNumber: Number(safe.rowNumber || 0),
+        businessDate: String(safe.businessDate || result.room?.businessDate || ''),
+        site: String(result.room?.site || safe.site || ''),
+        roomNo: String(result.room?.roomNo || safe.roomNo || ''),
+        cleaningStatus: 'QM_CHECKING'
+      }),
+      draft,
+      checklist: null,
+      browseView: view,
+      browseSelfStarted: true,
+      alreadyChecking: Boolean(result.alreadyChecking),
+      requestId
+    };
+  }
+
+  async function callServerQmDbFirst_(method, ...args) {
+    const name = String(method || '');
+    if (name === 'startQmMobileBrowseInspection') {
+      return startBrowseDbFirst_(args[0], args[1]);
+    }
+
+    if (name === 'saveQmInspectionDraft') {
+      const token = args[0];
+      const payload = args[1] || {};
+      const entry = trackedDrafts.get(String(payload.draftId || ''));
+      if (entry && !entry.mirrored) await ensureMirror_(token, entry);
+      return originalCallServer(name, ...args);
+    }
+
+    if (name === 'submitQmChecklistInspection') {
+      const token = args[0];
+      const payload = args[1] || {};
+      const draftId = String(payload.draftId || '');
+      const entry = trackedDrafts.get(draftId);
+      if (entry && !entry.mirrored) await ensureMirror_(token, entry);
+      const result = await originalCallServer(name, ...args);
+      if (result?.ok && draftId) trackedDrafts.delete(draftId);
+      return result;
+    }
+
+    return originalCallServer(name, ...args);
+  }
+
+  callServerQmDbFirst_.__novaQmBeginDbFirstV1 = true;
+  callServerQmDbFirst_.__novaOriginalCallServer = originalCallServer;
+  window.callServer = callServerQmDbFirst_;
+})();
+</script>
