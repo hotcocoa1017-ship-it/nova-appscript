@@ -7483,18 +7483,38 @@
     $('qmQualityContent').querySelectorAll('[data-qm-photo-view]').forEach(button => button.addEventListener('click', () => openQmPhotoViewer_(button.dataset.qmPhotoView)));
   }
 
-  function applyQmRealtimeRoomLocal_(roomNo, realtimeRoom) { // (QM Realtime 응답 즉시 모바일 반영)
+  function applyQmRealtimeRoomLocal_(roomNo, realtimeRoom) { // (QM Realtime 응답 즉시 모바일·추가조회 반영) // QM_BROWSE_REALTIME_STATE_SYNC_V1
+    if (!realtimeRoom) return null;
+    const mapped = novaRealtimeMapRow_(realtimeRoom);
+    let resolvedRoom = null;
+
     const rooms = state.mobile.data?.rooms || [];
     const index = rooms.findIndex(item => String(item.roomNo || '') === String(roomNo || ''));
-    if (index < 0 || !realtimeRoom) return null;
-    const mapped = novaRealtimeMapRow_(realtimeRoom);
-    const previousRoom = rooms[index];
-    rooms[index] = preserveQmMobileRoommaidNames_(previousRoom, novaRealtimeMergeRoom_(previousRoom, mapped));
+    if (index >= 0) {
+      const previousRoom = rooms[index];
+      rooms[index] = preserveQmMobileRoommaidNames_(previousRoom, novaRealtimeMergeRoom_(previousRoom, mapped));
+      resolvedRoom = rooms[index];
+    }
+
+    const browse = state.mobile.qmBrowseData;
+    if (browse && Array.isArray(browse.rooms)) {
+      const browseIndex = browse.rooms.findIndex(item => String(item.roomNo || '') === String(roomNo || ''));
+      if (browseIndex >= 0) {
+        const previousBrowseRoom = browse.rooms[browseIndex];
+        browse.rooms[browseIndex] = preserveQmMobileRoommaidNames_(
+          previousBrowseRoom,
+          novaRealtimeMergeRoom_(previousBrowseRoom, mapped)
+        );
+        resolvedRoom = resolvedRoom || browse.rooms[browseIndex];
+      }
+    }
+
     if (state.activeMenu === 'qm') {
+      if (typeof renderQmBrowseLocationFilters_ === 'function') renderQmBrowseLocationFilters_();
       renderMobileSummary();
       renderMobileList();
     }
-    return rooms[index];
+    return resolvedRoom;
   }
 
   function beginQmInspectionDraftInit_(active) { // (상태변경 후 체크리스트 초안은 background 준비)
