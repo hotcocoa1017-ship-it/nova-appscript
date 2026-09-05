@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
@@ -24,10 +23,23 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Validate existing Cloud Run deploy credential
+        shell: bash
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${GCP_SA_KEY:-}"
+          python3 - <<'PY'
+          import json,os
+          d=json.loads(os.environ['GCP_SA_KEY'])
+          if d.get('type')!='service_account' or not d.get('project_id') or not d.get('client_email'):
+              raise SystemExit(1)
+          print('GCP_DEPLOY_CREDENTIAL=AVAILABLE')
+          PY
       - uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
-          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
       - uses: google-github-actions/setup-gcloud@v2
       - name: Deploy no-secret probe with same runtime identity
         shell: bash
