@@ -1,0 +1,188 @@
+name: Validate 1500 cleaning acceleration
+
+on:
+  push:
+    branches:
+      - test/dbfirst-1000-20260905
+    paths:
+      - .github/workflows/validate-1500-cleaning-acceleration-20260905.yml
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_URL: https://evoetxfjmkkjptucwxsv.supabase.co
+      SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV2b2V0eGZqbWtranB0dWN3eHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0MTI4NzgsImV4cCI6MjEwMjk4ODg3OH0.wNWMvTIFfCU2lN-c7LBFj2QYE2S4FiFg1moOXm-F_C8
+    steps:
+      - name: Benchmark 1500 start and complete paths
+        shell: bash
+        run: |
+          node <<'NODE'
+          const https = require('https');
+          const { URL } = require('url');
+          const base = new URL(process.env.SUPABASE_URL);
+          const key = process.env.SUPABASE_ANON_KEY;
+          const agent = new https.Agent({ keepAlive: true, maxSockets: 1800, maxFreeSockets: 300 });
+
+          function rpc(name, body, timeoutMs=60000) {
+            return new Promise((resolve) => {
+              const payload = JSON.stringify(body || {});
+              const started = process.hrtime.bigint();
+              const req = https.request({
+                hostname: base.hostname,
+                port: 443,
+                path: `/rest/v1/rpc/${name}`,
+                method: 'POST',
+                agent,
+                headers: {
+                  apikey: key,
+                  Authorization: `Bearer ${key}`,
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(payload),
+                  Connection: 'keep-alive'
+                },
+                timeout: timeoutMs
+              }, (res) => {
+                let data='';
+                res.on('data', c => data += c);
+                res.on('end', () => {
+                  const elapsedMs = Number(process.hrtime.bigint()-started)/1e6;
+                  let json=null;
+                  try { json=JSON.parse(data||'null'); } catch (_) {}
+                  resolve({status:res.statusCode,elapsedMs,json,text:data});
+                });
+              });
+              req.on('timeout', () => req.destroy(new Error('timeout')));
+              req.on('error', err => resolve({status:0,elapsedMs:Number(process.hrtime.bigint()-started)/1e6,error:err.message,json:null,text:''}));
+              req.end(payload);
+            });
+          }
+
+          const sleep = ms => new Promise(r=>setTimeout(r,ms));
+          const pct=(values,p)=>{const a=values.slice().sort((x,y)=>x-y);return a[Math.min(a.length-1,Math.max(0,Math.ceil(a.length*p)-1))]||0};
+          const wall = async fn => {const s=process.hrtime.bigint();const value=await fn();return {value,ms:Number(process.hrtime.bigint()-s)/1e6}};
+
+          async function reset(){
+            const r=await rpc('nova_loadtest_1500_reset',{});
+            if(r.status!==200||!r.json?.ok) throw new Error(`reset failed ${r.status} ${r.text}`);
+          }
+
+          function validateHttp(results,label){
+            const bad=results.filter(r=>r.status!==200||r.json?.ok!==true);
+            if(bad.length) throw new Error(`${label}: ${bad.length} failures; first=${JSON.stringify(bad[0])}`);
+          }
+
+          async function individual(){
+            await reset();
+            await sleep(300);
+            const startRun=await wall(async()=>{
+              const t=Date.now();
+              const rs=await Promise.all(Array.from({length:1500},(_,i)=>rpc('nova_loadtest_1500_individual_write',{
+                p_room_id:i+1,p_action:'CLEANING_START',p_request_id:`ind-start-${t}-${i+1}`
+              })));
+              validateHttp(rs,'individual start');
+              return rs;
+            });
+            await sleep(300);
+            const completeRun=await wall(async()=>{
+              const t=Date.now();
+              const rs=await Promise.all(Array.from({length:1500},(_,i)=>rpc('nova_loadtest_1500_individual_write',{
+                p_room_id:i+1,p_action:'CLEANING_COMPLETE',p_request_id:`ind-complete-${t}-${i+1}`
+              })));
+              validateHttp(rs,'individual complete');
+              return rs;
+            });
+            const all=[...startRun.value,...completeRun.value];
+            return {
+              mode:'individual-1500-concurrent',
+              startMs:+startRun.ms.toFixed(1),completeMs:+completeRun.ms.toFixed(1),totalMs:+(startRun.ms+completeRun.ms).toFixed(1),
+              p95RequestMs:+pct(all.map(x=>x.elapsedMs),.95).toFixed(1),p99RequestMs:+pct(all.map(x=>x.elapsedMs),.99).toFixed(1),
+              httpFailures:0
+            };
+          }
+
+          function chunks(size){
+            const out=[];
+            for(let start=1;start<=1500;start+=size){
+              const end=Math.min(1500,start+size-1);
+              out.push(Array.from({length:end-start+1},(_,i)=>start+i));
+            }
+            return out;
+          }
+
+          async function bulk(size,rep){
+            await reset();
+            await sleep(250);
+            const cs=chunks(size);
+            const startRun=await wall(async()=>{
+              const t=Date.now();
+              const rs=await Promise.all(cs.map((ids,i)=>rpc('nova_loadtest_1500_bulk_write',{
+                p_room_ids:ids,p_action:'CLEANING_START',p_batch_request_id:`bulk-${size}-r${rep}-start-${t}-${i}`
+              })));
+              validateHttp(rs,`bulk ${size} start`);
+              const updated=rs.reduce((n,r)=>n+Number(r.json?.updated||0),0);
+              if(updated!==1500) throw new Error(`bulk ${size} start updated=${updated}`);
+              return rs;
+            });
+            await sleep(150);
+            const completeRun=await wall(async()=>{
+              const t=Date.now();
+              const rs=await Promise.all(cs.map((ids,i)=>rpc('nova_loadtest_1500_bulk_write',{
+                p_room_ids:ids,p_action:'CLEANING_COMPLETE',p_batch_request_id:`bulk-${size}-r${rep}-complete-${t}-${i}`
+              })));
+              validateHttp(rs,`bulk ${size} complete`);
+              const updated=rs.reduce((n,r)=>n+Number(r.json?.updated||0),0);
+              const qm=rs.reduce((n,r)=>n+Number(r.json?.qmWaiting||0),0);
+              const done=rs.reduce((n,r)=>n+Number(r.json?.completed||0),0);
+              if(updated!==1500||qm!==150||done!==1350) throw new Error(`bulk ${size} complete updated=${updated} qm=${qm} done=${done}`);
+              return rs;
+            });
+            return {
+              mode:`bulk-${size}`,
+              batchSize:size,batches:cs.length,rep,
+              startMs:+startRun.ms.toFixed(1),completeMs:+completeRun.ms.toFixed(1),totalMs:+(startRun.ms+completeRun.ms).toFixed(1),
+              p95BatchMs:+pct([...startRun.value,...completeRun.value].map(x=>x.elapsedMs),.95).toFixed(1),
+              httpFailures:0
+            };
+          }
+
+          function median(nums){const a=nums.slice().sort((a,b)=>a-b);return a[Math.floor(a.length/2)];}
+
+          (async()=>{
+            const results=[];
+            console.log('START_INDIVIDUAL_1500');
+            const ind=await individual();
+            results.push(ind); console.log(JSON.stringify(ind));
+            await sleep(700);
+
+            const sizes=[25,50,100,150,250,375,500,750,1500];
+            for(const size of sizes){
+              for(let rep=1;rep<=3;rep++){
+                const r=await bulk(size,rep);
+                results.push(r); console.log(JSON.stringify(r));
+                await sleep(350);
+              }
+            }
+            const summaries=sizes.map(size=>{
+              const rs=results.filter(r=>r.batchSize===size);
+              return {
+                batchSize:size,
+                batches:rs[0].batches,
+                medianStartMs:+median(rs.map(r=>r.startMs)).toFixed(1),
+                medianCompleteMs:+median(rs.map(r=>r.completeMs)).toFixed(1),
+                medianTotalMs:+median(rs.map(r=>r.totalMs)).toFixed(1),
+                bestTotalMs:+Math.min(...rs.map(r=>r.totalMs)).toFixed(1),
+                worstTotalMs:+Math.max(...rs.map(r=>r.totalMs)).toFixed(1)
+              };
+            }).sort((a,b)=>a.medianTotalMs-b.medianTotalMs);
+            console.log('ACCELERATION_SUMMARY');
+            console.log(JSON.stringify({individual:ind,bulkRank:summaries},null,2));
+            console.log('FASTEST_SAFE_BATCH_SIZE='+summaries[0].batchSize);
+            console.log('VALIDATE_1500_CLEANING_ACCELERATION_SUCCESS');
+            agent.destroy();
+          })().catch(err=>{agent.destroy();console.error(err.stack||String(err));process.exit(1);});
+          NODE
