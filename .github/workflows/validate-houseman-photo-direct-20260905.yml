@@ -1,0 +1,97 @@
+name: Validate Houseman Photo Direct Storage 20260905
+
+on:
+  push:
+    branches:
+      - feat/houseman-photo-direct-storage-20260905
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate direct photo source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check HousemanRequestPhoto.js
+          node --check HousemanRequestPhotoDirect.js
+          node --check HousemanRequestPhotoBatch.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          index = Path('Index.html').read_text(encoding='utf-8')
+          direct = Path('HousemanRequestPhotoDirectClient.html').read_text(encoding='utf-8')
+          server = Path('HousemanRequestPhotoDirect.js').read_text(encoding='utf-8')
+          legacy = Path('HousemanRequestPhoto.js').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', direct, flags=re.S|re.I)
+          assert len(scripts) == 1
+          Path('/tmp/HousemanPhotoDirectClient.js').write_text(scripts[0], encoding='utf-8')
+          assert "include_('HousemanRequestPhotoDirectClient')" in index
+          assert index.index("include_('HousemanRequestPhotoDirectClient')") < index.index("include_('HousemanRequestPhotoBatchClient')")
+          assert 'uploadToSignedUrl' in direct
+          assert 'Promise.all(prepared.photos.map' in direct
+          assert "action: 'prepare'" in direct and "action: 'finalize'" in direct
+          assert 'persistLegacyAfterMirror_' in direct
+          assert 'FAST_TARGET_BYTES = 450000' in direct
+          link = server.split('function linkMobileHousemanStoragePhotoMetadata',1)[1].split('function getHousemanRequestPhotoFromStorage_',1)[0]
+          assert 'DriveApp' not in link
+          assert 'LockService' not in link
+          assert 'acquireWriteLock_' not in link
+          assert "fileId: `sb:${photoId}`" not in server  # server normalizes using prefix constant, not hard-coded unsafe path
+          assert "STORAGE_FILE_PREFIX: 'sb:'" in server
+          assert "if (/^sb:[0-9a-f-]{36}$/i.test(fileId))" in legacy
+          assert 'getHousemanRequestPhotoFromStorage_' in legacy
+          PY
+          node --check /tmp/HousemanPhotoDirectClient.js
+
+      - name: Validate production patch chain and regression gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_sync_status_autohide.py
+          python3 scripts/patch_telegram_self_connect.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          python3 scripts/patch_roommaid_performance_attribution.py
+          python3 scripts/patch_roommaid_close_read_acceleration.py
+          python3 scripts/fix_patch_site_scope_v2.py
+          python3 scripts/patch_site_scope_indicator_close_v2.py
+          python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
+          python3 scripts/patch_houseman_realtime_push.py
+          python3 scripts/patch_concurrent_write_resilience_v1.py
+          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
+          python3 scripts/patch_mobile_view_state_persistence_20260904.py
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_order_site_context_v1.py
+          python3 scripts/validate_nova_release.py
+          node --check HousemanRequestPhoto.js
+          node --check HousemanRequestPhotoDirect.js
+          node --check HousemanRequestPhotoBatch.js
+
+      - name: Validate intended diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git diff --name-only origin/main...HEAD | sort
+          bad="$(git diff --name-only origin/main...HEAD | grep -Ev '^(.github/workflows/validate-houseman-photo-direct-20260905.yml|HousemanRequestPhotoDirect.js|HousemanRequestPhotoDirectClient.html|HousemanRequestPhoto.js|Index.html)$' || true)"
+          if [ -n "$bad" ]; then
+            echo "Unexpected changed files:"
+            echo "$bad"
+            exit 1
+          fi
