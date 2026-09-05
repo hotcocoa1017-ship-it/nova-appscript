@@ -167,11 +167,16 @@ function updateMobileRoomOperationRealtime_(token, safe, user) { // (초기화 �
   }
 
   let qmEmployeeNo = '';
+  let currentRoomStatus = '';
   try {
     const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
     const rowInfo = findCurrentRoomRowForMobileUpdate_(sheet, businessDate, site, roomNo, safe.rowNumber);
     qmEmployeeNo = String(rowInfo && rowInfo.data && rowInfo.data['QM사번'] || '').trim();
+    currentRoomStatus = String(rowInfo && rowInfo.data && rowInfo.data['객실상태'] || '').trim().toUpperCase();
   } catch (error) {}
+  if (action === 'CLEANING_START' && currentRoomStatus === 'DUE_OUT') { // ROOMMAID_DUE_OUT_START_GUARD_V2
+    throw new Error('퇴실예정 객실은 퇴실 전환 후 청소를 시작할 수 있습니다.');
+  }
 
   const requestId = String(safe.requestId || '').trim() || `NOVA-GAS-${Date.now()}-${Utilities.getUuid()}`;
   const apiPayload = {
@@ -252,6 +257,10 @@ function updateMobileRoomOperation(token, payload) { // (룸메이드·QM 모바
     const qmNo = String(rowInfo.data['QM사번'] || '').trim();
     const cleaningType = String(rowInfo.data['정비유형'] || NOVA.CLEANING_TYPES.NORMAL).trim().toUpperCase();
     if (role === 'ROOMMAID' && ![roommaidNo, secondaryRoommaidNo].includes(user.employeeNo)) throw new Error('본인에게 배정된 객실만 처리할 수 있습니다.');
+    const currentRoomStatus = String(rowInfo.data['객실상태'] || '').trim().toUpperCase();
+    if (role === 'ROOMMAID' && action === 'START' && currentRoomStatus === 'DUE_OUT') { // ROOMMAID_DUE_OUT_START_GUARD_V2
+      throw new Error('퇴실예정 객실은 퇴실 전환 후 청소를 시작할 수 있습니다.');
+    }
     if (role === 'QM' && qmNo !== user.employeeNo) throw new Error('본인에게 배정된 객실만 처리할 수 있습니다.');
 
     const updates = { '수정일시': nowText_() };

@@ -8425,9 +8425,10 @@
     ].filter(Boolean).join('');
     let actions = '';
     const mobileCleaningActive = role === 'ROOMMAID' && isCleaningActiveStatus_(room.cleaningStatus, state.mobile.data?.codes?.cleaningStatuses);
+    const mobileRoomDueOut = role === 'ROOMMAID' && String(room.roomStatus || '').trim().toUpperCase() === 'DUE_OUT'; // ROOMMAID_DUE_OUT_START_GUARD_V2
     if (role === 'ROOMMAID') {
       if (!room.__pending) {
-        if (['ASSIGNED', 'WAITING', 'REWORK'].includes(room.cleaningStatus)) actions += `<button class="primary" data-room-action="START" data-room-no="${escapeAttr(room.roomNo)}">${room.cleaningType === 'DS' ? 'D/S 시작' : '청소 시작'}</button>`;
+        if (['ASSIGNED', 'WAITING', 'REWORK'].includes(room.cleaningStatus)) actions += `<button class="primary" data-room-action="START" data-room-no="${escapeAttr(room.roomNo)}"${mobileRoomDueOut ? ' disabled data-due-out-start-guard="Y" aria-disabled="true" title="퇴실 확인 후 청소를 시작할 수 있습니다."' : ''}>${room.cleaningType === 'DS' ? 'D/S 시작' : '청소 시작'}</button>`; // ROOMMAID_DUE_OUT_START_GUARD_V2
         if (mobileCleaningActive) actions += `<button class="primary" data-room-action="COMPLETE" data-room-no="${escapeAttr(room.roomNo)}">${room.cleaningType === 'DS' ? 'D/S 완료' : '청소 완료'}</button>`;
       }
       actions += `<button data-houseman-request="${escapeAttr(room.roomNo)}" data-houseman-request-menu="cleaning">하우스맨 요청</button>`;
@@ -8438,7 +8439,8 @@
     } else if (role === 'PUBLIC') { // PUBLIC_HOUSEMAN_REQUEST_V1
       actions += `<button data-houseman-request="${escapeAttr(room.roomNo)}" data-houseman-request-menu="public">하우스맨 요청</button>`;
     }
-    return `<article class="mobile-room-card${roommaidMobileCardClass_(room, role)}${mobileCleaningActive ? ' mobile-card-cleaning' : ''}">
+    // ROOMMAID_DUE_OUT_START_GUARD_V2 · 표시문구가 아니라 객실상태 코드로 가드합니다.
+    return `<article class="mobile-room-card${roommaidMobileCardClass_(room, role)}${mobileCleaningActive ? ' mobile-card-cleaning' : ''}" data-room-status="${escapeAttr(String(room.roomStatus || '').trim().toUpperCase())}">
       <div class="mobile-card-top"><strong>${escapeHtml(room.roomNo)}</strong><span>${escapeHtml([room.building, room.floor ? `${room.floor}층` : ''].filter(Boolean).join(' · '))}</span></div>
       ${operationBadges ? `<div class="mobile-operation-badges">${operationBadges}</div>` : ''}
       <div class="mobile-room-status"><b>${escapeHtml(role === 'QM' ? (assignedNames || '-') : roomStatus)}</b><span>${escapeHtml(cleaningStatus)}</span></div>
@@ -8613,7 +8615,19 @@
     if (method === 'updateMobileRoomOperation') {
       const room = (state.mobile.data?.rooms || []).find(item => item.roomNo === safePayload.roomNo);
       const mobileRoomAction = String(safePayload.action || '').trim().toUpperCase();
-      const roommaidCleaningAction = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase() === 'ROOMMAID'
+      const mobileRoomRole = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
+      if (mobileRoomRole === 'ROOMMAID' && mobileRoomAction === 'START'
+          && String(room?.roomStatus || '').trim().toUpperCase() === 'DUE_OUT') { // ROOMMAID_DUE_OUT_START_GUARD_V2
+        if (button) {
+          button.disabled = true;
+          button.dataset.dueOutStartGuard = 'Y';
+          button.setAttribute('aria-disabled', 'true');
+          button.setAttribute('title', '퇴실 확인 후 청소를 시작할 수 있습니다.');
+        }
+        showToast('퇴실예정 객실은 퇴실 전환 후 청소를 시작할 수 있습니다.');
+        return;
+      }
+      const roommaidCleaningAction = mobileRoomRole === 'ROOMMAID'
         && ['START', 'COMPLETE'].includes(mobileRoomAction);
       // 룸메이드 청소시작/완료는 서버가 실제 배정자와 현재 청소상태를 잠금 상태에서 다시 검증한다.
       // DB 이벤트 미러/정방향 동기화 사이에 version 값만 달라지는 경우가 있으므로
