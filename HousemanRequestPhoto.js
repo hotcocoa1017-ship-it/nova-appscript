@@ -139,6 +139,10 @@ function getHousemanRequestPhoto(token, payload) { // (오더테이커 월별조
     const photo = photos.find(item => String(item.fileId || '').trim() === fileId);
     if (!photo) throw new Error('해당 오더에 연결된 사진을 찾을 수 없습니다.');
 
+    if (/^sb:[0-9a-f-]{36}$/i.test(fileId)) {
+      return getHousemanRequestPhotoFromStorage_(token, orderId, orderInfo, photo); // HOUSEMAN_PHOTO_DIRECT_STORAGE_V1
+    }
+
     let file;
     try { file = DriveApp.getFileById(fileId); } catch (error) { throw new Error('사진 파일을 열 수 없습니다.'); }
     const blob = file.getBlob();
