@@ -1,4 +1,6 @@
 from pathlib import Path
+import re
+import subprocess
 import sys
 
 ROOT = Path('.')
@@ -36,6 +38,34 @@ def require_once(text, needle, label):
         errors.append(f'COUNT {count}: {label} :: expected exactly 1')
 
 
+def node_check(source, label):
+    if not source:
+        checks.append((label, False))
+        errors.append(f'SYNTAX: {label} :: empty source')
+        return
+    result = subprocess.run(
+        ['node', '--check', '-'],
+        input=source,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    ok = result.returncode == 0
+    checks.append((label, ok))
+    if not ok:
+        detail = (result.stderr or result.stdout or 'node --check failed').strip().splitlines()[-1]
+        errors.append(f'SYNTAX: {label} :: {detail}')
+
+
+def node_check_html(text, label):
+    scripts = re.findall(r'<script[^>]*>(.*?)</script>', text or '', flags=re.S | re.I)
+    if not scripts:
+        checks.append((label, False))
+        errors.append(f'SYNTAX: {label} :: no script block')
+        return
+    node_check('\n'.join(scripts), label)
+
+
 client = read('Client.html')
 index = read('Index.html')
 realtime = read('RealtimeDailySync.js')
@@ -47,6 +77,11 @@ workflow = read('.github/workflows/deploy-apps-script.yml')
 archive_server = read('ArchiveAdmin.js')
 archive_client = read('ArchiveAdminClient.html')
 archive_realtime = read('ArchiveAdminRealtimeClient.html')
+
+# 0) Archive JavaScript syntax must pass before any production push.
+node_check(archive_server, 'Archive server JavaScript syntax')
+node_check_html(archive_client, 'Archive admin client JavaScript syntax')
+node_check_html(archive_realtime, 'Archive realtime client JavaScript syntax')
 
 # 1) Realtime routing / legacy protection
 require(client, 'API 설정과 보조 Realtime 연결을 분리해 고속 API 유지', 'Realtime init isolation')
@@ -189,6 +224,9 @@ require(archive_realtime, '.channel(ARCHIVE_RT_TOPIC_, { config: { private: true
 require(archive_realtime, 'await archiveRt_.client.realtime.setAuth(auth.token)', 'Archive realtime auth applied before subscribe')
 require(archive_realtime, "['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED']", 'Archive realtime failure states handled')
 require(archive_realtime, 'archiveRtStartFallback_', 'Archive realtime server fallback present')
+require(archive_realtime, 'archiveRtRefreshStatus_', 'Archive realtime catch-up verification present')
+require(archive_realtime, "archiveRtRefreshStatus_('재연결 동기화')", 'Archive realtime re-syncs after reconnect')
+require(archive_realtime, "archiveRtRefreshStatus_('복귀 동기화')", 'Archive realtime re-syncs after foreground resume')
 require(archive_realtime, 'if (!archiveRtPageVisible_() || !archiveRtAdminMenuPresent_() || !archiveRtToken_()) return;', 'Archive realtime connects only on active ADMIN page')
 require(archive_realtime, 'if (archiveRt_.pageActive)', 'Archive realtime disconnects after page exit')
 forbid(archive_realtime, 'ARCHIVE_RT_CACHE_KEY_', 'Archive realtime stale local cache disabled')
