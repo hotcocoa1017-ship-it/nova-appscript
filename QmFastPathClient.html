@@ -1,0 +1,160 @@
+<script>
+(() => {
+  'use strict';
+
+  // QM_FAST_START_PHOTO_V1
+  const EDGE_SLUG = 'nova-qm-photo-v1';
+  const MAX_BYTES = 2621440;
+
+  function sleep_(ms) {
+    return new Promise(resolve => window.setTimeout(resolve, Math.max(0, Number(ms || 0))));
+  }
+
+  function requestId_(prefix) {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    return `${String(prefix || 'QM')}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function assertAuth_(auth) {
+    const supabaseUrl = String(auth?.supabaseUrl || '').replace(/\/+$/, '');
+    const publishableKey = String(auth?.publishableKey || auth?.anonKey || '');
+    const token = String(auth?.token || '');
+    if (!supabaseUrl || !publishableKey || !token) throw new Error('QM 실시간 인증정보를 확인할 수 없습니다.');
+    return { supabaseUrl, publishableKey, token };
+  }
+
+  async function parseResponse_(response) {
+    let data = {};
+    try { data = await response.json(); } catch (ignore) {}
+    return data || {};
+  }
+
+  async function rpc_(auth, functionName, payload, attempt = 0) {
+    const safe = assertAuth_(auth);
+    const response = await fetch(`${safe.supabaseUrl}/rest/v1/rpc/${functionName}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': safe.publishableKey,
+        'Authorization': `Bearer ${safe.token}`
+      },
+      body: JSON.stringify(payload || {})
+    });
+    const data = await parseResponse_(response);
+    if (response.ok && data?.ok) return data;
+    if (response.status === 401 && String(data?.code || '') === 'PGRST303' && attempt < 1) {
+      await sleep_(1200);
+      return rpc_(auth, functionName, payload, attempt + 1);
+    }
+    const error = new Error(data?.message || data?.hint || `QM DB 요청 오류 (${response.status})`);
+    error.code = String(data?.code || '');
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+
+  async function edge_(auth, payload, attempt = 0) {
+    const safe = assertAuth_(auth);
+    const response = await fetch(`${safe.supabaseUrl}/functions/v1/${EDGE_SLUG}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': safe.publishableKey,
+        'Authorization': `Bearer ${safe.token}`
+      },
+      body: JSON.stringify(payload || {})
+    });
+    const data = await parseResponse_(response);
+    if (response.ok && data?.ok) return data;
+    if (response.status === 401 && String(data?.code || '') === 'PGRST303' && attempt < 1) {
+      await sleep_(1200);
+      return edge_(auth, payload, attempt + 1);
+    }
+    const error = new Error(data?.message || `QM 사진 처리 오류 (${response.status})`);
+    error.code = String(data?.code || '');
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+
+  function base64ToBlob_(base64, mimeType) {
+    const clean = String(base64 || '').replace(/^data:[^;]+;base64,/, '');
+    if (!clean) throw new Error('사진 데이터가 없습니다.');
+    const binary = window.atob(clean);
+    const length = binary.length;
+    if (!length || length > MAX_BYTES) throw new Error('사진은 2.5MB 이하로 등록하세요.');
+    const bytes = new Uint8Array(length);
+    for (let i = 0; i < length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mimeType || 'image/jpeg' });
+  }
+
+  async function uploadSigned_(auth, prepare, blob) {
+    if (prepare?.ready) return;
+    const safe = assertAuth_(auth);
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') throw new Error('사진 저장 모듈을 준비하지 못했습니다.');
+    const client = window.supabase.createClient(safe.supabaseUrl, safe.publishableKey, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+    });
+    const bucket = String(prepare?.bucket || 'nova-qm-inspection-photos');
+    const path = String(prepare?.path || '');
+    const token = String(prepare?.token || '');
+    if (!path || !token) throw new Error('QM 사진 업로드 주소를 확인할 수 없습니다.');
+    const { error } = await client.storage.from(bucket).uploadToSignedUrl(path, token, blob, {
+      contentType: 'image/jpeg',
+      upsert: false
+    });
+    if (error) throw new Error(error.message || 'QM 사진 파일을 저장하지 못했습니다.');
+  }
+
+  async function startBrowse(auth, payload) {
+    const safe = payload || {};
+    return rpc_(auth, 'nova_qm_browse_start', {
+      p_business_date: String(safe.businessDate || ''),
+      p_site: String(safe.site || ''),
+      p_room_no: String(safe.roomNo || ''),
+      p_view: String(safe.view || '').toUpperCase(),
+      p_request_id: String(safe.requestId || requestId_('QM-BROWSE'))
+    });
+  }
+
+  async function uploadPhoto(auth, payload) {
+    const safe = payload || {};
+    const blob = base64ToBlob_(safe.base64, 'image/jpeg');
+    const clientPhotoId = String(safe.clientPhotoId || requestId_('QM-PHOTO'));
+    const prepare = await edge_(auth, {
+      action: 'prepare',
+      draftId: String(safe.draftId || ''),
+      targetType: String(safe.targetType || '').toUpperCase(),
+      targetCode: String(safe.targetCode || ''),
+      clientPhotoId,
+      fileName: String(safe.fileName || 'qm-photo.jpg'),
+      mimeType: 'image/jpeg',
+      sizeBytes: blob.size
+    });
+    await uploadSigned_(auth, prepare, blob);
+    const photoId = String(prepare.photoId || '');
+    if (!photoId) throw new Error('QM 사진 식별값을 확인할 수 없습니다.');
+    return edge_(auth, { action: 'finalize', photoId });
+  }
+
+  async function deletePhoto(auth, fileId) {
+    const photoId = String(fileId || '').replace(/^sbqm:/i, '');
+    if (!photoId) throw new Error('삭제할 QM 사진이 없습니다.');
+    return edge_(auth, { action: 'delete', photoId });
+  }
+
+  async function viewPhoto(auth, fileId) {
+    const photoId = String(fileId || '').replace(/^sbqm:/i, '');
+    if (!photoId) throw new Error('확인할 QM 사진이 없습니다.');
+    return edge_(auth, { action: 'view', photoId });
+  }
+
+  window.NOVA_QM_FAST = Object.freeze({
+    marker: 'QM_FAST_START_PHOTO_V1',
+    startBrowse,
+    uploadPhoto,
+    deletePhoto,
+    viewPhoto
+  });
+})();
+</script>
