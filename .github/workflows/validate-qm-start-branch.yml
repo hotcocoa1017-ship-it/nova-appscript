@@ -1,0 +1,70 @@
+name: Validate QM Start Branch
+
+on:
+  push:
+    branches: [qm-start-direct-verify-20260905]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Python patch scripts
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/patch_qm_start_dbfirst_direct_20260905.py
+          python3 -m py_compile scripts/validate_qm_start_dbfirst_direct_20260905.py
+
+      - name: Apply QM direct patch in validation workspace
+        run: python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
+
+      - name: Validate patch scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only | sort)
+          printf 'Changed files:\n%s\n' "${changed[*]}"
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = "Client.html"
+          test "${changed[1]}" = "Index.html"
+          git diff --check
+
+      - name: Validate QM direct behavior guards
+        run: python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
+
+      - name: Validate generated Client JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('Client.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if not scripts:
+              raise SystemExit('No script block found in Client.html')
+          Path('/tmp/NovaClientQmSafe.js').write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClientQmSafe.js
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum Client.html Index.html | sha256sum | awk '{print $1}')"
+          python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
+          after="$(sha256sum Client.html Index.html | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Confirm no deployment actions exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -q "clasp push" .github/workflows/validate-qm-start-branch.yml
+          ! grep -q "create-deployment" .github/workflows/validate-qm-start-branch.yml
