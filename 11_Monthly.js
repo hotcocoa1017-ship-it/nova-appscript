@@ -523,18 +523,9 @@ function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업�
 
   let detail = {};
   try { detail = JSON.parse(String(data['세부내용JSON'] || '{}')); } catch (error) { detail = {}; }
-  const photos = typeCode === 'HOUSEMAN' && Array.isArray(detail.photos)
-    ? detail.photos
-        .filter(photo => photo && photo.fileId)
-        .slice(0, NOVA_HOUSEMAN_REQUEST_PHOTO.MAX_PHOTOS_PER_ORDER)
-        .map(photo => ({
-          fileId: String(photo.fileId || ''),
-          name: String(photo.name || ''),
-          mimeType: String(photo.mimeType || 'image/jpeg'),
-          size: Number(photo.size || 0),
-          uploadedAt: String(photo.uploadedAt || '')
-        }))
-    : [];
+  const photos = typeCode === 'HOUSEMAN'
+    ? getHousemanRequestPhotosForDisplay_(data, detail)
+    : []; // HOUSEMAN_PHOTO_METADATA_COLUMN_V1
   const targetEmployeeNo = String(data['대상사번'] || '').trim();
   const assignedEmployeeNo = String(data['배정사번'] || '').trim();
   const processorEmployeeNo = String(data['처리자사번'] || '').trim();
@@ -784,10 +775,16 @@ function monthlyItemCompleted_(item) { // (월별 완료 여부 판단)
   return ['CLEANING_COMPLETE', 'ROOMMAID_COMPLETE', 'QM_COMPLETE'].includes(item.statusCode);
 }
 
-function compareMonthlyItems_(a, b) { // (월별 최신순 정렬)
-  return String(b.businessDate).localeCompare(String(a.businessDate))
-    || String(b.eventAt).localeCompare(String(a.eventAt))
-    || String(a.roomNo).localeCompare(String(b.roomNo), 'ko', { numeric: true });
+function compareMonthlyItems_(a, b) { // (월별 최신순 정렬 · 하우스맨은 등록일시 최신 우선) // HOUSEMAN_LATEST_REGISTERED_LISTS_V1
+  const businessDateCompare = String(b.businessDate || '').localeCompare(String(a.businessDate || ''));
+  if (businessDateCompare) return businessDateCompare;
+  if (a.typeCode === 'HOUSEMAN' && b.typeCode === 'HOUSEMAN') {
+    return String(b.registeredAt || '').localeCompare(String(a.registeredAt || ''))
+      || Number(b.rowNumber || 0) - Number(a.rowNumber || 0)
+      || String(a.roomNo || '').localeCompare(String(b.roomNo || ''), 'ko', { numeric: true });
+  }
+  return String(b.eventAt || '').localeCompare(String(a.eventAt || ''))
+    || String(a.roomNo || '').localeCompare(String(b.roomNo || ''), 'ko', { numeric: true });
 }
 
 function minutesBetween_(startText, endText) { // (문자열 시각 간 분 계산)

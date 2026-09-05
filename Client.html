@@ -5062,7 +5062,10 @@
     const container = $('orderScroll');
     if (!container) return;
     const scrollTop = container.scrollTop;
-    const orders = state.indicator.data?.orders || [];
+    const orders = [...(state.indicator.data?.orders || [])].sort((a, b) =>
+      String(b.registeredAt || '').localeCompare(String(a.registeredAt || ''))
+      || Number(b.rowNumber || 0) - Number(a.rowNumber || 0)
+    ); // HOUSEMAN_LATEST_REGISTERED_LISTS_V1 · 통합인디케이터 최근 등록순 고정
     if (!orders.length) {
       container.innerHTML = '<div class="empty-order">등록된 하우스맨 오더가 없습니다.</div>';
       return;
