@@ -23,3 +23,7 @@ subprocess.run([sys.executable, 'scripts/patch_mobile_indicator_layout_v1.py'], 
 # 관리자/오더테이커 QM 배정 초기화 + 객실조치 재정비 버튼은
 # 매 배포에서 동일하게 보장합니다. Client와 06_Indicator를 최소범위로 패치합니다.
 subprocess.run([sys.executable, 'scripts/patch_qm_clear_rework_controls_20260905.py'], check=True)
+
+# DB-first 대량처리에서 1,500 START + 1,500 COMPLETE 이벤트가 한 번에 몰려도
+# 기존 500건 단위 Sheet 미러를 최대 6페이지까지 한 예약실행에서 배수하도록 보장합니다.
+subprocess.run([sys.executable, 'scripts/patch_realtime_event_drain_3000_v1.py'], check=True)
