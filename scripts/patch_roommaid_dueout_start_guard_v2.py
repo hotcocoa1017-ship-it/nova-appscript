@@ -30,7 +30,7 @@ replace_once(
 replace_once(
     'Client.html',
     "    return `<article class=\"mobile-room-card${roommaidMobileCardClass_(room, role)}${mobileCleaningActive ? ' mobile-card-cleaning' : ''}\">",
-    "    return `<article class=\"mobile-room-card${roommaidMobileCardClass_(room, role)}${mobileCleaningActive ? ' mobile-card-cleaning' : ''}\" data-room-status=\"${escapeAttr(String(room.roomStatus || '').trim().toUpperCase())}\">` // ROOMMAID_DUE_OUT_START_GUARD_V2"
+    "    // ROOMMAID_DUE_OUT_START_GUARD_V2 · 표시문구가 아니라 객실상태 코드로 가드합니다.\n    return `<article class=\"mobile-room-card${roommaidMobileCardClass_(room, role)}${mobileCleaningActive ? ' mobile-card-cleaning' : ''}\" data-room-status=\"${escapeAttr(String(room.roomStatus || '').trim().toUpperCase())}\">"
 )
 
 replace_once(
