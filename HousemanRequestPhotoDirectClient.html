@@ -1,0 +1,395 @@
+<script>
+(() => {
+  'use strict';
+
+  // HOUSEMAN_PHOTO_DIRECT_STORAGE_V1
+  // 반드시 HousemanRequestPhotoBatchClient보다 먼저 include되어 사진 포함 제출을 선처리합니다.
+  const PHOTO_FIELD_ID = 'novaHmRequestPhotoField';
+  const PHOTO_STATUS_ID = 'novaHmRequestPhotoStatus';
+  const PHOTO_PREVIEW_LIST_ID = 'novaHmRequestPhotoPreviewList';
+  const EDGE_SLUG = 'nova-houseman-photo-v1';
+  const MAX_PHOTOS = 5;
+  const FAST_TARGET_BYTES = 450000;
+  const AUTH_CACHE_MS = 180000;
+
+  let activeRoomNo = '';
+  let submitBusy = false;
+  let toastTimer = null;
+  let authCache = null;
+  let authPromise = null;
+
+  window.addEventListener('click', handleDirectPhotoClickCapture_, true);
+
+  function handleDirectPhotoClickCapture_(event) {
+    const target = event.target;
+    const requestButton = target && target.closest ? target.closest('[data-houseman-request]') : null;
+    if (requestButton) {
+      activeRoomNo = String(requestButton.dataset.housemanRequest || '').trim();
+      const token = String(localStorage.getItem('novaToken') || '').trim();
+      if (token) void getDirectPhotoAuth_(token, true).catch(() => null); // 촬영 중 인증을 미리 준비
+      return;
+    }
+
+    const submitButton = target && target.closest ? target.closest('#mobileRequestSubmit') : null;
+    if (!submitButton) return;
+    const field = document.getElementById(PHOTO_FIELD_ID);
+    if (!field) return;
+    const list = document.getElementById(PHOTO_PREVIEW_LIST_ID);
+    const status = document.getElementById(PHOTO_STATUS_ID);
+    const hasPrepared = Boolean(list && list.querySelector('img[src^="data:image/jpeg;base64,"]'));
+    const preparing = /사진을 준비하고 있습니다/.test(String(status && status.textContent || ''));
+    if (!hasPrepared && !preparing) return; // 무사진 요청은 기존 경로 100% 유지
+
+    event.preventDefault();
+    event.stopImmediatePropagation(); // 뒤의 Batch/legacy capture listener 실행 차단
+    if (submitBusy) return;
+    submitBusy = true;
+    submitDirectPhotoRequest_(submitButton)
+      .catch(error => {
+        restoreSubmitButton_(submitButton);
+        showToast_(error && error.message ? error.message : '요청을 처리하지 못했습니다.', true);
+      })
+      .finally(() => { submitBusy = false; });
+  }
+
+  async function submitDirectPhotoRequest_(button) {
+    const token = String(localStorage.getItem('novaToken') || '').trim();
+    if (!token) throw new Error('로그인 정보가 없습니다. 다시 로그인해 주세요.');
+
+    setSubmitBusy_(button, '사진 준비 중…');
+    let photos = await waitAndCollectPreparedPhotos_();
+    if (!photos.length) throw new Error('사진을 다시 촬영하거나 선택해 주세요.');
+    if (photos.length > MAX_PHOTOS) throw new Error(`사진은 최대 ${MAX_PHOTOS}장까지 등록할 수 있습니다.`);
+    photos = await Promise.all(photos.map(optimizeForFastUpload_));
+
+    const roomNo = resolveActiveRoomNo_();
+    if (!roomNo) throw new Error('요청 객실번호를 확인하지 못했습니다. 요청창을 닫고 다시 열어 주세요.');
+    const part = String(document.getElementById('mobileRequestPart')?.value || '').trim();
+    const item = String(document.getElementById('mobileRequestItem')?.value || '').trim();
+    const businessDate = String(document.getElementById('mobileDate')?.value || '').trim();
+    const site = String(document.getElementById('mobileSite')?.value || '').trim();
+    const quantity = Math.max(1, Math.min(99, Number(document.getElementById('mobileRequestQty')?.value || 1)));
+    const note = String(document.getElementById('mobileRequestNote')?.value || '').trim();
+    if (!part || !item) throw new Error('파트와 품목을 입력하세요.');
+    if (!businessDate) throw new Error('업무일자를 확인하지 못했습니다.');
+
+    const createPayload = {
+      businessDate, site, roomNo, part,
+      items: [{ name: item, quantity }], note,
+      sourceLanguage: String(window.NOVA_I18N?.getLanguage?.() || 'ko').toLowerCase()
+    };
+
+    setSubmitBusy_(button, '요청 등록 중…');
+    const fastCreate = typeof window.novaCreateRoommaidHousemanRequestFast_ === 'function'
+      ? window.novaCreateRoommaidHousemanRequestFast_ : null;
+    const createResult = fastCreate
+      ? await fastCreate(createPayload)
+      : await callAppsScript_('createMobileHousemanRequest', token, createPayload);
+    if (!createResult || !createResult.ok) throw new Error(createResult?.message || '하우스맨 요청을 등록하지 못했습니다.');
+
+    const order = createResult.order || {};
+    const orderId = String(order.orderId || '').trim();
+    if (!orderId) throw new Error('사진 연결용 요청번호를 확인하지 못했습니다.');
+
+    // 사용자 업무 대기는 여기서 종료. Storage 업로드/Sheet 참조연결은 전부 후행.
+    closeRequestModal_();
+    showToast_(`하우스맨 요청 등록 완료 · 사진 ${photos.length}장 빠른 저장 중…`, false);
+
+    void persistDirectWithFallback_(token, createResult, order, photos).catch(error => {
+      showToast_(`요청은 등록되었습니다. 사진 저장 오류 · ${error?.message || '저장 실패'}`, true);
+    });
+  }
+
+  async function persistDirectWithFallback_(token, createResult, order, photos) {
+    const startedAt = performance.now();
+    try {
+      const finalized = await persistDirectStorage_(token, String(order.orderId || ''), photos);
+      const elapsed = Math.max(0, performance.now() - startedAt);
+      showToast_(`하우스맨 요청 사진 ${finalized.photos.length}장 저장 완료 · ${(elapsed / 1000).toFixed(1)}초`, false);
+      // 월별조회 호환용 Sheet 참조 연결은 저장 완료 후 백그라운드 처리. 사용자 대기/Storage 완료시간에 포함하지 않습니다.
+      void linkMetadataAfterMirror_(token, createResult, order, finalized.photos).catch(error => {
+        console.warn('[NOVA Photo] Storage 사진 월별조회 참조 연결 지연:', error);
+        showToast_('사진 원본은 저장 완료 · 월별조회 연결을 재시도해 주세요.', true);
+      });
+      return;
+    } catch (directError) {
+      console.warn('[NOVA Photo] 직접 Storage 업로드 실패 · 기존 Drive 보조경로 사용:', directError);
+      showToast_('빠른 사진 저장 연결 오류 · 안전 보조경로로 저장 중…', false);
+    }
+
+    await persistLegacyAfterMirror_(token, createResult, order, photos);
+    showToast_(`하우스맨 요청 사진 ${photos.length}장 저장 완료`, false);
+  }
+
+  async function persistDirectStorage_(token, orderId, photos) {
+    let auth = await getDirectPhotoAuth_(token, false);
+    let prepared = await edgeCall_(auth, token, {
+      action: 'prepare', orderId,
+      photos: photos.map(photo => ({
+        clientPhotoId: photo.clientPhotoId,
+        fileName: photo.fileName,
+        mimeType: 'image/jpeg',
+        sizeBytes: photo.byteSize
+      }))
+    }, true);
+    if (!prepared?.ok || !prepared.bucket || !Array.isArray(prepared.photos)) throw new Error(prepared?.message || '사진 업로드 준비에 실패했습니다.');
+
+    const storage = window.supabase?.createClient
+      ? window.supabase.createClient(auth.supabaseUrl, auth.publishableKey, { auth: { persistSession: false, autoRefreshToken: false } })
+      : null;
+    if (!storage) throw new Error('사진 Storage 라이브러리를 불러오지 못했습니다.');
+    const sourceById = new Map(photos.map(photo => [String(photo.clientPhotoId), photo]));
+
+    await Promise.all(prepared.photos.map(async item => {
+      if (item.ready === true) return;
+      const source = sourceById.get(String(item.clientPhotoId || ''));
+      if (!source) throw new Error('업로드할 사진 원본을 확인하지 못했습니다.');
+      const blob = base64ToBlob_(source.base64, 'image/jpeg');
+      const { error } = await storage.storage.from(prepared.bucket).uploadToSignedUrl(
+        String(item.path || ''), String(item.token || ''), blob,
+        { contentType: 'image/jpeg', upsert: false }
+      );
+      if (error) throw new Error(error.message || '사진 Storage 업로드에 실패했습니다.');
+    }));
+
+    let finalized = null;
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        finalized = await edgeCall_(auth, token, {
+          action: 'finalize', orderId,
+          clientPhotoIds: photos.map(photo => photo.clientPhotoId)
+        }, attempt === 0);
+        if (finalized?.ok) break;
+        lastError = new Error(finalized?.message || '사진 저장 완료 확인에 실패했습니다.');
+      } catch (error) {
+        lastError = error;
+      }
+      await delay_([120, 300, 600][attempt] || 600);
+      auth = await getDirectPhotoAuth_(token, false).catch(() => auth);
+    }
+    if (!finalized?.ok || !Array.isArray(finalized.photos) || finalized.photos.length < 1) {
+      throw lastError || new Error(finalized?.message || '사진 저장 완료 확인에 실패했습니다.');
+    }
+    return finalized;
+  }
+
+  async function getDirectPhotoAuth_(token, prewarm) {
+    if (authCache && authCache.token && Date.now() < Number(authCache.cachedUntil || 0)) return authCache;
+    if (authPromise) return authPromise;
+    authPromise = (async () => {
+      const config = await callAppsScript_('getNovaRealtimeClientConfig', token);
+      const apiBase = String(config?.apiBase || '').replace(/\/+$/, '');
+      if (!config?.ok || !config?.enabled || !apiBase) throw new Error('빠른 사진 Storage 연결이 준비되지 않았습니다.');
+      const response = await fetch(`${apiBase}/v1/auth/realtime-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: '{}'
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.ok || !data.token || !data.supabaseUrl || !data.publishableKey) {
+        throw new Error(data?.message || `사진 인증 오류 (${response.status})`);
+      }
+      authCache = Object.assign({}, data, { cachedUntil: Date.now() + AUTH_CACHE_MS });
+      return authCache;
+    })().finally(() => { authPromise = null; });
+    try { return await authPromise; }
+    catch (error) {
+      if (!prewarm) throw error;
+      return Promise.reject(error);
+    }
+  }
+
+  async function edgeCall_(auth, novaToken, payload, retryAuth) {
+    const endpoint = `${String(auth.supabaseUrl || '').replace(/\/+$/, '')}/functions/v1/${EDGE_SLUG}`;
+    const send = async currentAuth => {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentAuth.token}`,
+          'apikey': String(currentAuth.publishableKey || '')
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json().catch(() => ({}));
+      return { response, data };
+    };
+    let result = await send(auth);
+    if (result.response.status === 401 && retryAuth) {
+      authCache = null;
+      await delay_(250);
+      const refreshed = await getDirectPhotoAuth_(novaToken, false);
+      result = await send(refreshed);
+    }
+    if (!result.response.ok || !result.data?.ok) throw new Error(result.data?.message || `사진 Storage 오류 (${result.response.status})`);
+    return result.data;
+  }
+
+  async function linkMetadataAfterMirror_(token, createResult, order, photos) {
+    let mirrorResult = createResult;
+    if (createResult?.mirrorPromise && typeof createResult.mirrorPromise.then === 'function') {
+      mirrorResult = await createResult.mirrorPromise;
+    }
+    if (!mirrorResult?.ok) throw new Error(mirrorResult?.message || '이력 동기화가 완료되지 않았습니다.');
+    const sheetOrder = mirrorResult.order || order;
+    const payload = {
+      orderId: String(sheetOrder?.orderId || order?.orderId || ''),
+      rowNumber: Number(sheetOrder?.rowNumber || 0),
+      photos
+    };
+    let lastError = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        const result = await callAppsScript_('linkMobileHousemanStoragePhotoMetadata', token, payload);
+        if (result?.ok) return result;
+        lastError = new Error(result?.message || '사진 참조 연결 실패');
+      } catch (error) { lastError = error; }
+      await delay_([250, 700, 1600, 3200][attempt] || 3200);
+    }
+    throw lastError || new Error('사진 참조 연결에 실패했습니다.');
+  }
+
+  async function persistLegacyAfterMirror_(token, createResult, order, photos) {
+    let mirrorResult = createResult;
+    if (createResult?.mirrorPromise && typeof createResult.mirrorPromise.then === 'function') mirrorResult = await createResult.mirrorPromise;
+    if (!mirrorResult?.ok) throw new Error(mirrorResult?.message || '사진 저장 준비 실패');
+    const sheetOrder = mirrorResult.order || order;
+    const result = await callAppsScript_('uploadMobileHousemanRequestPhotos', token, {
+      orderId: String(sheetOrder?.orderId || order?.orderId || ''),
+      rowNumber: Number(sheetOrder?.rowNumber || 0),
+      photos: photos.map(photo => ({
+        clientPhotoId: photo.clientPhotoId,
+        fileName: photo.fileName,
+        mimeType: 'image/jpeg',
+        base64: photo.base64
+      }))
+    });
+    if (!result?.ok) throw new Error(result?.message || '사진 보조저장 실패');
+    return result;
+  }
+
+  async function waitAndCollectPreparedPhotos_() {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 12000) {
+      const list = document.getElementById(PHOTO_PREVIEW_LIST_ID);
+      const status = document.getElementById(PHOTO_STATUS_ID);
+      const statusText = String(status?.textContent || '');
+      const preparing = /사진을 준비하고 있습니다/.test(statusText);
+      const items = list ? Array.from(list.querySelectorAll('.nova-hm-photo-preview-item')) : [];
+      if (!preparing) {
+        const prepared = items.filter(item => item.querySelector('img[src^="data:image/jpeg;base64,"]'));
+        if (status?.classList.contains('error') && !prepared.length) throw new Error(statusText || '사진 준비 오류');
+        return prepared.map((item, index) => {
+          const image = item.querySelector('img[src^="data:image/jpeg;base64,"]');
+          const remove = item.querySelector('[data-hm-photo-remove]');
+          const source = String(image?.src || '');
+          const base64 = source.includes(',') ? source.slice(source.indexOf(',') + 1) : '';
+          if (!base64) throw new Error(`사진 ${index + 1} 데이터를 확인하지 못했습니다.`);
+          return {
+            clientPhotoId: String(remove?.dataset.hmPhotoRemove || `hm_direct_${Date.now()}_${index + 1}`).trim(),
+            fileName: `photo_${String(index + 1).padStart(2, '0')}.jpg`,
+            mimeType: 'image/jpeg', base64,
+            byteSize: Math.ceil(base64.length * 0.75)
+          };
+        });
+      }
+      await delay_(60);
+    }
+    throw new Error('사진 준비 시간이 길어지고 있습니다. 사진을 다시 확인해 주세요.');
+  }
+
+  async function optimizeForFastUpload_(photo) {
+    if (Number(photo.byteSize || 0) <= FAST_TARGET_BYTES) return photo;
+    const image = await loadImage_(`data:image/jpeg;base64,${photo.base64}`);
+    const maxEdge = 1280;
+    const scale = Math.min(1, maxEdge / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+    canvas.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) return photo;
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    let best = photo;
+    for (const quality of [0.72, 0.64, 0.56]) {
+      const dataUrl = canvas.toDataURL('image/jpeg', quality);
+      const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+      const byteSize = Math.ceil(base64.length * 0.75);
+      best = Object.assign({}, photo, { base64, byteSize });
+      if (byteSize <= FAST_TARGET_BYTES) break;
+    }
+    return best;
+  }
+
+  function loadImage_(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('사진 고속압축에 실패했습니다.'));
+      img.src = src;
+    });
+  }
+
+  function base64ToBlob_(base64, mimeType) {
+    const binary = atob(String(base64 || ''));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mimeType || 'image/jpeg' });
+  }
+
+  function callAppsScript_(method, ...args) {
+    return new Promise((resolve, reject) => {
+      const runner = google.script.run.withSuccessHandler(resolve).withFailureHandler(error => reject(new Error(error?.message || `${method} 오류`)));
+      runner[method](...args);
+    });
+  }
+
+  function resolveActiveRoomNo_() {
+    if (activeRoomNo) return activeRoomNo;
+    const title = String(document.querySelector('#modalRoot .modal-header h2')?.textContent || '').trim();
+    const matched = title.match(/^(.+?)\s+하우스맨\s*요청/);
+    return matched ? String(matched[1] || '').trim() : '';
+  }
+
+  function setSubmitBusy_(button, label) {
+    if (!button) return;
+    if (!button.dataset.novaPhotoDirectOriginalText) button.dataset.novaPhotoDirectOriginalText = button.textContent || '요청 등록';
+    button.disabled = true;
+    button.textContent = label || '처리 중…';
+  }
+
+  function restoreSubmitButton_(button) {
+    if (!button || !button.isConnected) return;
+    button.disabled = false;
+    button.textContent = button.dataset.novaPhotoDirectOriginalText || '요청 등록';
+  }
+
+  function closeRequestModal_() {
+    const root = document.getElementById('modalRoot');
+    if (!root) return;
+    root.classList.add('hidden');
+    root.setAttribute('aria-hidden', 'true');
+    root.innerHTML = '';
+  }
+
+  function showToast_(message, isError) {
+    let toast = document.getElementById('novaHmPhotoToast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'novaHmPhotoToast';
+      toast.className = 'nova-hm-photo-toast';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = String(message || '');
+    toast.classList.toggle('error', Boolean(isError));
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      const current = document.getElementById('novaHmPhotoToast');
+      if (current) current.remove();
+    }, isError ? 7000 : 3600);
+  }
+
+  function delay_(ms) { return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms || 0)))); }
+})();
+</script>
