@@ -1235,6 +1235,29 @@
       return callServer(legacyMethod, state.token, legacySafe);
     }
 
+    const operationalStatusReworkDirect = mappedAction === 'UPDATE_ROOM_OPERATION_STATUS'
+      && String(safe.operationalStatus || '').trim().toUpperCase() === 'REWORK';
+    if (operationalStatusReworkDirect) { // QM_CLEAR_REWORK_CONTROLS_V1 · 관리자 재정비 객실조치 안전경로
+      const directPayload = Object.assign({}, legacySafe, {
+        action: 'UPDATE_ROOM_OPERATION_STATUS',
+        operationalStatus: 'REWORK',
+        expectedVersion: 0,
+        expectedOperationalStatus: String(safe?.expectedState?.operationalStatus || '')
+      });
+      delete directPayload.sheetExpectedVersion;
+      const directResult = await callServer('updateRoomOperationalStatusSafe', state.token, directPayload);
+      if (!directResult?.ok) throw new Error(directResult?.message || '재정비 객실조치를 저장하지 못했습니다.');
+      void callServer('syncNovaRealtimeRoomForAction', state.token, {
+        businessDate: safe.businessDate,
+        site: safe.site,
+        roomNo: safe.roomNo,
+        action: 'UPDATE_ROOM_OPERATION_STATUS'
+      }).catch(syncError => {
+        console.warn('[NOVA Realtime] 관리자 재정비 객실조치 DB 단건 동기화는 정기 동기화로 넘깁니다.', syncError);
+      });
+      return Object.assign({}, directResult, { reworkOperationalSafePath: true });
+    }
+
     const operationalStatusCompletionDirect = mappedAction === 'UPDATE_ROOM_OPERATION_STATUS'
       && !String(safe.operationalStatus || '').trim();
     if (operationalStatusCompletionDirect) {
@@ -6504,7 +6527,7 @@
     const cleaningCompletionLocked = isIndicatorCleaningCompletionLocked_(cleaningStatusCode);
     const cleaningResetAvailable = cleaningCompletionLocked
       && Boolean(room.cleaningType || room.roommaidEmployeeNo || room.secondaryRoommaidEmployeeNo || room.qmEmployeeNo);
-    const qmClearAvailable = Boolean(String(room.qmEmployeeNo || '').trim()) && cleaningStatusCode === 'QM_WAITING';
+    const qmClearAvailable = Boolean(String(room.qmEmployeeNo || '').trim()); // QM_CLEAR_REWORK_CONTROLS_V1
     const operationalStatus = normalizeIndicatorRoomOperationalStatus_(room.operationalStatus);
     const operationalStatusLabel = indicatorRoomOperationalStatusLabel_(operationalStatus);
     openModal(`
@@ -6530,7 +6553,7 @@
             <label class="modal-field roommaid-assignment-picker primary-roommaid-field"><span>주담당 룸메이드</span><input id="roommaidSearchInput" class="roommaid-assignment-search" type="search" placeholder="이름·사번 검색" autocomplete="off"><select id="roommaidSelect">${roommaidAssignmentOptionsHtml_(roommaids, room.roommaidEmployeeNo)}</select></label>
             <label class="modal-field roommaid-assignment-picker secondary-roommaid-field"><span>보조 룸메이드</span><input id="secondaryRoommaidSearchInput" class="roommaid-assignment-search" type="search" placeholder="이름·사번 검색" autocomplete="off"><select id="secondaryRoommaidSelect">${roommaidAssignmentOptionsHtml_(roommaids, room.secondaryRoommaidEmployeeNo)}</select></label>
             <div class="modal-field full room-operation-flag-editor"><span>운영표시</span><div class="room-operation-flag-options"><label><input id="roomPreassignedFlag" type="checkbox"${room.preassigned ? ' checked' : ''}>선배정</label><label><input id="roomVipFlag" type="checkbox"${room.vip ? ' checked' : ''}>VIP</label><label><input id="roomImportantFlag" type="checkbox"${room.importantRoom ? ' checked' : ''}>중요객실</label></div></div>
-            <div class="modal-field full room-operational-status-editor"><span>객실조치 상태</span><div class="room-operational-status-options"><button class="room-operational-status-button${operationalStatus === 'BROKEN' ? ' active' : ''}" type="button" data-room-action="UPDATE_ROOM_OPERATION_STATUS" data-room-operational-status="BROKEN">고장</button><button class="room-operational-status-button${operationalStatus === 'ROOM_CHECK' ? ' active' : ''}" type="button" data-room-action="UPDATE_ROOM_OPERATION_STATUS" data-room-operational-status="ROOM_CHECK">객실확인</button><button class="room-operational-status-button complete" type="button" data-room-action="UPDATE_ROOM_OPERATION_STATUS" data-room-operational-status=""${operationalStatus ? '' : ' disabled'}>완료</button></div></div>
+            <div class="modal-field full room-operational-status-editor"><span>객실조치 상태</span><div class="room-operational-status-options"><button class="room-operational-status-button${operationalStatus === 'BROKEN' ? ' active' : ''}" type="button" data-room-action="UPDATE_ROOM_OPERATION_STATUS" data-room-operational-status="BROKEN">고장</button><button class="room-operational-status-button${operationalStatus === 'ROOM_CHECK' ? ' active' : ''}" type="button" data-room-action="UPDATE_ROOM_OPERATION_STATUS" data-room-operational-status="ROOM_CHECK">객실확인</button><button class="room-operational-status-button${operationalStatus === 'REWORK' ? ' active' : ''}" type="button" data-room-action="UPDATE_ROOM_OPERATION_STATUS" data-room-operational-status="REWORK">재정비</button><button class="room-operational-status-button complete" type="button" data-room-action="UPDATE_ROOM_OPERATION_STATUS" data-room-operational-status=""${operationalStatus ? '' : ' disabled'}>완료</button></div></div>
           </div>
           <div class="modal-actions room-work-actions">
             <button class="action-button operational-flags" type="button" data-room-action="UPDATE_OPERATION_FLAGS">운영표시 저장</button>
@@ -6541,7 +6564,7 @@
             <button class="action-button" type="button" data-room-action="CLEANING_START">청소시작</button>
             <button class="action-button primary" type="button" data-room-action="CLEANING_COMPLETE"${cleaningCompletionLocked ? ' disabled title="룸메이드 청소완료가 이미 기록된 객실입니다." aria-label="완료 처리됨"' : ''}>${cleaningCompletionLocked ? '완료 처리됨' : '청소완료'}</button>
             <button class="action-button" type="button" data-room-action="QM_ASSIGN">QM배정</button>
-            ${qmClearAvailable ? '<button class="action-button danger" type="button" data-room-action="QM_CLEAR">QM배정 취소</button>' : ''}
+            ${qmClearAvailable ? '<button class="action-button danger" type="button" data-room-action="QM_CLEAR">QM배정 초기화</button>' : ''}
             ${cleaningResetAvailable ? '<button class="action-button danger" type="button" data-room-action="CLEANING_RESET">청소 초기화</button>' : ''}
           </div>
         </div>
@@ -6759,9 +6782,9 @@
     }
     if (action === 'QM_CLEAR') {
       const confirmed = window.confirm(
-        `${room.roomNo}호의 QM 배정을 취소합니다.\n\n`
+        `${room.roomNo}호의 QM 배정을 초기화합니다.\n\n`
         + '룸메이드 배정과 청소완료 실적은 유지되고, QM 배정만 해제됩니다.\n'
-        + 'QM 점검 시작 전 배정만 취소할 수 있습니다.\n\n'
+        + '점검중인 경우 기존 체크리스트 초안·이력은 보존되며 해당 QM은 더 이상 완료할 수 없습니다.\n\n'
         + '계속하시겠습니까?'
       );
       if (!confirmed) return;
@@ -6838,10 +6861,10 @@
       CLEANING_COMPLETE: '청소완료',
       CLEANING_RESET: '청소 초기화',
       QM_ASSIGN: 'QM 배정',
-      QM_CLEAR: 'QM 배정 취소',
+      QM_CLEAR: 'QM 배정 초기화',
       CLEAR_ASSIGNMENT: '배정 초기화',
       UPDATE_OPERATION_FLAGS: '운영표시 저장',
-      UPDATE_ROOM_OPERATION_STATUS: payload.operationalStatus === 'BROKEN' ? '고장 등록' : payload.operationalStatus === 'ROOM_CHECK' ? '객실확인 등록' : '객실조치 완료'
+      UPDATE_ROOM_OPERATION_STATUS: payload.operationalStatus === 'BROKEN' ? '고장 등록' : payload.operationalStatus === 'ROOM_CHECK' ? '객실확인 등록' : payload.operationalStatus === 'REWORK' ? '재정비 등록' : '객실조치 완료'
     }[action] || '객실 작업';
 
     state.indicator.roomActionInFlight[actionKey] = true;
