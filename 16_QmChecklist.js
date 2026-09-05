@@ -197,8 +197,22 @@ function startQmInspection(token, payload) { // (QM 점검 시작·Realtime 상�
       const currentSheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
       const rowInfo = findCurrentRoomRow_(currentSheet, businessDate, site, roomNo);
       if (!rowInfo) throw new Error('현재객실현황에서 해당 객실을 찾을 수 없습니다.');
-      if (String(rowInfo.data['QM사번'] || '').trim() !== user.employeeNo) throw new Error('본인에게 배정된 객실만 점검할 수 있습니다.');
-      const currentStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
+      const sheetQmEmployeeNo = String(rowInfo.data['QM사번'] || '').trim();
+      let currentStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
+      if (sheetQmEmployeeNo !== user.employeeNo) { // QM_REALTIME_STALE_SHEET_VERIFY_V1
+        if (!realtimeStarted || typeof novaRealtimeFetchCurrentRoomForQmMirror_ !== 'function') {
+          throw new Error('본인에게 배정된 객실만 점검할 수 있습니다.');
+        }
+        let dbRoom = null;
+        try { dbRoom = novaRealtimeFetchCurrentRoomForQmMirror_(token, businessDate, site, roomNo); }
+        catch (dbError) { throw new Error('QM 실시간 배정확인을 완료하지 못했습니다. 잠시 후 다시 시도하세요.'); }
+        const dbQmEmployeeNo = String(dbRoom && dbRoom.qmEmployeeNo || '').trim();
+        const dbCleaningStatus = String(dbRoom && dbRoom.cleaningStatus || '').trim().toUpperCase();
+        if (dbQmEmployeeNo !== user.employeeNo || dbCleaningStatus !== 'QM_CHECKING') {
+          throw new Error('본인에게 배정된 객실만 점검할 수 있습니다.');
+        }
+        currentStatus = dbCleaningStatus;
+      }
       if (!['QM_WAITING', 'COMPLETED', 'QM_CHECKING'].includes(currentStatus)) throw new Error('QM 점검대기 또는 점검중 객실만 시작할 수 있습니다.');
 
       let version = realtimeStarted

@@ -7943,17 +7943,49 @@
     scheduleQmInspectionAutosave_();
   }
 
-  async function uploadQmInspectionPhoto_(input) { // (카메라 사진 압축·Drive 등록)
+  async function uploadQmInspectionPhoto_(input) { // QM_FAST_START_PHOTO_V1 · Private Storage 직접등록 + Drive fallback
     const file = input.files?.[0];
     if (!file) return;
     const card = input.closest('[data-qm-check-code], [data-qm-defect-id]');
+    if (!card) return showToast('사진을 연결할 점검 항목을 찾지 못했습니다.');
     const targetType = card.hasAttribute('data-qm-check-code') ? 'ITEM' : 'DEFECT';
     const targetCode = card.dataset.qmCheckCode || card.dataset.qmDefectId;
     input.disabled = true;
     try {
+      await ensureQmInspectionDraftReady_(state.qmChecklist.activeInspection);
       await saveQmInspectionDraftNow_(false);
       const image = await compressQmPhotoFile_(file);
       const active = state.qmChecklist.activeInspection;
+      if (!active?.draft?.draftId) throw new Error('체크리스트 저장준비가 완료되지 않았습니다. 다시 시도하세요.');
+
+      if (window.NOVA_QM_FAST && novaRealtimeIsEnabled_()) {
+        try {
+          const auth = await novaQmDraftAuthBundle_();
+          const direct = await window.NOVA_QM_FAST.uploadPhoto(auth, {
+            draftId: active.draft.draftId,
+            targetType,
+            targetCode,
+            fileName: image.fileName,
+            mimeType: image.mimeType,
+            base64: image.base64,
+            clientPhotoId: novaRealtimeRequestId_('QM_PHOTO', active.roomNo)
+          });
+          if (!direct?.ok || !direct?.draft) throw new Error(direct?.message || 'QM 사진 저장 완료값을 확인하지 못했습니다.');
+          active.draft = Object.assign({}, active.draft, direct.draft, {
+            answers: direct.draft.answers || active.draft.answers || [],
+            defects: direct.draft.defects || active.draft.defects || [],
+            dbVersion: Number(direct.draft.dbVersion || active.draft.dbVersion || 0),
+            dbSavedAt: String(direct.draft.savedAt || active.draft.dbSavedAt || '')
+          });
+          novaQmScheduleLegacyDraftMirror_(active.draft);
+          showToast('하자 사진을 등록했습니다.');
+          openQmInspectionModal_();
+          return;
+        } catch (directError) {
+          console.warn('[NOVA QM] Private Storage 사진등록 실패 · 기존 Drive 경로 fallback', directError);
+        }
+      }
+
       const result = await callServer('uploadQmInspectionPhoto', state.token, {
         draftId: active.draft.draftId, targetType, targetCode,
         fileName: image.fileName, mimeType: image.mimeType, base64: image.base64
@@ -7981,14 +8013,31 @@
     return { fileName: file.name.replace(/\.[^.]+$/, '') + '.jpg', mimeType: 'image/jpeg', base64 };
   }
 
-  async function deleteQmInspectionPhoto_(button) { // (등록사진 삭제)
+  async function deleteQmInspectionPhoto_(button) { // QM_FAST_START_PHOTO_V1 · Storage/Drive 이중호환 삭제
     const active = state.qmChecklist.activeInspection;
     if (!active?.draft?.draftId) return;
+    const fileId = String(button.dataset.qmPhotoDelete || '');
     button.disabled = true;
     try {
+      if (/^sbqm:/i.test(fileId)) {
+        if (!window.NOVA_QM_FAST || !novaRealtimeIsEnabled_()) throw new Error('QM Storage 사진 삭제 모듈을 사용할 수 없습니다.');
+        const auth = await novaQmDraftAuthBundle_();
+        const direct = await window.NOVA_QM_FAST.deletePhoto(auth, fileId);
+        if (!direct?.ok || !direct?.draft) throw new Error(direct?.message || '사진을 삭제하지 못했습니다.');
+        active.draft = Object.assign({}, active.draft, direct.draft, {
+          answers: direct.draft.answers || [],
+          defects: direct.draft.defects || [],
+          dbVersion: Number(direct.draft.dbVersion || active.draft.dbVersion || 0),
+          dbSavedAt: String(direct.draft.savedAt || active.draft.dbSavedAt || '')
+        });
+        novaQmScheduleLegacyDraftMirror_(active.draft);
+        openQmInspectionModal_();
+        return;
+      }
+
       const result = await callServer('deleteQmInspectionPhoto', state.token, {
         draftId: active.draft.draftId, targetType: button.dataset.targetType,
-        targetCode: button.dataset.targetCode, fileId: button.dataset.qmPhotoDelete
+        targetCode: button.dataset.targetCode, fileId
       });
       if (!result?.ok) throw new Error(result?.message || '사진을 삭제하지 못했습니다.');
       active.draft = result.draft || active.draft;
@@ -8002,7 +8051,15 @@
     win.document.write('<title>QM 사진 불러오는 중</title><style>body{font-family:Arial,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0}</style><p>사진을 불러오는 중입니다.</p>');
     win.document.close();
     try {
-      const result = await callServer('getQmInspectionPhoto', state.token, { fileId });
+      let result;
+      if (/^sbqm:/i.test(String(fileId || ''))) {
+        if (!window.NOVA_QM_FAST || !novaRealtimeIsEnabled_()) throw new Error('QM Storage 사진 조회 모듈을 사용할 수 없습니다.');
+        const auth = await novaQmDraftAuthBundle_();
+        const direct = await window.NOVA_QM_FAST.viewPhoto(auth, fileId);
+        result = { ok: Boolean(direct?.ok && direct?.signedUrl), name: direct?.photo?.name || 'QM 사진', dataUrl: direct?.signedUrl || '' };
+      } else {
+        result = await callServer('getQmInspectionPhoto', state.token, { fileId });
+      }
       if (!result?.ok) throw new Error(result?.message || '사진을 불러오지 못했습니다.');
       win.document.open();
       win.document.write(`<title>${escapeHtml(result.name || 'QM 사진')}</title><style>body{margin:0;background:#111;display:grid;place-items:center;min-height:100vh}img{max-width:100%;max-height:100vh;object-fit:contain}</style><img src="${result.dataUrl}">`);
@@ -8814,13 +8871,25 @@
 
     state.mobile.actionInFlight = Number(state.mobile.actionInFlight || 0) + 1;
     try {
-      const result = await callServer('startQmMobileBrowseInspection', state.token, {
+      // QM_FAST_START_PHOTO_V1 · 추가탭 본인확보는 PostgreSQL 원자처리, Apps Script는 장애 fallback
+      const qmBrowsePayload = {
         businessDate: state.mobile.businessDate || state.bootstrap.app.businessDate,
         site: room.site || state.mobile.site,
         roomNo: room.roomNo,
         rowNumber: Number(room.rowNumber || 0),
         view
-      });
+      };
+      let result;
+      try {
+        if (!window.NOVA_QM_FAST || !novaRealtimeIsEnabled_()) throw new Error('QM DB 빠른시작을 사용할 수 없습니다.');
+        const auth = await novaQmDraftAuthBundle_();
+        result = await window.NOVA_QM_FAST.startBrowse(auth, Object.assign({}, qmBrowsePayload, {
+          requestId: novaRealtimeRequestId_('QM_BROWSE_START', room.roomNo)
+        }));
+      } catch (fastError) {
+        console.warn('[NOVA QM] 추가탭 DB 빠른시작 실패 · 기존 경로 fallback', fastError);
+        result = await callServer('startQmMobileBrowseInspection', state.token, qmBrowsePayload);
+      }
       if (!result?.ok) throw new Error(result?.message || 'QM 점검을 시작하지 못했습니다.');
 
       const confirmedChecklist = result.checklist || checklist;

@@ -821,14 +821,17 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
       }
 
       if (['QM_START', 'QM_COMPLETE', 'QM_REWORK'].includes(action)) {
-        roomUpdates.push({
+        const qmRoomUpdate = { // QM_START_MIRROR_ASSIGNMENT_V1
           rowNumber: rowInfo.rowNumber,
           cleaningStatus: afterStatus,
           version,
           updatedAt: nowText_()
-        });
+        };
+        if (action === 'QM_START') qmRoomUpdate.qmEmployeeNo = employeeNo;
+        roomUpdates.push(qmRoomUpdate);
         rowInfo.data['청소상태'] = afterStatus;
         rowInfo.data['마지막변경버전'] = version;
+        if (action === 'QM_START') rowInfo.data['QM사번'] = employeeNo;
         if (action === 'QM_START') {
           historyPayloads.push({
             recordType: NOVA.RECORD_TYPES.QM,
