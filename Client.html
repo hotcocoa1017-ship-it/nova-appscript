@@ -1207,12 +1207,16 @@
       for (let index = 0; index < delays.length; index += 1) {
         if (delays[index]) await wait_(delays[index] + Math.round(Math.random() * 250));
         try {
-          return await callServer(legacyMethod, state.token, legacySafe);
+          const legacyResult = await callServer(legacyMethod, state.token, legacySafe); // LIVE_OPERATION_RETRY_RESILIENCE_V1
+          if (legacyResult?.ok !== false) return legacyResult;
+          if (!isTransientServerError_(legacyResult) || index === delays.length - 1) return legacyResult;
+          lastError = legacyResult;
         } catch (error) {
           lastError = error;
           if (!isTransientServerError_(error) || index === delays.length - 1) throw error;
         }
       }
+      if (lastError && typeof lastError === 'object' && Object.prototype.hasOwnProperty.call(lastError, 'ok')) return lastError;
       throw lastError || new Error('객실 작업 저장 오류');
     }
 
@@ -7917,6 +7921,21 @@
     }
   }
 
+
+  async function submitQmInspectionDetailWithBusyRetry_(payload) { // LIVE_OPERATION_RETRY_RESILIENCE_V1 · QM 상세이력 BUSY_RETRY 전용 재시도
+    const delays = [0, 500, 1300, 2600];
+    let lastResult = null;
+    for (let index = 0; index < delays.length; index += 1) {
+      if (delays[index]) await wait_(delays[index] + Math.round(Math.random() * 180));
+      const result = await callServer('submitQmChecklistInspection', state.token, payload);
+      if (result?.ok !== false) return result;
+      const code = String(result?.code || '').trim().toUpperCase();
+      if (code !== 'BUSY_RETRY' || index === delays.length - 1) return result;
+      lastResult = result;
+    }
+    return lastResult || { ok: false, code: 'BUSY_RETRY', message: 'QM 상세이력 저장이 지연되고 있습니다.' };
+  }
+
   async function submitQmInspectionFinal_(event) { // (QM Realtime 최종상태 즉시반영·상세이력 background 저장)
     const button = event.currentTarget;
     button.disabled = true;
@@ -7981,7 +8000,7 @@
       // 무거운 Sheet 체크리스트/품질이력 저장은 사용자 응답 경로 밖에서 이어서 처리한다.
       const persistDetail = async () => {
         await ensureQmInspectionDraftReady_(active);
-        return callServer('submitQmChecklistInspection', state.token, {
+        return submitQmInspectionDetailWithBusyRetry_({ // LIVE_OPERATION_RETRY_RESILIENCE_V1
           businessDate: state.mobile.businessDate,
           site: state.mobile.site,
           roomNo: active.roomNo,
