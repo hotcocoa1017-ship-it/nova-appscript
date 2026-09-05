@@ -18,7 +18,8 @@
     fallbackTimer: null,
     fallbackBusy: false,
     lastToken: '',
-    pageActive: false
+    pageActive: false,
+    sessionSubscribedOnce: false
   };
 
   function archiveRtToken_() {
@@ -133,6 +134,23 @@
     }, 1200);
   }
 
+  async function archiveRtRefreshStatus_(sourceLabel) {
+    if (!archiveRtPageVisible_() || archiveRt_.fallbackBusy) return;
+    const token = archiveRtToken_();
+    if (!token) return;
+    archiveRt_.fallbackBusy = true;
+    try {
+      const result = await archiveRtCallServer_('getNovaArchiveAdminStatus', token);
+      if (result?.ok && result?.current && archiveRtPageVisible_()) {
+        archiveRtRenderIntegrity_(result.current, sourceLabel || '서버 확인');
+      }
+    } catch (ignore) {
+      // Realtime/fallback 흐름은 계속 유지합니다.
+    } finally {
+      archiveRt_.fallbackBusy = false;
+    }
+  }
+
   function archiveRtHandleMessage_(message) {
     if (!archiveRtPageVisible_()) return;
     const payload = message?.payload && typeof message.payload === 'object'
@@ -187,11 +205,14 @@
               void archiveRtDisconnect_();
               return;
             }
+            const isReconnect = archiveRt_.sessionSubscribedOnce;
+            archiveRt_.sessionSubscribedOnce = true;
             archiveRt_.subscribed = true;
             archiveRt_.connecting = false;
             archiveRtStopFallback_();
             archiveRtMarkConnected_();
             archiveRtScheduleTokenRefresh_();
+            if (isReconnect) void archiveRtRefreshStatus_('재연결 동기화');
             return;
           }
           if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) {
@@ -254,17 +275,7 @@
         return;
       }
       if (archiveRt_.subscribed || archiveRt_.fallbackBusy) return;
-      const token = archiveRtToken_();
-      if (!token) return;
-      archiveRt_.fallbackBusy = true;
-      archiveRtCallServer_('getNovaArchiveAdminStatus', token)
-        .then(result => {
-          if (result?.ok && result?.current && archiveRtPageVisible_()) {
-            archiveRtRenderIntegrity_(result.current, '서버 확인');
-          }
-        })
-        .catch(() => {})
-        .finally(() => { archiveRt_.fallbackBusy = false; });
+      void archiveRtRefreshStatus_('서버 확인');
     }, 30000);
   }
 
@@ -301,6 +312,7 @@
 
     if (archiveRt_.pageActive) {
       archiveRt_.pageActive = false;
+      archiveRt_.sessionSubscribedOnce = false;
       if (archiveRt_.channel || archiveRt_.subscribed || archiveRt_.connecting || archiveRt_.fallbackTimer) {
         void archiveRtDisconnect_();
       }
@@ -322,6 +334,7 @@
       }
       if (!archiveRtPageVisible_()) return;
       if (token !== archiveRt_.lastToken && archiveRt_.lastToken) {
+        archiveRt_.sessionSubscribedOnce = false;
         void archiveRtDisconnect_().then(() => archiveRtEnsureClient_());
         return;
       }
@@ -331,9 +344,9 @@
     }, 15000);
 
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && archiveRtPageVisible_() && archiveRtAdminMenuPresent_() && archiveRtToken_() && !archiveRt_.subscribed) {
-        void archiveRtEnsureClient_();
-      }
+      if (document.hidden || !archiveRtPageVisible_() || !archiveRtAdminMenuPresent_() || !archiveRtToken_()) return;
+      void archiveRtRefreshStatus_('복귀 동기화');
+      if (!archiveRt_.subscribed) void archiveRtEnsureClient_();
     });
   }
 
