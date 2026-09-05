@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 5
     env:
       EDGE_URL: https://evoetxfjmkkjptucwxsv.supabase.co/functions/v1/nova-archive-worker-v1
-      SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJIUzI1NiIsInJlZiI6ImV2b2V0eGZqbWtranB0dWN3eHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0MTI4NzgsImV4cCI6MjEwMjk4ODg3OH0.wNWMvTIFfCU2lN-c7LBFj2QYE2S4FiFg1moOXm-F_C8
+      SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV2b2V0eGZqbWtranB0dWN3eHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0MTI4NzgsImV4cCI6MjEwMjk4ODg3OH0.wNWMvTIFfCU2lN-c7LBFj2QYE2S4FiFg1moOXm-F_C8
     steps:
       - name: Archive one WORK_HISTORY day and verify restore metadata
         shell: bash
