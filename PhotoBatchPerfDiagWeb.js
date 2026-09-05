@@ -2,9 +2,11 @@
 function doPost(e) {
   const mode = String(e && e.parameter && e.parameter.mode || 'batch').trim();
   try {
-    const result = mode === 'lockProbe'
-      ? diagnosePhotoBatchLockProbe20260905()
-      : diagnoseHousemanPhotoBatchFast20260905();
+    let result;
+    if (mode === 'prepare') result = diagnoseHousemanPhotoBatchPrepare20260905();
+    else if (mode === 'lockProbe') result = diagnosePhotoBatchLockProbe20260905();
+    else if (mode === 'cleanup') result = diagnoseHousemanPhotoBatchCleanup20260905();
+    else result = diagnoseHousemanPhotoBatchFast20260905();
     return ContentService.createTextOutput(JSON.stringify(result))
       .setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
