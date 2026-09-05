@@ -19,3 +19,7 @@ else:
 # 모바일 상단 조회조건 레이아웃과 로그인 안내문구는 site-scope 패치 이후에도
 # 매 배포마다 동일하게 보장합니다. 패치 자체가 멱등성이므로 재실행해도 중복 적용되지 않습니다.
 subprocess.run([sys.executable, 'scripts/patch_mobile_indicator_layout_v1.py'], check=True)
+
+# 관리자/오더테이커 QM 배정 초기화 + 객실조치 재정비 버튼은
+# 매 배포에서 동일하게 보장합니다. Client와 06_Indicator를 최소범위로 패치합니다.
+subprocess.run([sys.executable, 'scripts/patch_qm_clear_rework_controls_20260905.py'], check=True)
