@@ -1,0 +1,181 @@
+name: Validate Photo Batch Nonblocking 20260905
+
+on:
+  push:
+    branches: [perf/photo-batch-nonblocking-20260905]
+    paths:
+      - HousemanRequestPhotoBatch.js
+      - HousemanRequestPhotoBatchClient.html
+      - Index.html
+      - PhotoBatchPerfDiag.js
+      - PhotoBatchPerfDiagWeb.js
+      - .github/workflows/validate-photo-batch-nonblocking-20260905.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate production delta and syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          node --check HousemanRequestPhotoBatch.js
+          node --check PhotoBatchPerfDiag.js
+          node --check PhotoBatchPerfDiagWeb.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for source, target in [
+              ('HousemanRequestPhotoBatchClient.html', '/tmp/NovaPhotoBatchClient.js'),
+          ]:
+              text = Path(source).read_text(encoding='utf-8')
+              scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+              if len(scripts) != 1:
+                  raise SystemExit(f'Expected one script in {source}, got {len(scripts)}')
+              Path(target).write_text(scripts[0], encoding='utf-8')
+          index = Path('Index.html').read_text(encoding='utf-8')
+          old = "<?!= include_('HousemanRequestPhotoClient'); ?>"
+          new = "<?!= include_('HousemanRequestPhotoBatchClient'); ?>"
+          if old not in index or new not in index or index.index(new) < index.index(old):
+              raise SystemExit('Photo batch client must load after existing photo UI client')
+          PY
+          node --check /tmp/NovaPhotoBatchClient.js
+          grep -q "HOUSEMAN_PHOTO_BATCH_FAST_V1" HousemanRequestPhotoBatch.js
+          grep -q "window.addEventListener('click', handlePhotoBatchClickCapture_, true)" HousemanRequestPhotoBatchClient.html
+          grep -q "void persistPhotosAfterMirror_" HousemanRequestPhotoBatchClient.html
+          grep -q "event.stopImmediatePropagation" HousemanRequestPhotoBatchClient.html
+          grep -q "lock.tryLock(250)" HousemanRequestPhotoBatch.js
+
+      - name: Apply production patch chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_sync_status_autohide.py
+          python3 scripts/patch_telegram_self_connect.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          python3 scripts/patch_roommaid_performance_attribution.py
+          python3 scripts/patch_roommaid_close_read_acceleration.py
+          python3 scripts/fix_patch_site_scope_v2.py
+          python3 scripts/patch_site_scope_indicator_close_v2.py
+          python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
+          python3 scripts/patch_houseman_realtime_push.py
+          python3 scripts/patch_concurrent_write_resilience_v1.py
+          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
+          python3 scripts/patch_mobile_view_state_persistence_20260904.py
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_order_site_context_v1.py
+          python3 scripts/validate_nova_release.py
+          grep -q "include_('HousemanRequestPhotoBatchClient')" Index.html
+          node --check HousemanRequestPhotoBatch.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('HousemanRequestPhotoBatchClient.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          Path('/tmp/NovaPhotoBatchClientAfterPatch.js').write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaPhotoBatchClientAfterPatch.js
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp
+
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo "::error::Apps Script OAuth secret missing"
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+
+      - name: Push diagnostic branch to Apps Script HEAD
+        run: clasp push --force
+
+      - name: Create temporary deployment and benchmark batch contention
+        id: diag
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPLOY_OUTPUT="$(clasp create-deployment --description 'TEMP NOVA photo batch nonblocking diag 20260905')"
+          printf '%s\n' "$DEPLOY_OUTPUT"
+          DEPLOY_ID="$(printf '%s\n' "$DEPLOY_OUTPUT" | grep -oE 'AKfy[a-zA-Z0-9_-]+' | tail -1)"
+          test -n "$DEPLOY_ID"
+          echo "deployment_id=$DEPLOY_ID" >> "$GITHUB_OUTPUT"
+          URL="https://script.google.com/macros/s/${DEPLOY_ID}/exec"
+
+          echo 'PHOTO_BATCH_BENCHMARK_BEGIN'
+          curl --max-time 180 -fsSL -X POST "${URL}?mode=batch" > /tmp/photo-batch-result.json &
+          BATCH_PID=$!
+          sleep 3
+          for i in 1 2 3; do
+            curl --max-time 30 -fsSL -X POST "${URL}?mode=lockProbe" > "/tmp/photo-lock-${i}.json"
+            cat "/tmp/photo-lock-${i}.json"
+            echo
+            sleep 1
+          done
+          wait "$BATCH_PID"
+          cat /tmp/photo-batch-result.json
+          echo
+          echo 'PHOTO_BATCH_BENCHMARK_END'
+
+          python3 - <<'PY'
+          import json
+          batch=json.load(open('/tmp/photo-batch-result.json', encoding='utf-8'))
+          assert batch.get('ok') is True, batch
+          assert batch.get('photoCount') == 5, batch
+          pp=batch.get('photoPerformance') or {}
+          assert pp.get('linkMs', 999999) < 3000, pp
+          probes=[]
+          for i in range(1,4):
+              p=json.load(open(f'/tmp/photo-lock-{i}.json', encoding='utf-8'))
+              probes.append(p)
+              assert p.get('acquired') is True, p
+              assert p.get('waitMs', 999999) < 750, p
+          print('PHOTO_BATCH_RESULT', json.dumps(batch, ensure_ascii=False))
+          print('PHOTO_LOCK_PROBES', json.dumps(probes, ensure_ascii=False))
+          PY
+
+      - name: Remove temporary deployment
+        if: always() && steps.diag.outputs.deployment_id != ''
+        shell: bash
+        run: clasp undeploy "${{ steps.diag.outputs.deployment_id }}" || true
+
+      - name: Restore Apps Script HEAD to production main source
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git reset --hard origin/main
+          clasp push --force
+          echo 'APPS_SCRIPT_HEAD_RESTORED=main'
