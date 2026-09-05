@@ -1,5 +1,5 @@
 /**
- * NOVA Realtime Client 설정 브리지 v2.2
+ * NOVA Realtime Client 설정 브리지 v2.3
  *
  * 새 NOVA 복사본 프로젝트에만 추가합니다.
  * 이 파일은 비밀값을 브라우저에 전달하지 않습니다.
@@ -9,7 +9,7 @@
  *   NOVA_REALTIME_ENABLED = N 또는 Y
  *   NOVA_REALTIME_API_BASE = https://xxxx.run.app
  */
-function getNovaRealtimeClientConfig(token) { // QM_DRAFT_DB_FIRST_V1
+function getNovaRealtimeClientConfig(token) { // QM_DRAFT_DB_FIRST_V1 · QM_DRAFT_PROMOTE_ALL_20260905
   const props = PropertiesService.getScriptProperties();
   const apiBase = String(props.getProperty('NOVA_REALTIME_API_BASE') || '')
     .trim()
@@ -19,18 +19,15 @@ function getNovaRealtimeClientConfig(token) { // QM_DRAFT_DB_FIRST_V1
     .toUpperCase() === 'Y';
 
   let qmDraftDbFirstEnabled = false;
-  const qmDraftMode = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED') || 'CANARY').trim().toUpperCase();
-  const qmDraftConfiguredEmployees = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES') || '')
-    .split(',').map(value => value.trim()).filter(Boolean);
-  const qmDraftCanaryEmployees = Object.freeze(['q001']); // QM_DRAFT_CANARY_Q001_V1
-  const qmDraftEmployees = qmDraftMode === 'CANARY' ? Array.from(qmDraftCanaryEmployees) : qmDraftConfiguredEmployees;
+  const qmDraftMode = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED') || 'Y').trim().toUpperCase();
   const qmDraftMasterEnabled = qmDraftMode === 'CANARY' || qmDraftMode === 'Y';
-  if (qmDraftMasterEnabled && qmDraftEmployees.length && token) {
+  if (qmDraftMasterEnabled && token) {
     const verified = verifyNovaToken(token);
     const user = verified && verified.ok ? verified.user : null;
+    // 2026-09-05 100→300→500→1,000 동시쓰기 검증 통과 후 전체 QM으로 승격합니다.
+    // NOVA_QM_DRAFT_DB_FIRST_ENABLED=N은 즉시 중단용 kill switch로 그대로 유지합니다.
     qmDraftDbFirstEnabled = Boolean(user
-      && String(user.role || '').trim().toUpperCase() === 'QM'
-      && qmDraftEmployees.includes(String(user.employeeNo || '').trim()));
+      && String(user.role || '').trim().toUpperCase() === 'QM');
   }
 
   return {
@@ -54,10 +51,10 @@ function setupNovaRealtimeClientConfig() {
     props.setProperty('NOVA_REALTIME_API_BASE', '');
   }
   if (!props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED')) {
-    props.setProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED', 'CANARY');
+    props.setProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED', 'Y');
   }
   if (!props.getProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES')) {
-    props.setProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES', 'q001');
+    props.setProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES', '');
   }
   return {
     ok: true,
