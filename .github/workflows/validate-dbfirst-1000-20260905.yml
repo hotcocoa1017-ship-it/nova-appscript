@@ -1,4 +1,4 @@
-name: Validate DB-first archive canary v3
+name: Validate DB-first archive canary v4
 
 on:
   push:
@@ -45,7 +45,7 @@ jobs:
           if (!(Number(data.rowCount) > 0) || !data.batchId || !data.objectPath || !data.checksumSha256) {
             throw new Error(`archive canary incomplete: ${JSON.stringify(data)}`);
           }
-          console.log('ARCHIVE_CANARY_SUCCESS_V3');
+          console.log('ARCHIVE_CANARY_SUCCESS_V4');
           console.log(JSON.stringify({
             batchId: data.batchId,
             sourceType: data.sourceType,
