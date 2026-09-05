@@ -68,6 +68,7 @@ function getMenuForRole_(role) { // (권한별 최소 메뉴 구성)
       { id: 'adminMetrics', label: '운영 성과지표' },
       { id: 'shifts', label: '근무조 관리' },
       { id: 'qmChecklist', label: 'QM 체크리스트' },
+      { id: 'archive', label: 'Archive 이력' },
       { id: 'settings', label: '설정' }
     ],
     ORDER: [
