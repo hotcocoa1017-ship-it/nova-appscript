@@ -1,12 +1,13 @@
 /**
  * TEMPORARY DIAGNOSTIC ONLY — never merge to main.
  * Benchmarks the existing HousemanRequestPhoto save path on Apps Script HEAD.
- * Creates one isolated future/test HISTORY row and Drive folder, then removes both.
+ * Creates one isolated HISTORY row and Drive folder, then removes both.
  */
 function diagnoseHousemanPhotoSaveSpeed20260905() {
   const startedAt = Date.now();
   const sheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
-  const users = Object.values((getUserIndex_() && getUserIndex_().byEmployeeNo) || {});
+  const index = getUserIndex_();
+  const users = Object.values((index && index.byEmployeeNo) || {});
   let user = null;
   for (const candidate of users) {
     const role = String(candidate && candidate.role || '').trim().toUpperCase();
@@ -79,20 +80,15 @@ function diagnoseHousemanPhotoSaveSpeed20260905() {
   }
 
   function cleanup_() {
-    // Trash only files created by this run.
     createdFileIds.forEach(fileId => {
       try { DriveApp.getFileById(fileId).setTrashed(true); } catch (ignore) {}
     });
-
-    // Remove the exact diagnostic order row by ID, not by stale row number.
     try {
       const found = findHousemanOrderRow_(sheet, orderId, insertedRowNumber);
       if (found && String(found.data['기록ID'] || '').trim() === orderId) {
         sheet.deleteRow(found.rowNumber);
       }
     } catch (ignore) {}
-
-    // The top-level diagnostic date folder is unique to this execution.
     try {
       const props = PropertiesService.getScriptProperties();
       const rootId = props.getProperty(NOVA_HOUSEMAN_REQUEST_PHOTO.ROOT_PROPERTY);
@@ -105,8 +101,9 @@ function diagnoseHousemanPhotoSaveSpeed20260905() {
   }
 
   try {
+    const setupStartedAt = Date.now();
     createDiagOrder_();
-
+    const setupMs = Date.now() - setupStartedAt;
     const base64_500k = makePayloadBytes_(500000);
     const perPhoto = [];
     const cumulative = {};
@@ -122,30 +119,35 @@ function diagnoseHousemanPhotoSaveSpeed20260905() {
         base64: base64_500k
       });
       const wallMs = Date.now() - callStartedAt;
-      if (!result || result.ok !== true) {
-        throw new Error(result && result.message ? result.message : `사진 ${index + 1} 저장 실패`);
-      }
-      if (result.photo && result.photo.fileId) createdFileIds.push(String(result.photo.fileId));
-      perPhoto.push({
+      if (result && result.photo && result.photo.fileId) createdFileIds.push(String(result.photo.fileId));
+      const item = {
         index: index + 1,
+        ok: Boolean(result && result.ok === true),
         bytes: 500000,
-        apiElapsedMs: Number(result.performance && result.performance.elapsedMs || 0),
-        wallMs
-      });
-      if ([1, 3, 5].includes(index + 1)) {
-        cumulative[String(index + 1)] = Date.now() - sequenceStartedAt;
-      }
+        apiElapsedMs: Number(result && result.performance && result.performance.elapsedMs || wallMs),
+        wallMs,
+        code: String(result && result.code || ''),
+        message: String(result && result.message || '')
+      };
+      perPhoto.push(item);
+      cumulative[String(index + 1)] = Date.now() - sequenceStartedAt;
+      if (!item.ok) break;
     }
 
-    // Larger single image size sensitivity, on a separate temporary order row is avoided:
-    // the 5-photo cap is already reached, so only report 500 KB/photo sequence here.
+    const successRows = perPhoto.filter(item => item.ok);
     return {
       ok: true,
+      benchmarkComplete: successRows.length === 5,
+      successfulPhotos: successRows.length,
+      attemptedPhotos: perPhoto.length,
       role,
       payloadBytesPerPhoto: 500000,
+      setupMs,
       perPhoto,
       cumulativeMs: cumulative,
-      averageApiMs: Math.round(perPhoto.reduce((sum, item) => sum + item.apiElapsedMs, 0) / perPhoto.length),
+      averageSuccessfulApiMs: successRows.length
+        ? Math.round(successRows.reduce((sum, item) => sum + item.apiElapsedMs, 0) / successRows.length)
+        : 0,
       totalBenchmarkMs: Date.now() - startedAt
     };
   } finally {
