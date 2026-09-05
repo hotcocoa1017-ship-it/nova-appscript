@@ -1,0 +1,302 @@
+<style>
+  .nova-archive-admin { display: grid; gap: 14px; }
+  .nova-archive-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+  .nova-archive-head h1 { margin:0 0 4px; font-size:24px; }
+  .nova-archive-head p { margin:0; color:#6b7280; font-size:13px; }
+  .nova-archive-status-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+  .nova-archive-status-card { padding:14px; border:1px solid #e5e7eb; border-radius:12px; background:#fff; min-width:0; }
+  .nova-archive-status-card span { display:block; color:#6b7280; font-size:12px; margin-bottom:5px; }
+  .nova-archive-status-card strong { display:block; color:#111827; font-size:20px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .nova-archive-status-card.good strong { color:#047857; }
+  .nova-archive-status-card.bad strong { color:#b91c1c; }
+  .nova-archive-panel { border:1px solid #e5e7eb; border-radius:12px; background:#fff; padding:14px; }
+  .nova-archive-filter-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; align-items:end; }
+  .nova-archive-filter-grid label { display:grid; gap:5px; min-width:0; }
+  .nova-archive-filter-grid label span { font-size:12px; font-weight:800; color:#374151; }
+  .nova-archive-filter-grid input,
+  .nova-archive-filter-grid select { width:100%; min-width:0; height:40px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:8px; background:#fff; padding:0 10px; color:#111827; }
+  .nova-archive-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:10px; }
+  .nova-archive-actions button,
+  .nova-archive-row-button { min-height:38px; border:1px solid #d1d5db; border-radius:8px; background:#fff; padding:0 13px; font-weight:800; cursor:pointer; }
+  .nova-archive-actions .primary { border-color:#111827; background:#111827; color:#fff; }
+  .nova-archive-actions button:disabled,
+  .nova-archive-row-button:disabled { opacity:.55; cursor:default; }
+  .nova-archive-result-meta { display:flex; justify-content:space-between; gap:10px; align-items:center; margin:0 0 10px; color:#6b7280; font-size:12px; }
+  .nova-archive-table-wrap { overflow:auto; border:1px solid #e5e7eb; border-radius:10px; }
+  .nova-archive-table { width:100%; border-collapse:collapse; min-width:850px; font-size:12px; }
+  .nova-archive-table th,
+  .nova-archive-table td { padding:10px 9px; border-bottom:1px solid #f0f1f3; text-align:left; white-space:nowrap; vertical-align:middle; }
+  .nova-archive-table th { background:#f8fafc; color:#4b5563; font-weight:800; position:sticky; top:0; }
+  .nova-archive-table tr:last-child td { border-bottom:0; }
+  .nova-archive-empty { padding:34px 16px; text-align:center; color:#6b7280; }
+  .nova-archive-loading { padding:24px 16px; text-align:center; color:#6b7280; }
+  .nova-archive-status-line { display:flex; align-items:center; gap:8px; min-height:38px; }
+  .nova-archive-dot { width:9px; height:9px; border-radius:50%; background:#9ca3af; flex:0 0 auto; }
+  .nova-archive-dot.good { background:#10b981; }
+  .nova-archive-dot.bad { background:#ef4444; }
+  .nova-archive-restore-modal { width:min(760px,calc(100vw - 24px)); }
+  .nova-archive-record-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-bottom:12px; }
+  .nova-archive-record-summary > div { border:1px solid #e5e7eb; border-radius:8px; padding:9px; min-width:0; }
+  .nova-archive-record-summary span { display:block; font-size:11px; color:#6b7280; margin-bottom:3px; }
+  .nova-archive-record-summary strong { display:block; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .nova-archive-json { margin:0; max-height:52vh; overflow:auto; padding:12px; border-radius:8px; background:#0f172a; color:#e5e7eb; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+  @media (max-width:900px) {
+    .nova-archive-status-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .nova-archive-filter-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  }
+  @media (max-width:600px) {
+    .nova-archive-head { display:block; }
+    .nova-archive-head h1 { font-size:20px; }
+    .nova-archive-status-grid,
+    .nova-archive-filter-grid { grid-template-columns:1fr; }
+    .nova-archive-actions { display:grid; grid-template-columns:1fr 1fr; }
+    .nova-archive-actions button { width:100%; min-height:44px; }
+    .nova-archive-record-summary { grid-template-columns:1fr; }
+  }
+</style>
+<script>
+(() => {
+  'use strict';
+  const ARCHIVE_MENU_LABEL_ = 'Archive 이력';
+  const archiveUi_ = { status: null, rows: [], busy: false, boundButtons: new WeakSet() };
+
+  function archiveEscape_(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+  }
+
+  function archiveCallServer_(method, ...args) {
+    return new Promise((resolve, reject) => {
+      const runner = google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(error => reject(new Error(error?.message || String(error))));
+      runner[method](...args);
+    });
+  }
+
+  function archiveToken_() {
+    return String(localStorage.getItem('novaToken') || '').trim();
+  }
+
+  function archiveContent_() {
+    return document.getElementById('content');
+  }
+
+  function archiveIsMenuButton_(button) {
+    return button && String(button.textContent || '').trim() === ARCHIVE_MENU_LABEL_;
+  }
+
+  function bindArchiveMenu_() {
+    const menu = document.getElementById('menu');
+    if (!menu) return;
+    Array.from(menu.querySelectorAll('button')).forEach(button => {
+      if (!archiveIsMenuButton_(button) || archiveUi_.boundButtons.has(button)) return;
+      archiveUi_.boundButtons.add(button);
+      button.addEventListener('click', () => window.setTimeout(renderArchiveAdmin_, 0));
+      if (button.classList.contains('active')) window.setTimeout(renderArchiveAdmin_, 0);
+    });
+  }
+
+  function renderArchiveAdmin_() {
+    const content = archiveContent_();
+    const activeButton = Array.from(document.querySelectorAll('#menu button.active')).find(archiveIsMenuButton_);
+    if (!content || !activeButton) return;
+    content.innerHTML = `
+      <section class="nova-archive-admin" aria-label="Archive 이력 조회">
+        <div class="nova-archive-head">
+          <div><h1>Archive 이력 조회</h1><p>완료된 WORK_HISTORY를 인덱스로 검색하고 Storage 원본 1건을 검증 조회합니다.</p></div>
+          <div id="novaArchiveStatusLine" class="nova-archive-status-line"><span class="nova-archive-dot"></span><span>무결성 확인 중</span></div>
+        </div>
+        <div id="novaArchiveStatusGrid" class="nova-archive-status-grid">
+          <div class="nova-archive-status-card"><span>전체 상태</span><strong>-</strong></div>
+          <div class="nova-archive-status-card"><span>VERIFIED 배치</span><strong>-</strong></div>
+          <div class="nova-archive-status-card"><span>Storage 객체</span><strong>-</strong></div>
+          <div class="nova-archive-status-card"><span>WORK_HISTORY 인덱스</span><strong>-</strong></div>
+        </div>
+        <section class="nova-archive-panel">
+          <div class="nova-archive-filter-grid">
+            <label><span>영업일</span><input id="novaArchiveBusinessDate" type="date"></label>
+            <label><span>사업장</span><select id="novaArchiveSite"><option value="">전체</option><option value="쏘라노">쏘라노</option><option value="별관">별관</option></select></label>
+            <label><span>객실</span><input id="novaArchiveRoomNo" inputmode="numeric" placeholder="예: 1202"></label>
+            <label><span>사번</span><input id="novaArchiveEmployeeNo" inputmode="numeric" placeholder="사번"></label>
+            <label><span>작업유형</span><input id="novaArchiveRecordType" placeholder="예: ASSIGN_ROOMMAID"></label>
+          </div>
+          <div class="nova-archive-actions">
+            <button id="novaArchiveReset" type="button">초기화</button>
+            <button id="novaArchiveSearch" class="primary" type="button">이력 조회</button>
+          </div>
+        </section>
+        <section class="nova-archive-panel">
+          <div class="nova-archive-result-meta"><strong>검색 결과</strong><span id="novaArchiveResultCount">조회 전</span></div>
+          <div id="novaArchiveResults"><div class="nova-archive-empty">검색 조건을 입력한 뒤 이력 조회를 눌러주세요.</div></div>
+        </section>
+      </section>`;
+
+    document.getElementById('novaArchiveSearch')?.addEventListener('click', searchArchiveAdmin_);
+    document.getElementById('novaArchiveReset')?.addEventListener('click', resetArchiveAdminFilters_);
+    ['novaArchiveRoomNo','novaArchiveEmployeeNo','novaArchiveRecordType'].forEach(id => {
+      document.getElementById(id)?.addEventListener('keydown', event => {
+        if (event.key === 'Enter') searchArchiveAdmin_();
+      });
+    });
+    void loadArchiveAdminStatus_();
+  }
+
+  async function loadArchiveAdminStatus_() {
+    const token = archiveToken_();
+    if (!token) return renderArchiveStatusError_('로그인 정보가 없습니다.');
+    try {
+      const result = await archiveCallServer_('getNovaArchiveAdminStatus', token);
+      if (!result?.ok) throw new Error(result?.message || '무결성 상태를 확인할 수 없습니다.');
+      archiveUi_.status = result;
+      renderArchiveStatus_(result);
+    } catch (error) {
+      renderArchiveStatusError_(error?.message || '무결성 상태 조회 오류');
+    }
+  }
+
+  function renderArchiveStatus_(result) {
+    const current = result?.current || {};
+    const healthy = result?.healthy === true && current?.ok === true;
+    const line = document.getElementById('novaArchiveStatusLine');
+    if (line) line.innerHTML = `<span class="nova-archive-dot ${healthy ? 'good' : 'bad'}"></span><span>${healthy ? '정상 · 지속 검증 중' : '확인 필요'}</span>`;
+    const grid = document.getElementById('novaArchiveStatusGrid');
+    if (!grid) return;
+    grid.innerHTML = `
+      <div class="nova-archive-status-card ${healthy ? 'good' : 'bad'}"><span>전체 상태</span><strong>${healthy ? '정상' : '확인 필요'}</strong></div>
+      <div class="nova-archive-status-card"><span>VERIFIED 배치</span><strong>${archiveEscape_(current.verifiedBatchesTotal ?? '-')}</strong></div>
+      <div class="nova-archive-status-card"><span>Storage 객체</span><strong>${archiveEscape_(current.storageObjects ?? '-')}</strong></div>
+      <div class="nova-archive-status-card"><span>WORK_HISTORY 인덱스</span><strong>${archiveEscape_(current.workHistoryIndexRowsPast ?? '-')}</strong></div>`;
+  }
+
+  function renderArchiveStatusError_(message) {
+    const line = document.getElementById('novaArchiveStatusLine');
+    if (line) line.innerHTML = `<span class="nova-archive-dot bad"></span><span>${archiveEscape_(message)}</span>`;
+  }
+
+  function archiveFilters_() {
+    return {
+      sourceType: 'WORK_HISTORY',
+      businessDate: String(document.getElementById('novaArchiveBusinessDate')?.value || '').trim(),
+      site: String(document.getElementById('novaArchiveSite')?.value || '').trim(),
+      roomNo: String(document.getElementById('novaArchiveRoomNo')?.value || '').trim(),
+      employeeNo: String(document.getElementById('novaArchiveEmployeeNo')?.value || '').trim(),
+      recordType: String(document.getElementById('novaArchiveRecordType')?.value || '').trim(),
+      limit: 100
+    };
+  }
+
+  function resetArchiveAdminFilters_() {
+    ['novaArchiveBusinessDate','novaArchiveRoomNo','novaArchiveEmployeeNo','novaArchiveRecordType'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    const site = document.getElementById('novaArchiveSite'); if (site) site.value = '';
+    archiveUi_.rows = [];
+    const count = document.getElementById('novaArchiveResultCount'); if (count) count.textContent = '조회 전';
+    const results = document.getElementById('novaArchiveResults'); if (results) results.innerHTML = '<div class="nova-archive-empty">검색 조건을 입력한 뒤 이력 조회를 눌러주세요.</div>';
+  }
+
+  async function searchArchiveAdmin_() {
+    if (archiveUi_.busy) return;
+    const token = archiveToken_();
+    if (!token) return archiveResultError_('로그인 정보가 없습니다.');
+    const button = document.getElementById('novaArchiveSearch');
+    archiveUi_.busy = true;
+    if (button) { button.disabled = true; button.textContent = '조회 중'; }
+    const results = document.getElementById('novaArchiveResults');
+    if (results) results.innerHTML = '<div class="nova-archive-loading">Archive 인덱스를 조회하고 있습니다.</div>';
+    try {
+      const result = await archiveCallServer_('queryNovaArchiveAdmin', token, archiveFilters_());
+      if (!result?.ok) throw new Error(result?.message || 'Archive 이력을 조회할 수 없습니다.');
+      archiveUi_.rows = Array.isArray(result.rows) ? result.rows : [];
+      renderArchiveRows_(archiveUi_.rows);
+    } catch (error) {
+      archiveResultError_(error?.message || 'Archive 이력 조회 오류');
+    } finally {
+      archiveUi_.busy = false;
+      if (button) { button.disabled = false; button.textContent = '이력 조회'; }
+    }
+  }
+
+  function archiveResultError_(message) {
+    const count = document.getElementById('novaArchiveResultCount'); if (count) count.textContent = '오류';
+    const results = document.getElementById('novaArchiveResults');
+    if (results) results.innerHTML = `<div class="nova-archive-empty">${archiveEscape_(message)}</div>`;
+  }
+
+  function renderArchiveRows_(rows) {
+    const count = document.getElementById('novaArchiveResultCount');
+    if (count) count.textContent = `${rows.length}건`;
+    const results = document.getElementById('novaArchiveResults');
+    if (!results) return;
+    if (!rows.length) {
+      results.innerHTML = '<div class="nova-archive-empty">조건에 맞는 Archive 이력이 없습니다.</div>';
+      return;
+    }
+    results.innerHTML = `<div class="nova-archive-table-wrap"><table class="nova-archive-table"><thead><tr><th>영업일</th><th>사업장</th><th>객실</th><th>작업유형</th><th>사번</th><th>상태</th><th>원본</th></tr></thead><tbody>${rows.map((row,index) => `
+      <tr><td>${archiveEscape_(row.business_date || '')}</td><td>${archiveEscape_(row.site || '')}</td><td><strong>${archiveEscape_(row.room_no || '-')}</strong></td><td>${archiveEscape_(row.record_type || '-')}</td><td>${archiveEscape_(row.employee_no || '-')}</td><td>${archiveEscape_(row.status || '-')}</td><td><button class="nova-archive-row-button" type="button" data-nova-archive-row="${index}">원본 확인</button></td></tr>`).join('')}</tbody></table></div>`;
+    results.querySelectorAll('[data-nova-archive-row]').forEach(button => {
+      button.addEventListener('click', () => openArchiveRestore_(Number(button.dataset.novaArchiveRow || 0), button));
+    });
+  }
+
+  async function openArchiveRestore_(index, button) {
+    const row = archiveUi_.rows[index];
+    const key = String(row?.archive_key || '').trim();
+    if (!key || !archiveToken_()) return;
+    button.disabled = true;
+    const old = button.textContent;
+    button.textContent = '확인 중';
+    try {
+      const result = await archiveCallServer_('restoreNovaArchiveAdminRecord', archiveToken_(), key);
+      if (!result?.ok || result?.restored !== true) throw new Error(result?.message || 'Storage 원본을 확인할 수 없습니다.');
+      showArchiveRestoreModal_(result);
+    } catch (error) {
+      window.alert(error?.message || 'Storage 원본 조회 오류');
+    } finally {
+      button.disabled = false;
+      button.textContent = old;
+    }
+  }
+
+  function showArchiveRestoreModal_(result) {
+    const root = document.getElementById('modalRoot');
+    if (!root) return;
+    const pointer = result?.pointer || {};
+    const record = result?.record || {};
+    root.innerHTML = `
+      <div class="modal-card nova-archive-restore-modal">
+        <div class="modal-header"><div><small>Storage 원본 검증 조회</small><h2>${archiveEscape_(pointer.roomNo || '-')}호 이력</h2></div><button id="novaArchiveModalClose" class="modal-close" type="button">×</button></div>
+        <div class="modal-body">
+          <div class="nova-archive-record-summary">
+            <div><span>영업일</span><strong>${archiveEscape_(pointer.businessDate || '-')}</strong></div>
+            <div><span>사업장</span><strong>${archiveEscape_(pointer.site || '-')}</strong></div>
+            <div><span>작업유형</span><strong>${archiveEscape_(pointer.recordType || '-')}</strong></div>
+            <div><span>처리 사번</span><strong>${archiveEscape_(pointer.employeeNo || '-')}</strong></div>
+            <div><span>원본 ID</span><strong>${archiveEscape_(pointer.sourceRecordId || '-')}</strong></div>
+            <div><span>검증</span><strong>Storage 원본 일치</strong></div>
+          </div>
+          <pre class="nova-archive-json">${archiveEscape_(JSON.stringify(record, null, 2))}</pre>
+        </div>
+      </div>`;
+    root.classList.remove('hidden');
+    root.setAttribute('aria-hidden','false');
+    const close = () => { root.classList.add('hidden'); root.setAttribute('aria-hidden','true'); root.innerHTML=''; };
+    document.getElementById('novaArchiveModalClose')?.addEventListener('click', close);
+    root.addEventListener('click', event => { if (event.target === root) close(); }, { once:true });
+  }
+
+  const observer = new MutationObserver(bindArchiveMenu_);
+  function startArchiveUi_() {
+    const menu = document.getElementById('menu');
+    if (menu) observer.observe(menu, { childList:true, subtree:false, attributes:true, attributeFilter:['class'] });
+    bindArchiveMenu_();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startArchiveUi_, { once:true });
+  else startArchiveUi_();
+})();
+</script>
