@@ -44,6 +44,9 @@ qm_checklist = read('16_QmChecklist.js')
 mobile = read('10_Mobile.js')
 notification = read('HousemanUiPerformancePatch.html')
 workflow = read('.github/workflows/deploy-apps-script.yml')
+archive_server = read('ArchiveAdmin.js')
+archive_client = read('ArchiveAdminClient.html')
+archive_realtime = read('ArchiveAdminRealtimeClient.html')
 
 # 1) Realtime routing / legacy protection
 require(client, 'API 설정과 보조 Realtime 연결을 분리해 고속 API 유지', 'Realtime init isolation')
@@ -174,7 +177,26 @@ require(client, 'QM 점검대상 정비자 이름 보존 v1', 'QM roommaid displ
 require(qm_browse, '업무이력 전체 재조회 없이 현재 업무일자 객실상태만으로 판별', 'QM browse avoids full history scan')
 forbid(qm_browse, 'readMonthlyHistoryRows_', 'QM browse must not scan monthly history')
 
-# 7) Deployment repeatability / source-of-truth protection
+# 7) Archive ADMIN / Realtime security and freshness invariants
+require(index, "include_('ArchiveAdminClient')", 'Archive admin client included')
+require(index, "include_('ArchiveAdminRealtimeClient')", 'Archive realtime client included')
+require(archive_server, 'verifyNovaToken(token)', 'Archive server re-verifies NOVA token')
+require(archive_server, "role !== 'ADMIN'", 'Archive server ADMIN-only guard')
+require(archive_server, "getProperty('NOVA_TOKEN_SECRET')", 'Archive server secret stays in Script Properties')
+require(archive_server, 'computeHmacSha256Signature', 'Archive server derives dedicated admin key')
+require(archive_realtime, "const ARCHIVE_RT_TOPIC_ = 'nova:archive:status'", 'Archive private realtime topic fixed')
+require(archive_realtime, '.channel(ARCHIVE_RT_TOPIC_, { config: { private: true } })', 'Archive realtime channel is private')
+require(archive_realtime, 'await archiveRt_.client.realtime.setAuth(auth.token)', 'Archive realtime auth applied before subscribe')
+require(archive_realtime, "['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED']", 'Archive realtime failure states handled')
+require(archive_realtime, 'archiveRtStartFallback_', 'Archive realtime server fallback present')
+require(archive_realtime, 'if (!archiveRtPageVisible_() || !archiveRtAdminMenuPresent_() || !archiveRtToken_()) return;', 'Archive realtime connects only on active ADMIN page')
+require(archive_realtime, 'if (archiveRt_.pageActive)', 'Archive realtime disconnects after page exit')
+forbid(archive_realtime, 'ARCHIVE_RT_CACHE_KEY_', 'Archive realtime stale local cache disabled')
+for secret_name in ['NOVA_TOKEN_SECRET', 'X-NOVA-Archive-Admin-Key', 'SUPABASE_SERVICE_ROLE_KEY', 'service_role']:
+    forbid(archive_client, secret_name, f'Archive browser client hides {secret_name}')
+    forbid(archive_realtime, secret_name, f'Archive realtime browser hides {secret_name}')
+
+# 8) Deployment repeatability / source-of-truth protection
 require(workflow, 'python3 scripts/patch_realtime_subscription_resilience.py', 'Deploy applies Realtime subscription resilience patch')
 require(workflow, 'python3 scripts/patch_roommaid_notification_bell.py', 'Deploy applies roommaid notification patch')
 require(workflow, 'python3 scripts/validate_nova_release.py', 'Deploy runs release regression gate')
