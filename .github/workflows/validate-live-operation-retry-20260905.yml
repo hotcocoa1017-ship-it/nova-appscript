@@ -1,0 +1,89 @@
+name: Validate Live Operation Retry 20260905
+
+on:
+  push:
+    branches: [fix/live-operation-retry-20260905]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply existing production patch stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_sync_status_autohide.py
+          python3 scripts/patch_telegram_self_connect.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          python3 scripts/patch_roommaid_performance_attribution.py
+          python3 scripts/patch_roommaid_close_read_acceleration.py
+          python3 scripts/fix_patch_site_scope_v2.py
+          python3 scripts/patch_site_scope_indicator_close_v2.py
+          python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
+          python3 scripts/patch_houseman_realtime_push.py
+          python3 scripts/patch_concurrent_write_resilience_v1.py
+          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
+          python3 scripts/patch_mobile_view_state_persistence_20260904.py
+
+      - name: Apply live operation retry resilience
+        run: python3 scripts/patch_live_operation_retry_resilience_20260905.py
+
+      - name: Validate requested retry policy
+        run: python3 scripts/validate_live_operation_retry_resilience_20260905.py
+
+      - name: Validate existing NOVA release regression
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate Client JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('Client.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if not scripts:
+              raise SystemExit('No Client script block found')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+
+      - name: Validate new patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum Client.html | awk '{print $1}')"
+          python3 scripts/patch_live_operation_retry_resilience_20260905.py
+          after="$(sha256sum Client.html | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Persist validated Client source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Client.html; then
+            echo "Client source already persisted."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Client.html
+          git commit -m "Persist validated live operation retry resilience"
+          git push origin HEAD:fix/live-operation-retry-20260905
