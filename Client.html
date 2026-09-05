@@ -7732,6 +7732,30 @@
       </div>
     </div>`);
     bindQmInspectionModalEvents_();
+    if (active.startPending || (active.dbFirst && !active.sheetMirrorReady)) {
+      novaQmSetStartPendingControls_(true);
+      const status = $('qmDraftSaveStatus');
+      if (active.startPending) {
+        if (status) status.textContent = '점검 시작 처리 중 · 체크는 바로 가능합니다.';
+      } else if (active.dbFirst) {
+        if (status) status.textContent = active.localDirty
+          ? '점검 시작 완료 · 입력 보관 중 · 저장 준비 중…'
+          : '점검 시작 완료 · 저장 준비 중…';
+        void novaQmEnsureDbFirstMirror_(active).then(() => {
+          if (state.qmChecklist.activeInspection !== active) return;
+          novaQmSetStartPendingControls_(false);
+          const readyStatus = $('qmDraftSaveStatus');
+          if (readyStatus) readyStatus.textContent = active.localDirty ? '저장 준비 완료 · 변경사항 저장 대기…' : '저장 준비 완료';
+          if (active.localDirty) scheduleQmInspectionAutosave_();
+        }).catch(error => {
+          console.error('[NOVA QM] DB-first 기존 이력 미러 실패:', error);
+          if (state.qmChecklist.activeInspection !== active) return;
+          const failedStatus = $('qmDraftSaveStatus');
+          if (failedStatus) failedStatus.textContent = `저장 준비 오류 · ${error?.message || '재시도 필요'}`;
+          showToast('점검 시작은 완료됐지만 저장 준비를 확인해야 합니다. 체크 입력은 보관됩니다.');
+        });
+      }
+    }
   }
 
   function renderQmInspectionItem_(item, answer, index) { // (장소별 체크리스트 한 항목)
@@ -7808,6 +7832,10 @@
     if (active) active.localDirty = true;
     collectQmInspectionForm_();
     const status = $('qmDraftSaveStatus');
+    if (active?.startPending) {
+      if (status) status.textContent = '점검 시작 처리 중 · 입력 내용 임시 보관';
+      return;
+    }
     if (status) status.textContent = '변경사항 저장 대기…';
     if (state.qmChecklist.autosaveTimer) clearTimeout(state.qmChecklist.autosaveTimer);
     state.qmChecklist.autosaveTimer = setTimeout(() => saveQmInspectionDraftNow_(false), 800);
@@ -8092,6 +8120,7 @@
       // 무거운 Sheet 체크리스트/품질이력 저장은 사용자 응답 경로 밖에서 이어서 처리한다.
       const persistDetail = async () => {
         await ensureQmInspectionDraftReady_(active);
+        if (active.dbFirst) await novaQmEnsureDbFirstMirror_(active);
         return submitQmInspectionDetailWithBusyRetry_({ // LIVE_OPERATION_RETRY_RESILIENCE_V1
           businessDate: state.mobile.businessDate,
           site: state.mobile.site,
@@ -8764,6 +8793,192 @@
     </article>`;
   }
 
+  // QM_START_DB_FIRST_DIRECT_V1
+  // 실제 Client IIFE 내부에서 실행되는 QM 추가조회 시작 경로입니다.
+  // DB 상태확정은 Supabase RPC로 직접 처리하고 Sheet 이력 미러는 사용자 입력과 분리합니다.
+  function novaQmSetStartPendingControls_(locked) {
+    const modalRoot = $('modalRoot');
+    if (!modalRoot) return;
+    modalRoot.querySelectorAll(
+      '.qm-checklist-modal [data-qm-photo-input], ' +
+      '.qm-checklist-modal #qmInspectionSaveOnly, ' +
+      '.qm-checklist-modal #qmChecklistSubmit, ' +
+      '.qm-checklist-modal .qm-add-defect, ' +
+      '.qm-checklist-modal [data-qm-photo-delete], ' +
+      '.qm-checklist-modal [data-qm-remove-defect]'
+    ).forEach(control => {
+      control.disabled = Boolean(locked);
+      if (locked) control.setAttribute('aria-disabled', 'true');
+      else control.removeAttribute('aria-disabled');
+    });
+  }
+
+  function novaQmMergePendingDraft_(serverDraft, localDraft) {
+    const server = serverDraft || {};
+    const local = localDraft || { answers: [], defects: [] };
+    return Object.assign({}, server, local, {
+      draftId: String(server.draftId || local.draftId || ''),
+      rowNumber: Number(server.rowNumber || local.rowNumber || 0),
+      businessDate: String(server.businessDate || local.businessDate || ''),
+      site: String(server.site || local.site || ''),
+      roomNo: String(server.roomNo || local.roomNo || ''),
+      checklistRevision: String(server.checklistRevision || local.checklistRevision || ''),
+      startedAt: String(server.startedAt || local.startedAt || ''),
+      savedAt: String(server.savedAt || local.savedAt || ''),
+      dbVersion: Number(server.dbVersion || local.dbVersion || 0)
+    });
+  }
+
+  async function novaQmStartBrowseDbFirst_(room, view) {
+    const normalizedView = String(view || '').trim().toUpperCase();
+    if (!['CLEANED', 'VACANT'].includes(normalizedView)) return null;
+    if (!novaRealtimeIsEnabled_() || novaRealtime_.qmDraftDbFirstEnabled !== true) return null;
+
+    let auth;
+    try {
+      auth = await novaQmDraftAuthBundle_();
+    } catch (error) {
+      // 인증 토큰 조회까지만 실패한 경우 DB 변경은 전혀 없으므로 기존 경로 fallback이 안전합니다.
+      console.warn('[NOVA QM] DB-first 시작 인증 준비 실패 · 기존 경로 사용:', error?.message || error);
+      return null;
+    }
+    if (!auth?.token || !auth?.supabaseUrl || !auth?.publishableKey) return null;
+
+    const requestId = novaRealtimeRequestId_('QM_BEGIN_DB_FIRST', room?.roomNo || '');
+    const body = {
+      p_business_date: String(state.mobile.businessDate || state.bootstrap.app.businessDate || ''),
+      p_site: String(room?.site || state.mobile.site || ''),
+      p_room_no: String(room?.roomNo || ''),
+      p_view: normalizedView,
+      p_request_id: requestId
+    };
+    const startedAt = performance.now();
+
+    const send = async attempt => {
+      const endpoint = `${String(auth.supabaseUrl || '').replace(/\/+$/, '')}/rest/v1/rpc/nova_qm_begin_inspection_v1`;
+      let response;
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': String(auth.publishableKey || ''),
+            'Authorization': `Bearer ${String(auth.token || '')}`
+          },
+          body: JSON.stringify(body)
+        });
+      } catch (networkError) {
+        // 요청 전송 뒤 결과만 유실됐을 수 있으므로 같은 requestId로만 재확인합니다.
+        // 이 지점에서는 legacy 시작을 병행하지 않습니다.
+        if (attempt < 2) {
+          await novaRealtimeSleep_([140, 360, 800][attempt] || 800);
+          return send(attempt + 1);
+        }
+        const error = new Error('QM 점검 시작 결과를 확인하지 못했습니다. 현재 객실상태를 다시 확인해 주세요.');
+        error.code = 'QM_DB_RESULT_UNKNOWN';
+        throw error;
+      }
+
+      let data = {};
+      try { data = await response.json(); } catch (ignore) {}
+      if (response.ok && data?.ok) return data;
+
+      const code = String(data?.code || '').trim().toUpperCase();
+      if (response.status === 401 && attempt < 2) {
+        novaRealtime_.qmDraftAuthBundle = null;
+        try { auth = await novaQmDraftAuthBundle_(); }
+        catch (authError) {
+          const error = new Error(authError?.message || 'QM DB 인증을 갱신하지 못했습니다.');
+          error.code = 'QM_DB_AUTH_REFRESH_FAILED';
+          throw error;
+        }
+        await novaRealtimeSleep_(160);
+        return send(attempt + 1);
+      }
+      if ((response.status === 429 || response.status >= 500) && attempt < 2) {
+        await novaRealtimeSleep_([140, 360, 800][attempt] || 800);
+        return send(attempt + 1);
+      }
+      if (response.status === 404 || ['PGRST202', 'PGRST205'].includes(code)) {
+        return { ok: false, legacyFallback: true, missingRpc: true };
+      }
+
+      const error = new Error(data?.message || data?.details || data?.hint || `QM DB 처리 오류 (${response.status})`);
+      error.status = response.status;
+      error.code = data?.code || '';
+      throw error;
+    };
+
+    const result = await send(0);
+    if (result?.legacyFallback) return result;
+    if (result?.alreadyChecking === true && !result?.draft?.draftId) {
+      // DB 전환 전부터 점검중인 기존 세션은 기존 Sheet 초안을 그대로 이어갑니다.
+      return { ok: false, legacyFallback: true, existingSession: true };
+    }
+    if (!result?.draft?.draftId) throw new Error('QM 점검 초안을 준비하지 못했습니다.');
+
+    return {
+      ok: true,
+      realtime: true,
+      dbFirst: true,
+      version: Number(result.version || result.room?.version || 0),
+      room: Object.assign({}, result.room || {}, {
+        rowNumber: Number(room?.rowNumber || 0),
+        businessDate: String(state.mobile.businessDate || result.room?.businessDate || ''),
+        site: String(result.room?.site || room?.site || state.mobile.site || ''),
+        roomNo: String(result.room?.roomNo || room?.roomNo || ''),
+        cleaningStatus: 'QM_CHECKING'
+      }),
+      draft: Object.assign({ answers: [], defects: [] }, result.draft || {}),
+      checklist: null,
+      requestId,
+      alreadyChecking: Boolean(result.alreadyChecking),
+      timing: { qmDbFirstClientMs: Math.round(performance.now() - startedAt) }
+    };
+  }
+
+  function novaQmEnsureDbFirstMirror_(active) {
+    if (!active?.dbFirst || !active?.draft?.draftId) return Promise.resolve(null);
+    if (active.sheetMirrorReady) return Promise.resolve(active.sheetMirrorResult || null);
+    if (active.sheetMirrorPromise) return active.sheetMirrorPromise;
+
+    const task = (async () => {
+      const delays = [0, 350, 900, 2200];
+      let lastError = null;
+      for (const delay of delays) {
+        if (delay) await novaRealtimeSleep_(delay);
+        try {
+          const result = await callServer('ensureQmDbFirstDraftSheetMirror', state.token, {
+            businessDate: active.draft.businessDate || state.mobile.businessDate,
+            site: active.draft.site || state.mobile.site,
+            roomNo: active.roomNo,
+            rowNumber: Number(active.draft.rowNumber || 0),
+            draftId: active.draft.draftId,
+            draft: active.draft
+          });
+          if (result?.ok) {
+            active.sheetMirrorReady = true;
+            active.sheetMirrorResult = result;
+            active.sheetExpectedVersion = Number(result.room?.sheetVersion || active.sheetExpectedVersion || 0);
+            active.checklist = result.checklist || active.checklist;
+            if (result.draft?.rowNumber) active.draft.rowNumber = Number(result.draft.rowNumber || 0);
+            return result;
+          }
+          lastError = new Error(result?.message || 'QM 기존 이력 동기화 실패');
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError || new Error('QM 기존 이력 동기화를 완료하지 못했습니다.');
+    })();
+
+    const tracked = task.finally(() => {
+      if (active.sheetMirrorPromise === tracked) active.sheetMirrorPromise = null;
+    });
+    active.sheetMirrorPromise = tracked;
+    return tracked;
+  }
+
   async function startQmBrowseInspection_(roomNo, button) { // (QM 추가탭 체크리스트 즉시노출 v1)
     const view = qmMobileBrowseView_();
     const key = qmMobileBrowseKey_(view);
@@ -8789,8 +9004,8 @@
       button.textContent = '시작 중…';
     }
 
-    // 서버 왕복 전에 체크리스트 자체를 먼저 보여줍니다.
-    // 객실 확보가 확정되기 전에는 입력만 잠가 동시점검 안전성을 유지합니다.
+    // 서버 왕복 전에 체크리스트를 먼저 보여주고 결과선택·메모 입력은 즉시 허용합니다.
+    // 사진·저장·완료처럼 서버 확정이 필요한 작업만 시작확정/이력미러 완료 전까지 잠급니다.
     const previewActive = {
       roomNo: String(room.roomNo || ''),
       checklist,
@@ -8804,25 +9019,28 @@
     };
     state.qmChecklist.activeInspection = previewActive;
     openQmInspectionModal_();
-    const modalRoot = $('modalRoot');
-    if (modalRoot) {
-      modalRoot.querySelectorAll('.qm-checklist-modal .modal-body input, .qm-checklist-modal .modal-body textarea, .qm-checklist-modal .modal-body select, .qm-checklist-modal .modal-body button')
-        .forEach(control => { control.disabled = true; });
-    }
+    novaQmSetStartPendingControls_(true);
     const pendingStatus = $('qmDraftSaveStatus');
-    if (pendingStatus) pendingStatus.textContent = '점검 시작 확인 중…';
+    if (pendingStatus) pendingStatus.textContent = '점검 시작 처리 중 · 체크는 바로 가능합니다.';
 
     state.mobile.actionInFlight = Number(state.mobile.actionInFlight || 0) + 1;
     try {
-      const result = await callServer('startQmMobileBrowseInspection', state.token, {
+      const startPayload = {
         businessDate: state.mobile.businessDate || state.bootstrap.app.businessDate,
         site: room.site || state.mobile.site,
         roomNo: room.roomNo,
         rowNumber: Number(room.rowNumber || 0),
         view
-      });
+      };
+      const directResult = await novaQmStartBrowseDbFirst_(room, view);
+      const result = directResult?.legacyFallback
+        ? await callServer('startQmMobileBrowseInspection', state.token, startPayload)
+        : (directResult || await callServer('startQmMobileBrowseInspection', state.token, startPayload));
       if (!result?.ok) throw new Error(result?.message || 'QM 점검을 시작하지 못했습니다.');
 
+      // 확인 중 입력한 결과/메모를 서버 응답으로 덮어쓰지 않습니다.
+      const pendingDraft = collectQmInspectionForm_() || previewActive.draft;
+      const hadLocalInput = Boolean(previewActive.localDirty);
       const confirmedChecklist = result.checklist || checklist;
       if (!(confirmedChecklist.items || []).length && !(confirmedChecklist.groups || []).length) {
         throw new Error('QM 체크리스트를 불러오지 못했습니다.');
@@ -8846,11 +9064,17 @@
 
       Object.assign(previewActive, {
         checklist: confirmedChecklist,
-        draft: result.draft || previewActive.draft,
+        draft: hadLocalInput
+          ? novaQmMergePendingDraft_(result.draft || {}, pendingDraft)
+          : (result.draft || pendingDraft),
         roomVersion: Number(confirmed.version || result.version || 0),
         sheetExpectedVersion: 0,
-        localDirty: false,
+        localDirty: hadLocalInput,
         realtime: true,
+        dbFirst: result.dbFirst === true,
+        sheetMirrorReady: result.dbFirst === true ? false : true,
+        sheetMirrorResult: null,
+        sheetMirrorPromise: null,
         startPending: false
       });
 
@@ -8867,12 +9091,13 @@
       renderMobileFilters();
       renderMobileList();
 
-      // 사용자가 기다리는 동안 모달을 닫지 않았다면 확정된 체크리스트로 즉시 활성화합니다.
+      // 모달이 열려 있으면 입력값을 보존한 확정상태로 다시 렌더합니다.
       const modalStillOpen = Boolean($('modalRoot') && !$('modalRoot').classList.contains('hidden') && $('qmChecklistInspectionItems'));
       if (state.qmChecklist.activeInspection === previewActive && modalStillOpen) {
         openQmInspectionModal_();
       }
-      setSyncStatus(`${confirmed.roomNo}호 QM 점검 시작`);
+      const dbMs = Number(result?.timing?.qmDbFirstClientMs || 0);
+      setSyncStatus(`${confirmed.roomNo}호 QM 점검 시작${dbMs ? ` · DB ${dbMs}ms` : ''}`);
 
       if (!previewActive.draft?.draftId) {
         void beginQmInspectionDraftInit_(previewActive).catch(error => {
