@@ -1,0 +1,39 @@
+name: Apply Photo Metadata Patch 20260905
+
+on:
+  push:
+    branches: [perf/photo-batch-nonblocking-20260905]
+    paths:
+      - .github/workflows/apply-photo-metadata-patch-20260905.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/photo-batch-nonblocking-20260905
+          fetch-depth: 0
+      - name: Apply targeted compatibility patch
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_houseman_photo_metadata_column_20260905.py
+          grep -q 'HOUSEMAN_PHOTO_METADATA_COLUMN_V1' 11_Monthly.js
+          grep -q 'HOUSEMAN_PHOTO_METADATA_COLUMN_V1' HousemanRequestPhoto.js
+          node --check 11_Monthly.js
+          node --check HousemanRequestPhoto.js
+      - name: Commit generated production files
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 11_Monthly.js HousemanRequestPhoto.js; then
+            echo 'No generated changes'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 11_Monthly.js HousemanRequestPhoto.js
+          git commit -m 'Use dedicated photo metadata column for reads'
+          git push origin HEAD:perf/photo-batch-nonblocking-20260905
