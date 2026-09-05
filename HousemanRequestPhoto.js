@@ -135,7 +135,7 @@ function getHousemanRequestPhoto(token, payload) { // (오더테이커 월별조
 
     let detail = {};
     try { detail = JSON.parse(String(orderInfo.data['세부내용JSON'] || '{}')); } catch (error) { detail = {}; }
-    const photos = Array.isArray(detail.photos) ? detail.photos.filter(photo => photo && photo.fileId) : [];
+    const photos = getHousemanRequestPhotosForDisplay_(orderInfo.data, detail); // HOUSEMAN_PHOTO_METADATA_COLUMN_V1
     const photo = photos.find(item => String(item.fileId || '').trim() === fileId);
     if (!photo) throw new Error('해당 오더에 연결된 사진을 찾을 수 없습니다.');
 

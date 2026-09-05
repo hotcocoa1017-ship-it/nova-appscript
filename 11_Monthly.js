@@ -523,18 +523,9 @@ function monthlyHistoryItem_(data, rowNumber, users, orderStatusMap) { // (업�
 
   let detail = {};
   try { detail = JSON.parse(String(data['세부내용JSON'] || '{}')); } catch (error) { detail = {}; }
-  const photos = typeCode === 'HOUSEMAN' && Array.isArray(detail.photos)
-    ? detail.photos
-        .filter(photo => photo && photo.fileId)
-        .slice(0, NOVA_HOUSEMAN_REQUEST_PHOTO.MAX_PHOTOS_PER_ORDER)
-        .map(photo => ({
-          fileId: String(photo.fileId || ''),
-          name: String(photo.name || ''),
-          mimeType: String(photo.mimeType || 'image/jpeg'),
-          size: Number(photo.size || 0),
-          uploadedAt: String(photo.uploadedAt || '')
-        }))
-    : [];
+  const photos = typeCode === 'HOUSEMAN'
+    ? getHousemanRequestPhotosForDisplay_(data, detail)
+    : []; // HOUSEMAN_PHOTO_METADATA_COLUMN_V1
   const targetEmployeeNo = String(data['대상사번'] || '').trim();
   const assignedEmployeeNo = String(data['배정사번'] || '').trim();
   const processorEmployeeNo = String(data['처리자사번'] || '').trim();

@@ -1,0 +1,284 @@
+<script>
+(() => {
+  'use strict';
+
+  // HOUSEMAN_PHOTO_BATCH_FAST_V2
+  // 기존 사진 UI/카메라/압축은 그대로 사용하고, 사진이 포함된 제출만 window capture 단계에서 선처리합니다.
+  // 오더 DB 확정 후 모달을 즉시 닫고 사진 저장은 후행 처리하므로 사진 저장시간이 사용자 업무대기에 포함되지 않습니다.
+  const PHOTO_FIELD_ID = 'novaHmRequestPhotoField';
+  const PHOTO_STATUS_ID = 'novaHmRequestPhotoStatus';
+  const PHOTO_PREVIEW_LIST_ID = 'novaHmRequestPhotoPreviewList';
+  const MAX_PHOTOS = 5;
+  const MAX_BATCH_BINARY_BYTES = 6 * 1024 * 1024;
+
+  let activeRoomNo = '';
+  let submitBusy = false;
+  let toastTimer = null;
+
+  window.addEventListener('click', handlePhotoBatchClickCapture_, true);
+
+  function handlePhotoBatchClickCapture_(event) {
+    const target = event.target;
+    const requestButton = target && target.closest ? target.closest('[data-houseman-request]') : null;
+    if (requestButton) {
+      activeRoomNo = String(requestButton.dataset.housemanRequest || '').trim();
+      return; // 기존 HousemanRequestPhotoClient가 사진 UI를 그대로 담당합니다.
+    }
+
+    const submitButton = target && target.closest ? target.closest('#mobileRequestSubmit') : null;
+    if (!submitButton) return;
+
+    const field = document.getElementById(PHOTO_FIELD_ID);
+    if (!field) return;
+    const previewList = document.getElementById(PHOTO_PREVIEW_LIST_ID);
+    const status = document.getElementById(PHOTO_STATUS_ID);
+    const hasPreparedPhoto = Boolean(previewList && previewList.querySelector('img[src^="data:image/jpeg;base64,"]'));
+    const preparing = /사진을 준비하고 있습니다/.test(String(status && status.textContent || ''));
+
+    // 사진이 없으면 기존 무사진 등록 경로를 100% 그대로 통과시킵니다.
+    if (!hasPreparedPhoto && !preparing) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation(); // 기존 1장씩 순차 저장 핸들러가 실행되지 않도록 window 단계에서 종료
+    if (submitBusy) return;
+    submitBusy = true;
+
+    submitHousemanRequestPhotoBatchFast_(submitButton)
+      .catch(error => {
+        restoreSubmitButton_(submitButton);
+        showPhotoBatchToast_(error && error.message ? error.message : '요청을 처리하지 못했습니다.', true);
+      })
+      .finally(() => {
+        submitBusy = false;
+      });
+  }
+
+  async function submitHousemanRequestPhotoBatchFast_(button) {
+    const token = String(localStorage.getItem('novaToken') || '').trim();
+    if (!token) throw new Error('로그인 정보가 없습니다. 다시 로그인해 주세요.');
+
+    setSubmitBusy_(button, '사진 준비 중…');
+    const photos = await waitAndCollectPreparedPhotos_();
+    if (!photos.length) throw new Error('사진을 다시 촬영하거나 선택해 주세요.');
+    if (photos.length > MAX_PHOTOS) throw new Error(`사진은 최대 ${MAX_PHOTOS}장까지 등록할 수 있습니다.`);
+
+    const roomNo = resolveActiveRoomNo_();
+    if (!roomNo) throw new Error('요청 객실번호를 확인하지 못했습니다. 요청창을 닫고 다시 열어 주세요.');
+
+    const part = String(document.getElementById('mobileRequestPart')?.value || '').trim();
+    const item = String(document.getElementById('mobileRequestItem')?.value || '').trim();
+    const businessDate = String(document.getElementById('mobileDate')?.value || '').trim();
+    const site = String(document.getElementById('mobileSite')?.value || '').trim();
+    const quantity = clampQuantity_(document.getElementById('mobileRequestQty')?.value);
+    const note = String(document.getElementById('mobileRequestNote')?.value || '').trim();
+    if (!part || !item) throw new Error('파트와 품목을 입력하세요.');
+    if (!businessDate) throw new Error('업무일자를 확인하지 못했습니다.');
+
+    const createPayload = {
+      businessDate,
+      site,
+      roomNo,
+      part,
+      items: [{ name: item, quantity }],
+      note,
+      sourceLanguage: String(window.NOVA_I18N?.getLanguage?.() || 'ko').toLowerCase()
+    };
+
+    setSubmitBusy_(button, '요청 등록 중…');
+    const fastCreate = typeof window.novaCreateRoommaidHousemanRequestFast_ === 'function'
+      ? window.novaCreateRoommaidHousemanRequestFast_
+      : null;
+    const createResult = fastCreate
+      ? await fastCreate(createPayload)
+      : await callCreateMobileHousemanRequestServer_(token, createPayload);
+
+    if (!createResult || !createResult.ok) {
+      throw new Error(createResult && createResult.message ? createResult.message : '하우스맨 요청을 등록하지 못했습니다.');
+    }
+
+    const order = createResult.order || {};
+    const orderId = String(order.orderId || '').trim();
+    if (!orderId) throw new Error('사진 연결용 요청번호를 확인하지 못했습니다.');
+
+    // 사용자 대기는 여기서 끝납니다. 사진 저장시간은 이후 오더/객실 상태 저장속도와 분리됩니다.
+    closeRequestModal_();
+    showPhotoBatchToast_(`하우스맨 요청 등록 완료 · 사진 ${photos.length}장 후행 저장 중…`, false);
+
+    // 중요: await 하지 않습니다. 사용자는 즉시 다음 업무를 계속할 수 있습니다.
+    void persistPhotosAfterMirror_(token, createResult, order, photos).catch(error => {
+      showPhotoBatchToast_(`요청은 등록되었습니다. 사진 저장 오류 · ${error && error.message ? error.message : '저장 실패'}`, true);
+    });
+  }
+
+  async function persistPhotosAfterMirror_(token, createResult, order, photos) {
+    let mirrorResult = createResult;
+    if (createResult.mirrorPromise && typeof createResult.mirrorPromise.then === 'function') {
+      try {
+        mirrorResult = await createResult.mirrorPromise;
+      } catch (error) {
+        throw new Error(error && error.message ? error.message : '이력 동기화 실패');
+      }
+    }
+    if (!mirrorResult || !mirrorResult.ok) {
+      throw new Error(mirrorResult && mirrorResult.message ? mirrorResult.message : '사진 저장 준비 실패');
+    }
+
+    const sheetOrder = mirrorResult.order || order;
+    const orderId = String((sheetOrder && sheetOrder.orderId) || order.orderId || '').trim();
+    const rowNumber = Number(sheetOrder && sheetOrder.rowNumber || 0);
+    const batches = buildTransportBatches_(photos);
+    let savedCount = 0;
+    let duplicateCount = 0;
+
+    for (const batch of batches) {
+      const result = await callUploadHousemanRequestPhotosServer_(token, {
+        orderId,
+        rowNumber,
+        photos: batch
+      });
+      if (!result || !result.ok) {
+        const message = result && result.message ? result.message : '사진 저장 실패';
+        if (savedCount > 0) throw new Error(`사진 ${savedCount}/${photos.length}장 저장 후 중단 · ${message}`);
+        throw new Error(message);
+      }
+      savedCount += Number(result.savedCount || 0);
+      duplicateCount += Number(result.duplicateCount || 0);
+    }
+
+    const completedCount = Math.min(photos.length, savedCount + duplicateCount);
+    showPhotoBatchToast_(`하우스맨 요청 사진 ${completedCount}장 저장 완료`, false);
+  }
+
+  async function waitAndCollectPreparedPhotos_() {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 12000) {
+      const list = document.getElementById(PHOTO_PREVIEW_LIST_ID);
+      const status = document.getElementById(PHOTO_STATUS_ID);
+      const statusText = String(status && status.textContent || '');
+      const preparing = /사진을 준비하고 있습니다/.test(statusText);
+      const items = list ? Array.from(list.querySelectorAll('.nova-hm-photo-preview-item')) : [];
+
+      if (!preparing) {
+        const preparedItems = items.filter(item => item.querySelector('img[src^="data:image/jpeg;base64,"]'));
+        if (status && status.classList.contains('error') && !preparedItems.length) {
+          throw new Error(statusText || '사진 준비 오류');
+        }
+        return preparedItems.map((item, index) => {
+          const image = item.querySelector('img[src^="data:image/jpeg;base64,"]');
+          const removeButton = item.querySelector('[data-hm-photo-remove]');
+          const source = String(image && image.src || '');
+          const comma = source.indexOf(',');
+          const base64 = comma >= 0 ? source.slice(comma + 1) : '';
+          if (!base64) throw new Error(`사진 ${index + 1} 데이터를 확인하지 못했습니다.`);
+          const localId = String(removeButton && removeButton.dataset.hmPhotoRemove || '').trim();
+          return {
+            clientPhotoId: localId || `hm_batch_${Date.now()}_${index + 1}`,
+            fileName: `photo_${String(index + 1).padStart(2, '0')}.jpg`,
+            mimeType: 'image/jpeg',
+            base64,
+            byteSize: Math.ceil(base64.length * 0.75)
+          };
+        });
+      }
+      await delay_(60);
+    }
+    throw new Error('사진 준비 시간이 길어지고 있습니다. 사진을 다시 확인해 주세요.');
+  }
+
+  function buildTransportBatches_(photos) {
+    const batches = [];
+    let current = [];
+    let currentBytes = 0;
+    photos.forEach(photo => {
+      const size = Math.max(1, Number(photo.byteSize || Math.ceil(String(photo.base64 || '').length * 0.75)));
+      if (current.length && currentBytes + size > MAX_BATCH_BINARY_BYTES) {
+        batches.push(current);
+        current = [];
+        currentBytes = 0;
+      }
+      current.push({
+        clientPhotoId: photo.clientPhotoId,
+        fileName: photo.fileName,
+        mimeType: photo.mimeType,
+        base64: photo.base64
+      });
+      currentBytes += size;
+    });
+    if (current.length) batches.push(current);
+    return batches;
+  }
+
+  function callUploadHousemanRequestPhotosServer_(token, payload) {
+    return new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(error => reject(new Error(error && error.message ? error.message : '요청사진 저장 오류')))
+        .uploadMobileHousemanRequestPhotos(token, payload);
+    });
+  }
+
+  function callCreateMobileHousemanRequestServer_(token, payload) {
+    return new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(error => reject(new Error(error && error.message ? error.message : '하우스맨 요청 등록 오류')))
+        .createMobileHousemanRequest(token, payload);
+    });
+  }
+
+  function resolveActiveRoomNo_() {
+    if (activeRoomNo) return activeRoomNo;
+    const title = String(document.querySelector('#modalRoot .modal-header h2')?.textContent || '').trim();
+    const matched = title.match(/^(.+?)\s+하우스맨\s*요청/);
+    return matched ? String(matched[1] || '').trim() : '';
+  }
+
+  function clampQuantity_(value) {
+    return Math.max(1, Math.min(99, Number(value || 1)));
+  }
+
+  function setSubmitBusy_(button, label) {
+    if (!button) return;
+    if (!button.dataset.novaPhotoBatchOriginalText) {
+      button.dataset.novaPhotoBatchOriginalText = button.textContent || '요청 등록';
+    }
+    button.disabled = true;
+    button.textContent = label || '처리 중…';
+  }
+
+  function restoreSubmitButton_(button) {
+    if (!button || !button.isConnected) return;
+    button.disabled = false;
+    button.textContent = button.dataset.novaPhotoBatchOriginalText || '요청 등록';
+  }
+
+  function closeRequestModal_() {
+    const root = document.getElementById('modalRoot');
+    if (!root) return;
+    root.classList.add('hidden');
+    root.setAttribute('aria-hidden', 'true');
+    root.innerHTML = '';
+  }
+
+  function showPhotoBatchToast_(message, isError) {
+    let toast = document.getElementById('novaHmPhotoToast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'novaHmPhotoToast';
+      toast.className = 'nova-hm-photo-toast';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = String(message || '');
+    toast.classList.toggle('error', Boolean(isError));
+    if (toastTimer) window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => {
+      const current = document.getElementById('novaHmPhotoToast');
+      if (current) current.remove();
+    }, isError ? 7000 : 3200);
+  }
+
+  function delay_(ms) {
+    return new Promise(resolve => window.setTimeout(resolve, Math.max(0, Number(ms || 0))));
+  }
+})();
+</script>
