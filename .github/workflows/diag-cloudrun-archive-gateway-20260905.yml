@@ -1,0 +1,94 @@
+name: Diagnose Cloud Run Archive Gateway
+
+on:
+  push:
+    branches: [diag/wif-cloudrun-access-20260829]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_REGION: asia-southeast1
+  CLOUD_RUN_SERVICE: nova-realtime-api
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate Google Cloud with existing WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Inspect current service without exposing secret values
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_SERVICE" \
+            --project="$GCP_PROJECT_ID" \
+            --region="$GCP_REGION" \
+            --format=json > /tmp/service.json
+
+          gcloud run services get-iam-policy "$CLOUD_RUN_SERVICE" \
+            --project="$GCP_PROJECT_ID" \
+            --region="$GCP_REGION" \
+            --format=json > /tmp/iam.json
+
+          python3 - <<'PY'
+          import json
+          s=json.load(open('/tmp/service.json'))
+          status=s.get('status') or {}
+          spec=s.get('spec') or {}
+          tmpl=spec.get('template') or {}
+          tspec=tmpl.get('spec') or {}
+          containers=tspec.get('containers') or []
+          c=containers[0] if containers else {}
+          md=s.get('metadata') or {}
+          annotations=md.get('annotations') or {}
+          labels=md.get('labels') or {}
+          envs=c.get('env') or []
+          by={str(e.get('name') or ''):e for e in envs}
+
+          print('SERVICE_READY=' + ('YES' if status.get('latestReadyRevisionName') else 'NO'))
+          print('LATEST_READY_REV=' + str(status.get('latestReadyRevisionName') or ''))
+          print('SERVICE_URL_PRESENT=' + ('YES' if status.get('url') else 'NO'))
+          print('IMAGE_PRESENT=' + ('YES' if c.get('image') else 'NO'))
+          print('SERVICE_ACCOUNT_PRESENT=' + ('YES' if tspec.get('serviceAccountName') else 'NO'))
+          print('CONTAINER_CONCURRENCY=' + str(tspec.get('containerConcurrency') or 'default'))
+          print('INGRESS=' + str(annotations.get('run.googleapis.com/ingress') or 'default'))
+          print('CLIENT_NAME=' + str(labels.get('run.googleapis.com/client-name') or annotations.get('run.googleapis.com/client-name') or ''))
+          print('BUILD_SOURCE_ANNOTATION=' + ('YES' if annotations.get('run.googleapis.com/build-source-location') else 'NO'))
+
+          wanted=[
+            'NOVA_TOKEN_SECRET','DATABASE_URL','PGHOST','PGPORT','PGDATABASE','PGUSER','PGPASSWORD',
+            'SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET','SUPABASE_SERVICE_ROLE_KEY'
+          ]
+          for name in wanted:
+            e=by.get(name)
+            if not e:
+              state='MISSING'
+            elif e.get('valueFrom') or e.get('valueSource'):
+              state='SECRET_REF'
+            elif 'value' in e and str(e.get('value') or ''):
+              state='LITERAL_CONFIGURED'
+            else:
+              state='PRESENT_EMPTY_OR_UNKNOWN'
+            print(name + '=' + state)
+
+          iam=json.load(open('/tmp/iam.json'))
+          public=False
+          for b in iam.get('bindings') or []:
+            if b.get('role')=='roles/run.invoker' and 'allUsers' in (b.get('members') or []):
+              public=True
+          print('PUBLIC_INVOKER=' + ('YES' if public else 'NO'))
+          print('ARCHIVE_GATEWAY_DIAG=OK')
+          PY
