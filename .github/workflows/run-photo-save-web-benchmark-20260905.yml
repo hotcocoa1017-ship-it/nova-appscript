@@ -4,6 +4,7 @@ on:
   push:
     branches: [diag/photo-save-speed-20260905]
     paths:
+      - PhotoSpeedDiag.js
       - .github/workflows/run-photo-save-web-benchmark-20260905.yml
 
 permissions:
