@@ -3,11 +3,14 @@ import re
 import sys
 
 MARKER = 'CONCURRENT_WRITE_RESILIENCE_V1'
+QM_BROWSE_SYNC_MARKER = 'QM_BROWSE_REALTIME_STATE_SYNC_V1'
 perf_path = Path('05_Performance.js')
 qm_path = Path('16_QmChecklist.js')
+client_path = Path('Client.html')
 
 perf = perf_path.read_text(encoding='utf-8')
 qm = qm_path.read_text(encoding='utf-8')
+client = client_path.read_text(encoding='utf-8')
 changed = False
 
 # 1) 사용자별로 독립 가능한 저장을 위한 UserLock helper를 추가합니다.
@@ -73,9 +76,30 @@ if 'function acquireWriteLock_' not in perf or 'function acquireUserWriteLock_' 
     print('ERROR: lock helpers validation failed.', file=sys.stderr)
     raise SystemExit(105)
 
+# 2) QM 추가조회(VACANT/CLEANED) 카드도 Realtime 완료 응답으로 즉시 갱신합니다.
+# 기존 구현은 state.mobile.data.rooms만 갱신해 추가조회 캐시가 QM_CHECKING으로 남을 수 있었습니다.
+# 그 상태에서 사용자가 다시 누르면 서버의 실제 QM_COMPLETED 상태와 충돌해
+# "현재 공실 점검을 시작할 수 있는 상태가 아닙니다"가 잘못 노출될 수 있습니다.
+if QM_BROWSE_SYNC_MARKER not in client:
+    old_function = '''  function applyQmRealtimeRoomLocal_(roomNo, realtimeRoom) { // (QM Realtime 응답 즉시 모바일 반영)\n    const rooms = state.mobile.data?.rooms || [];\n    const index = rooms.findIndex(item => String(item.roomNo || '') === String(roomNo || ''));\n    if (index < 0 || !realtimeRoom) return null;\n    const mapped = novaRealtimeMapRow_(realtimeRoom);\n    const previousRoom = rooms[index];\n    rooms[index] = preserveQmMobileRoommaidNames_(previousRoom, novaRealtimeMergeRoom_(previousRoom, mapped));\n    if (state.activeMenu === 'qm') {\n      renderMobileSummary();\n      renderMobileList();\n    }\n    return rooms[index];\n  }\n'''
+    new_function = '''  function applyQmRealtimeRoomLocal_(roomNo, realtimeRoom) { // (QM Realtime 응답 즉시 모바일·추가조회 반영) // QM_BROWSE_REALTIME_STATE_SYNC_V1\n    if (!realtimeRoom) return null;\n    const mapped = novaRealtimeMapRow_(realtimeRoom);\n    let resolvedRoom = null;\n\n    const rooms = state.mobile.data?.rooms || [];\n    const index = rooms.findIndex(item => String(item.roomNo || '') === String(roomNo || ''));\n    if (index >= 0) {\n      const previousRoom = rooms[index];\n      rooms[index] = preserveQmMobileRoommaidNames_(previousRoom, novaRealtimeMergeRoom_(previousRoom, mapped));\n      resolvedRoom = rooms[index];\n    }\n\n    const browse = state.mobile.qmBrowseData;\n    if (browse && Array.isArray(browse.rooms)) {\n      const browseIndex = browse.rooms.findIndex(item => String(item.roomNo || '') === String(roomNo || ''));\n      if (browseIndex >= 0) {\n        const previousBrowseRoom = browse.rooms[browseIndex];\n        browse.rooms[browseIndex] = preserveQmMobileRoommaidNames_(\n          previousBrowseRoom,\n          novaRealtimeMergeRoom_(previousBrowseRoom, mapped)\n        );\n        resolvedRoom = resolvedRoom || browse.rooms[browseIndex];\n      }\n    }\n\n    if (state.activeMenu === 'qm') {\n      if (typeof renderQmBrowseLocationFilters_ === 'function') renderQmBrowseLocationFilters_();\n      renderMobileSummary();\n      renderMobileList();\n    }\n    return resolvedRoom;\n  }\n'''
+    if old_function not in client:
+        print('ERROR: applyQmRealtimeRoomLocal_ anchor not found.', file=sys.stderr)
+        raise SystemExit(106)
+    client = client.replace(old_function, new_function, 1)
+    changed = True
+
+if QM_BROWSE_SYNC_MARKER not in client:
+    print('ERROR: QM browse realtime state sync marker missing.', file=sys.stderr)
+    raise SystemExit(107)
+if "const browse = state.mobile.qmBrowseData;" not in client:
+    print('ERROR: QM browse realtime cache update missing.', file=sys.stderr)
+    raise SystemExit(108)
+
 if changed:
     perf_path.write_text(perf, encoding='utf-8')
     qm_path.write_text(qm, encoding='utf-8')
-    print('Applied CONCURRENT_WRITE_RESILIENCE_V1: QM autosave/photo writes now use per-user locks.')
+    client_path.write_text(client, encoding='utf-8')
+    print('Applied concurrent-write resilience and QM browse realtime state sync.')
 else:
-    print('Concurrent write resilience V1 already applied.')
+    print('Concurrent write resilience V1 and QM browse realtime state sync already applied.')
