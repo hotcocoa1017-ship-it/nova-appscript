@@ -58,17 +58,26 @@ jobs:
             console.log(label+'='+JSON.stringify(safe));
             if(r.status<200||r.status>=300||r.json?.ok!==true) throw new Error(label+' failed');
           }
+          function jwtClaims(jwt){
+            try {
+              const p=JSON.parse(Buffer.from(String(jwt||'').split('.')[1]||'','base64url').toString('utf8'));
+              return {role:String(p.role||''),employee_no:String(p.employee_no||''),sites:Array.isArray(p.sites)?p.sites:[]};
+            } catch { return {}; }
+          }
           (async()=>{
             const orderTok=token('990001'), hmTok=token('990002'), qmTok=token('990003'), publicTok=token('990004');
             let r=await req('GET','/v1/rooms?businessDate=2099-12-31&site=LOADTEST',qmTok); assertOk('QM_ROOM_READ',r);
-            r=await req('POST','/v1/auth/realtime-token',qmTok,{}); assertOk('QM_REALTIME_TOKEN',r);
+            r=await req('POST','/v1/auth/realtime-token',qmTok,{}); assertOk('QM_REALTIME_TOKEN',r); console.log('QM_RT_CLAIMS='+JSON.stringify(jwtClaims(r.json?.token)));
+            r=await req('POST','/v1/auth/realtime-token',publicTok,{}); assertOk('PUBLIC_REALTIME_TOKEN',r); console.log('PUBLIC_RT_CLAIMS='+JSON.stringify(jwtClaims(r.json?.token)));
             r=await req('GET','/v1/houseman-orders?businessDate=2099-12-31&site=LOADTEST',orderTok); assertOk('HOUSEMAN_LIST',r);
-            const orderId='HO-20991231-LTSMOKE01';
-            const requestId='LT-SMOKE-PUBLIC-'+Date.now();
             const assignment={building:'1동',employeeNo:'990002',name:'LOADTEST HOUSEMAN',employeeNos:['990002'],names:['LOADTEST HOUSEMAN'],candidates:[{employeeNo:'990002',name:'LOADTEST HOUSEMAN',shiftCodes:['A'],pendingCount:0}],shiftCodes:['A'],pendingCount:0,currentShift:'A',activeShiftCodes:['A']};
-            r=await req('POST','/v1/houseman-orders',publicTok,{orderId,requestId,businessDate:'2099-12-31',site:'LOADTEST',roomNo:'1000',part:'기타',items:[{name:'LOADTEST',quantity:1}],note:'LOADTEST',requester:'LOADTEST PUBLIC',requestSource:'PUBLIC',assignmentMode:'AUTO',important:false,handover:false,assignment,handoverTargetShift:''}); assertOk('PUBLIC_ORDER_CREATE',r);
+            const publicProbe=await req('POST','/v1/houseman-orders',publicTok,{orderId:'HO-20991231-LTPROBE001',requestId:'LT-PUBLIC-PROBE-'+Date.now(),businessDate:'2099-12-31',site:'LOADTEST',roomNo:'1001',part:'기타',items:[{name:'LOADTEST',quantity:1}],note:'LOADTEST',requester:'LOADTEST PUBLIC',requestSource:'PUBLIC',assignmentMode:'AUTO',important:false,handover:false,assignment,handoverTargetShift:''});
+            console.log('PUBLIC_CLOUDRUN_CREATE_PROBE='+JSON.stringify({status:publicProbe.status,ok:publicProbe.json?.ok,code:publicProbe.json?.code||'',message:publicProbe.json?.message||''}));
+            if(publicProbe.status!==403||String(publicProbe.json?.code||'').toUpperCase()!=='FORBIDDEN') throw new Error('PUBLIC guard changed unexpectedly');
+            const orderId='HO-20991231-LTSMOKE02';
+            r=await req('POST','/v1/houseman-orders',orderTok,{orderId,requestId:'LT-SMOKE-ORDER-'+Date.now(),businessDate:'2099-12-31',site:'LOADTEST',roomNo:'1002',part:'기타',items:[{name:'LOADTEST',quantity:1}],note:'LOADTEST',requester:'LOADTEST ORDER',requestSource:'ORDER',assignmentMode:'AUTO',important:false,handover:false,assignment,handoverTargetShift:''}); assertOk('ORDER_CREATE_FOR_HOUSEMAN',r);
             r=await req('POST',`/v1/houseman-orders/${encodeURIComponent(orderId)}/action`,hmTok,{action:'ACCEPT_START',reason:'',requestId:'LT-SMOKE-HM-'+Date.now()}); assertOk('HOUSEMAN_ACTION',r);
-            r=await req('POST','/v1/rooms/1000/action',qmTok,{businessDate:'2099-12-31',site:'LOADTEST',action:'QM_START',requestId:'LT-SMOKE-QM-'+Date.now(),expectedVersion:1,expectedState:{cleaningStatus:'QM_WAITING',qmEmployeeNo:'990003'}}); assertOk('QM_START',r);
-            console.log('DBFIRST_ROLE_SMOKE=PASS'); agent.destroy();
+            r=await req('POST','/v1/rooms/1003/action',qmTok,{businessDate:'2099-12-31',site:'LOADTEST',action:'QM_START',requestId:'LT-SMOKE-QM-'+Date.now(),expectedVersion:1,expectedState:{cleaningStatus:'QM_WAITING',qmEmployeeNo:'990003'}}); assertOk('QM_START',r);
+            console.log('HOUSEMAN_QM_SMOKE=PASS'); agent.destroy();
           })().catch(e=>{agent.destroy();console.error(e.stack||String(e));process.exit(1)});
           NODE
