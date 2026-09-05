@@ -16,7 +16,7 @@ env:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -30,6 +30,7 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Inspect current service without exposing secret values
+        id: inspect
         shell: bash
         run: |
           set -euo pipefail
@@ -69,7 +70,7 @@ jobs:
           print('BUILD_SOURCE_ANNOTATION=' + ('YES' if annotations.get('run.googleapis.com/build-source-location') else 'NO'))
 
           wanted=[
-            'NOVA_TOKEN_SECRET','DATABASE_URL','PGHOST','PGPORT','PGDATABASE','PGUSER','PGPASSWORD',
+            'NOVA_TOKEN_SECRET','DATABASE_URL','PG_HOST','PG_PORT','PG_DATABASE','PG_USER','PG_PASSWORD','PG_POOL_MAX','PG_SSL',
             'SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET','SUPABASE_SERVICE_ROLE_KEY'
           ]
           for name in wanted:
@@ -92,3 +93,57 @@ jobs:
           print('PUBLIC_INVOKER=' + ('YES' if public else 'NO'))
           print('ARCHIVE_GATEWAY_DIAG=OK')
           PY
+
+      - name: Recover active Cloud Run build source when permitted
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/current-source
+          SOURCE="$(python3 - <<'PY'
+          import json
+          s=json.load(open('/tmp/service.json'))
+          print(((s.get('metadata') or {}).get('annotations') or {}).get('run.googleapis.com/build-source-location') or '')
+          PY
+          )"
+          if [[ "$SOURCE" != gs://* ]]; then
+            echo "SOURCE_DOWNLOAD=NO_NON_GS"
+            echo "Current Cloud Run source could not be recovered from a gs:// annotation." > /tmp/current-source/SOURCE_NOT_AVAILABLE.txt
+            exit 0
+          fi
+          echo "SOURCE_SCHEME=GS"
+          if gcloud storage cp "$SOURCE" /tmp/cloudrun-source.tgz >/tmp/source-copy.log 2>&1; then
+            python3 - <<'PY'
+          import os, tarfile, zipfile, shutil
+          src='/tmp/cloudrun-source.tgz'
+          out='/tmp/current-source'
+          ok=False
+          try:
+              if tarfile.is_tarfile(src):
+                  with tarfile.open(src, 'r:*') as t:
+                      t.extractall(out)
+                  ok=True
+              elif zipfile.is_zipfile(src):
+                  with zipfile.ZipFile(src) as z:
+                      z.extractall(out)
+                  ok=True
+          except Exception as e:
+              print('SOURCE_EXTRACT_ERROR=' + type(e).__name__)
+          if not ok:
+              shutil.copy2(src, os.path.join(out, 'cloudrun-source.bin'))
+          print('SOURCE_EXTRACTED=' + ('YES' if ok else 'NO'))
+          PY
+            echo "SOURCE_DOWNLOAD=YES"
+            find /tmp/current-source -maxdepth 3 -type f -printf '%P\n' | sort | head -100
+          else
+            echo "SOURCE_DOWNLOAD=NO_PERMISSION_OR_NOT_FOUND"
+            echo "Cloud Run source annotation exists but the WIF deployer could not download it." > /tmp/current-source/SOURCE_NOT_AVAILABLE.txt
+          fi
+
+      - name: Upload recovered source for exact diffing
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-cloudrun-source
+          path: /tmp/current-source
+          if-no-files-found: error
+          retention-days: 1
