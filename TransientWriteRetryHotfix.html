@@ -1,0 +1,59 @@
+<script>
+(() => {
+  'use strict';
+  // TRANSIENT_WRITE_RETRY_HOTFIX_V1
+  // Apps Script measureResponse_는 BUSY_RETRY를 throw하지 않고 {ok:false, code:'BUSY_RETRY'}로 반환합니다.
+  // 기존 클라이언트 재시도 로직이 이를 정상 응답으로 오인하는 구간을 보완합니다.
+  const originalCallServer = window.callServer;
+  if (typeof originalCallServer !== 'function' || originalCallServer.__novaTransientWriteRetryV1) return;
+
+  const retryableMethods = new Set([
+    'updateRoomOperation',
+    'updateMobileRoomOperation',
+    'submitQmChecklistInspection',
+    'startQmInspection',
+    'saveQmInspectionDraft'
+  ]);
+  const delays = [0, 350, 850, 1600];
+
+  function isBusyResult_(result) {
+    if (!result || result.ok !== false) return false;
+    const code = String(result.code || '').trim().toUpperCase();
+    const message = String(result.message || '').toLowerCase();
+    return code === 'BUSY_RETRY'
+      || /동시 저장|동시 요청|변경버전을 확보하지 못했습니다|잠시 후 다시/.test(message);
+  }
+
+  async function sleep_(ms) {
+    if (!ms) return;
+    await new Promise(resolve => window.setTimeout(resolve, ms + Math.round(Math.random() * 180)));
+  }
+
+  async function callServerWithTransientWriteRetry_(method, ...args) {
+    if (!retryableMethods.has(String(method || ''))) {
+      return originalCallServer(method, ...args);
+    }
+
+    let lastResult = null;
+    for (let attempt = 0; attempt < delays.length; attempt += 1) {
+      await sleep_(delays[attempt]);
+      try {
+        const result = await originalCallServer(method, ...args);
+        if (!isBusyResult_(result)) return result;
+        lastResult = result;
+      } catch (error) {
+        const code = String(error?.code || '').trim().toUpperCase();
+        const message = String(error?.message || error || '').toLowerCase();
+        const transient = code === 'BUSY_RETRY'
+          || /too many|simultaneous|timed out|timeout|internal error|service unavailable|try again|잠시 후|동시 요청|동시 저장/.test(message);
+        if (!transient || attempt === delays.length - 1) throw error;
+      }
+    }
+    return lastResult || { ok: false, code: 'BUSY_RETRY', message: '동시 요청이 많습니다. 잠시 후 다시 처리하세요.' };
+  }
+
+  callServerWithTransientWriteRetry_.__novaTransientWriteRetryV1 = true;
+  callServerWithTransientWriteRetry_.__novaOriginalCallServer = originalCallServer;
+  window.callServer = callServerWithTransientWriteRetry_;
+})();
+</script>
