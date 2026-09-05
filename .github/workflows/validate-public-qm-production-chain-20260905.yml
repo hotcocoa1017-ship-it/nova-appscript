@@ -1,0 +1,76 @@
+name: Validate PUBLIC QM Production Chain 20260905
+
+on:
+  push:
+    branches: [feat/public-qm-dbfirst-accel-20260905]
+    paths:
+      - .github/workflows/validate-public-qm-production-chain-20260905.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run production patch chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_sync_status_autohide.py
+          python3 scripts/patch_telegram_self_connect.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          python3 scripts/patch_roommaid_performance_attribution.py
+          python3 scripts/patch_roommaid_close_read_acceleration.py
+          python3 scripts/fix_patch_site_scope_v2.py
+          python3 scripts/patch_site_scope_indicator_close_v2.py
+          python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
+          python3 scripts/patch_houseman_realtime_push.py
+          python3 scripts/patch_concurrent_write_resilience_v1.py
+          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
+          python3 scripts/patch_mobile_view_state_persistence_20260904.py
+          python3 scripts/patch_public_qm_dbfirst_accel_20260905.py
+
+      - name: Validate acceleration and regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_public_qm_dbfirst_accel_20260905.py
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_order_site_context_v1.py
+          python3 scripts/validate_nova_release.py
+
+      - name: Validate generated syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check RealtimeBridge.js
+          node --check 03_Auth.js
+          node --check 05_Performance.js
+          node --check 10_Mobile.js
+          node --check 16_QmChecklist.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('Client.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if not scripts:
+              raise SystemExit('No Client script block found')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+          grep -q 'PUBLIC_QM_DBFIRST_ACCEL_20260905' Client.html
+          grep -q 'QM_DRAFT_PROMOTE_ALL_20260905' RealtimeBridge.js
+          echo 'PRODUCTION_PATCH_CHAIN_COMPATIBILITY=PASS'
