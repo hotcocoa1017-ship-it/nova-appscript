@@ -1,0 +1,96 @@
+name: Diagnose Cloud Run Capacity 20260905
+
+on:
+  push:
+    branches: [diag/wif-cloudrun-access-20260829]
+    paths:
+      - .github/workflows/diag-cloudrun-capacity-20260905.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_REGION: asia-southeast1
+  CLOUD_RUN_SERVICE: nova-realtime-api
+
+jobs:
+  capacity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate Google Cloud with existing WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Inspect non-secret capacity configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/service.json
+          python3 - <<'PY'
+          import json
+          s=json.load(open('/tmp/service.json'))
+          spec=(s.get('spec') or {}).get('template') or {}
+          tspec=spec.get('spec') or {}
+          ann=(spec.get('metadata') or {}).get('annotations') or {}
+          c=(tspec.get('containers') or [{}])[0]
+          resources=(c.get('resources') or {}).get('limits') or {}
+          env={str(e.get('name') or ''):str(e.get('value') or '') for e in (c.get('env') or []) if 'value' in e}
+          print('CONTAINER_CONCURRENCY=' + str(tspec.get('containerConcurrency') or 'default'))
+          print('TIMEOUT_SECONDS=' + str(tspec.get('timeoutSeconds') or 'default'))
+          print('MIN_SCALE=' + str(ann.get('autoscaling.knative.dev/minScale') or 'default'))
+          print('MAX_SCALE=' + str(ann.get('autoscaling.knative.dev/maxScale') or 'default'))
+          print('CPU_LIMIT=' + str(resources.get('cpu') or 'default'))
+          print('MEMORY_LIMIT=' + str(resources.get('memory') or 'default'))
+          print('PG_POOL_MAX=' + str(env.get('PG_POOL_MAX') or 'not_literal'))
+          print('SERVICE_READY=' + ('YES' if (s.get('status') or {}).get('latestReadyRevisionName') else 'NO'))
+          print('CAPACITY_CONFIG=OK')
+          PY
+
+      - name: Safe health concurrency ramp
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERVICE_URL="$(python3 - <<'PY'
+          import json
+          print((json.load(open('/tmp/service.json')).get('status') or {}).get('url') or '')
+          PY
+          )"
+          test -n "$SERVICE_URL"
+          SERVICE_URL="$SERVICE_URL" node <<'NODE'
+          const https = require('https');
+          const { URL } = require('url');
+          const base = new URL(process.env.SERVICE_URL);
+          const agent = new https.Agent({ keepAlive: true, maxSockets: 1100, maxFreeSockets: 200 });
+          const pct=(a,p)=>{const s=a.slice().sort((x,y)=>x-y);return s[Math.min(s.length-1,Math.max(0,Math.ceil(s.length*p)-1))]||0};
+          function once(){return new Promise(resolve=>{
+            const t=process.hrtime.bigint();
+            const req=https.request({hostname:base.hostname,port:443,path:'/health',method:'GET',agent,timeout:15000},res=>{
+              res.resume(); res.on('end',()=>resolve({status:res.statusCode,ms:Number(process.hrtime.bigint()-t)/1e6}));
+            });
+            req.on('timeout',()=>req.destroy(new Error('timeout')));
+            req.on('error',e=>resolve({status:0,ms:Number(process.hrtime.bigint()-t)/1e6,error:e.message}));
+            req.end();
+          })}
+          async function stage(n){
+            const wall=process.hrtime.bigint();
+            const r=await Promise.all(Array.from({length:n},()=>once()));
+            const wallMs=Number(process.hrtime.bigint()-wall)/1e6;
+            const failures=r.filter(x=>x.status<200||x.status>=500);
+            const ms=r.map(x=>x.ms);
+            const out={stage:n,wallMs:+wallMs.toFixed(1),p50:+pct(ms,.5).toFixed(1),p95:+pct(ms,.95).toFixed(1),p99:+pct(ms,.99).toFixed(1),statusCounts:r.reduce((m,x)=>(m[x.status]=(m[x.status]||0)+1,m),{}),failures:failures.length};
+            console.log('HEALTH_STAGE='+JSON.stringify(out));
+            if(failures.length>Math.max(1,Math.floor(n*0.01))) throw new Error(`health failure threshold exceeded at ${n}`);
+          }
+          (async()=>{for(const n of [100,300,500,1000]){await stage(n);await new Promise(r=>setTimeout(r,1500));}agent.destroy();console.log('HEALTH_CONCURRENCY_RAMP=PASS')})().catch(e=>{agent.destroy();console.error(e.stack||e);process.exit(1)});
+          NODE
