@@ -1,0 +1,148 @@
+name: Build Photo Latest Final 20260905
+
+on:
+  push:
+    branches: [build/photo-latest-final-20260905]
+    paths:
+      - .github/workflows/build-photo-latest-final-20260905.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: build/photo-latest-final-20260905
+          fetch-depth: 0
+
+      - name: Build targeted production files from current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main perf/photo-batch-nonblocking-20260905
+          git checkout origin/perf/photo-batch-nonblocking-20260905 -- HousemanRequestPhotoBatch.js HousemanRequestPhotoBatchClient.html HousemanRequestPhotoMetadata.js
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Latest main already contains the requested registered-at latest-first ordering.
+          # Only add the photo metadata read compatibility without replacing that comparator.
+          p = Path('11_Monthly.js')
+          t = p.read_text(encoding='utf-8')
+          old = """  const photos = typeCode === 'HOUSEMAN' && Array.isArray(detail.photos)
+    ? detail.photos
+        .filter(photo => photo && photo.fileId)
+        .slice(0, NOVA_HOUSEMAN_REQUEST_PHOTO.MAX_PHOTOS_PER_ORDER)
+        .map(photo => ({
+          fileId: String(photo.fileId || ''),
+          name: String(photo.name || ''),
+          mimeType: String(photo.mimeType || 'image/jpeg'),
+          size: Number(photo.size || 0),
+          uploadedAt: String(photo.uploadedAt || '')
+        }))
+    : [];"""
+          new = """  const photos = typeCode === 'HOUSEMAN'
+    ? getHousemanRequestPhotosForDisplay_(data, detail)
+    : []; // HOUSEMAN_PHOTO_METADATA_COLUMN_V1"""
+          if 'HOUSEMAN_PHOTO_METADATA_COLUMN_V1' not in t:
+              if t.count(old) != 1:
+                  raise SystemExit(f'11_Monthly photo anchor count={t.count(old)}')
+              t = t.replace(old, new, 1)
+          p.write_text(t, encoding='utf-8')
+
+          p = Path('HousemanRequestPhoto.js')
+          t = p.read_text(encoding='utf-8')
+          old = "    const photos = Array.isArray(detail.photos) ? detail.photos.filter(photo => photo && photo.fileId) : [];"
+          new = "    const photos = getHousemanRequestPhotosForDisplay_(orderInfo.data, detail); // HOUSEMAN_PHOTO_METADATA_COLUMN_V1"
+          if 'HOUSEMAN_PHOTO_METADATA_COLUMN_V1' not in t:
+              if t.count(old) != 1:
+                  raise SystemExit(f'HousemanRequestPhoto anchor count={t.count(old)}')
+              t = t.replace(old, new, 1)
+          p.write_text(t, encoding='utf-8')
+
+          p = Path('Index.html')
+          t = p.read_text(encoding='utf-8')
+          anchor = "<?!= include_('HousemanRequestPhotoClient'); ?>"
+          addition = "<?!= include_('HousemanRequestPhotoBatchClient'); ?>"
+          if addition not in t:
+              if t.count(anchor) != 1:
+                  raise SystemExit(f'Index photo client anchor count={t.count(anchor)}')
+              t = t.replace(anchor, anchor + '\n  ' + addition, 1)
+          p.write_text(t, encoding='utf-8')
+          PY
+
+      - name: Validate target behavior and syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check HousemanRequestPhotoBatch.js
+          node --check HousemanRequestPhotoMetadata.js
+          node --check HousemanRequestPhoto.js
+          node --check 11_Monthly.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          monthly=Path('11_Monthly.js').read_text(encoding='utf-8')
+          client=Path('Client.html').read_text(encoding='utf-8')
+          houseman=Path('07_Houseman.js').read_text(encoding='utf-8')
+          batch=Path('HousemanRequestPhotoBatch.js').read_text(encoding='utf-8')
+          index=Path('Index.html').read_text(encoding='utf-8')
+          assert 'HOUSEMAN_LATEST_REGISTERED_LISTS_V1' in monthly
+          assert "String(b.registeredAt || '').localeCompare(String(a.registeredAt || ''))" in monthly
+          assert 'HOUSEMAN_LATEST_REGISTERED_LISTS_V1' in client
+          assert 'HOUSEMAN_LATEST_FIRST_V1' in houseman
+          upload=batch.split('function uploadMobileHousemanRequestPhotos',1)[1].split('function readHousemanRequestPhotoMetadata_',1)[0]
+          assert 'LockService' not in upload and 'acquireWriteLock_' not in upload
+          assert "NOVA_HOUSEMAN_PHOTO_METADATA_HEADER_ = '요청사진JSON'" in batch
+          assert "include_('HousemanRequestPhotoBatchClient')" in index
+          text=Path('HousemanRequestPhotoBatchClient.html').read_text(encoding='utf-8')
+          scripts=re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S|re.I)
+          assert len(scripts)==1
+          Path('/tmp/photo-client.js').write_text(scripts[0], encoding='utf-8')
+          PY
+          node --check /tmp/photo-client.js
+
+      - name: Apply production patch chain and release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_sync_status_autohide.py
+          python3 scripts/patch_telegram_self_connect.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          python3 scripts/patch_roommaid_performance_attribution.py
+          python3 scripts/patch_roommaid_close_read_acceleration.py
+          python3 scripts/fix_patch_site_scope_v2.py
+          python3 scripts/patch_site_scope_indicator_close_v2.py
+          python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
+          python3 scripts/patch_houseman_realtime_push.py
+          python3 scripts/patch_concurrent_write_resilience_v1.py
+          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
+          python3 scripts/patch_mobile_view_state_persistence_20260904.py
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_order_site_context_v1.py
+          python3 scripts/validate_nova_release.py
+          grep -q 'HOUSEMAN_LATEST_REGISTERED_LISTS_V1' 11_Monthly.js
+          grep -q 'HOUSEMAN_LATEST_REGISTERED_LISTS_V1' Client.html
+          grep -q "include_('HousemanRequestPhotoBatchClient')" Index.html
+
+      - name: Commit only production files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 11_Monthly.js HousemanRequestPhoto.js HousemanRequestPhotoBatch.js HousemanRequestPhotoBatchClient.html HousemanRequestPhotoMetadata.js Index.html
+          git commit -m 'Build nonblocking photo storage with latest-first houseman lists'
+          git push origin HEAD:build/photo-latest-final-20260905
