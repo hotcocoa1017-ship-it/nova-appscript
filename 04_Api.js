@@ -61,6 +61,7 @@ function getMenuForRole_(role) { // (권한별 최소 메뉴 구성)
   const menus = {
     ADMIN: [
       { id: 'indicator', label: '통합 인디케이터' },
+      { id: 'archive', label: 'Archive 이력' },
       { id: 'departure', label: '퇴실지연' },
       { id: 'monthly', label: '월별조회' },
       { id: 'roommaidStats', label: '룸메이드 실적' },
@@ -68,7 +69,6 @@ function getMenuForRole_(role) { // (권한별 최소 메뉴 구성)
       { id: 'adminMetrics', label: '운영 성과지표' },
       { id: 'shifts', label: '근무조 관리' },
       { id: 'qmChecklist', label: 'QM 체크리스트' },
-      { id: 'archive', label: 'Archive 이력' },
       { id: 'settings', label: '설정' }
     ],
     ORDER: [
