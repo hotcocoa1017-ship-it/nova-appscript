@@ -1,0 +1,62 @@
+name: Validate archive worker canary
+
+on:
+  push:
+    branches:
+      - test/dbfirst-1000-20260905
+    paths:
+      - .github/workflows/validate-archive-canary-20260905.yml
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      EDGE_URL: https://evoetxfjmkkjptucwxsv.supabase.co/functions/v1/nova-archive-worker-v1
+      SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV2b2V0eGZqbWtranB0dWN3eHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0MTI4NzgsImV4cCI6MjEwMjk4ODg3OH0.wNWMvTIFfCU2lN-c7LBFj2QYE2S4FiFg1moOXm-F_C8
+    steps:
+      - name: Invoke one non-destructive shadow archive job
+        shell: bash
+        run: |
+          set -euo pipefail
+          body_file="$(mktemp)"
+          code=$(curl --silent --show-error --max-time 120 \
+            --output "$body_file" --write-out '%{http_code}' \
+            -X POST "$EDGE_URL" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            -H 'Content-Type: application/json' \
+            --data '{}')
+          cat "$body_file"
+          echo
+          if [ "$code" != "200" ]; then
+            echo "HTTP $code"
+            exit 1
+          fi
+          node - "$body_file" <<'NODE'
+          const fs = require('fs');
+          const path = process.argv[2];
+          const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+          if (!data.ok || !data.processed || !data.verified || !data.hotDataRetained) {
+            throw new Error(`archive canary failed: ${JSON.stringify(data)}`);
+          }
+          if (!(Number(data.rowCount) > 0) || !data.batchId || !data.objectPath || !data.checksumSha256) {
+            throw new Error(`archive canary incomplete: ${JSON.stringify(data)}`);
+          }
+          console.log('ARCHIVE_CANARY_SUCCESS');
+          console.log(JSON.stringify({
+            batchId: data.batchId,
+            sourceType: data.sourceType,
+            businessDate: data.businessDate,
+            site: data.site,
+            rowCount: data.rowCount,
+            objectPath: data.objectPath,
+            compressedBytes: data.compressedBytes,
+            uncompressedBytes: data.uncompressedBytes,
+            verified: data.verified,
+            hotDataRetained: data.hotDataRetained
+          }));
+          NODE
