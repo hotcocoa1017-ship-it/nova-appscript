@@ -1,0 +1,47 @@
+name: Derive Archive Admin Verifier
+
+on:
+  push:
+    branches: [diag/wif-cloudrun-access-20260829]
+    paths:
+      - '.github/workflows/derive-archive-admin-verifier-20260905.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_REGION: asia-southeast1
+  CLOUD_RUN_SERVICE: nova-realtime-api
+
+jobs:
+  derive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Derive verifier without exposing source secret or admin key
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/service.json
+          python3 - <<'PY'
+          import json,hmac,hashlib,base64
+          s=json.load(open('/tmp/service.json'))
+          c=((((s.get('spec') or {}).get('template') or {}).get('spec') or {}).get('containers') or [{}])[0]
+          by={str(e.get('name') or ''):str(e.get('value') or '') for e in (c.get('env') or [])}
+          secret=by.get('NOVA_TOKEN_SECRET','')
+          if len(secret)<32:
+              raise SystemExit('NOVA token secret unavailable')
+          context=b'NOVA_ARCHIVE_ADMIN_KEY_V1'
+          key=base64.urlsafe_b64encode(hmac.new(secret.encode(),context,hashlib.sha256).digest()).decode().rstrip('=')
+          verifier=hashlib.sha256(key.encode()).hexdigest()
+          print('ARCHIVE_ADMIN_KEY_SHA256='+verifier)
+          print('VERIFIER_DERIVATION=OK')
+          PY
