@@ -1,0 +1,36 @@
+name: Validate 1500 cleaning stability
+
+on:
+  push:
+    branches:
+      - test/dbfirst-1000-20260905
+    paths:
+      - .github/workflows/validate-1500-cleaning-stability-20260905.yml
+
+permissions:
+  contents: read
+
+jobs:
+  stability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SUPABASE_URL: https://evoetxfjmkkjptucwxsv.supabase.co
+      SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV2b2V0eGZqbWtranB0dWN3eHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0MTI4NzgsImV4cCI6MjEwMjk4ODg3OH0.wNWMvTIFfCU2lN-c7LBFj2QYE2S4FiFg1moOXm-F_C8
+    steps:
+      - name: Repeat 250 and 500 batch modes ten times with realtime
+        shell: bash
+        run: |
+          node <<'NODE'
+          const https=require('https'); const {URL}=require('url');
+          const base=new URL(process.env.SUPABASE_URL),key=process.env.SUPABASE_ANON_KEY;
+          const agent=new https.Agent({keepAlive:true,maxSockets:100,maxFreeSockets:50});
+          function rpc(name,body){return new Promise(resolve=>{const payload=JSON.stringify(body||{}),s=process.hrtime.bigint();const req=https.request({hostname:base.hostname,port:443,path:`/rest/v1/rpc/${name}`,method:'POST',agent,headers:{apikey:key,Authorization:`Bearer ${key}`,'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload),Connection:'keep-alive'},timeout:60000},res=>{let data='';res.on('data',c=>data+=c);res.on('end',()=>{let json=null;try{json=JSON.parse(data||'null')}catch{}resolve({status:res.statusCode,json,text:data,ms:Number(process.hrtime.bigint()-s)/1e6})})});req.on('error',e=>resolve({status:0,error:e.message,json:null,text:'',ms:Number(process.hrtime.bigint()-s)/1e6}));req.end(payload)})}
+          const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+          const pct=(a,p)=>{a=[...a].sort((x,y)=>x-y);return a[Math.min(a.length-1,Math.max(0,Math.ceil(a.length*p)-1))]};
+          async function reset(){const r=await rpc('nova_loadtest_1500_reset',{});if(r.status!==200||!r.json?.ok)throw new Error(`reset ${r.status} ${r.text}`)}
+          function chunks(size){const a=[];for(let s=1;s<=1500;s+=size){const e=Math.min(1500,s+size-1);a.push(Array.from({length:e-s+1},(_,i)=>s+i))}return a}
+          async function phase(size,action,rep){const cs=chunks(size),t=Date.now(),s=process.hrtime.bigint();const rs=await Promise.all(cs.map((ids,i)=>rpc('nova_loadtest_1500_bulk_write',{p_room_ids:ids,p_action:action,p_batch_request_id:`stable-${size}-${rep}-${action}-${t}-${i}`})));const ms=Number(process.hrtime.bigint()-s)/1e6;const bad=rs.filter(r=>r.status!==200||!r.json?.ok),updated=rs.reduce((n,r)=>n+Number(r.json?.updated||0),0);if(bad.length||updated!==1500)throw new Error(`${size}/${action} bad=${bad.length} updated=${updated}`);return ms}
+          async function run(size,rep){await reset();await sleep(150);const s=await phase(size,'CLEANING_START',rep);await sleep(100);const c=await phase(size,'CLEANING_COMPLETE',rep);return {size,rep,startMs:+s.toFixed(1),completeMs:+c.toFixed(1),totalMs:+(s+c).toFixed(1)}}
+          (async()=>{const all=[];for(const size of [250,500]){for(let rep=1;rep<=10;rep++){const r=await run(size,rep);all.push(r);console.log(JSON.stringify(r));await sleep(250)}}for(const size of [250,500]){const rs=all.filter(r=>r.size===size),vals=rs.map(r=>r.totalMs);console.log(JSON.stringify({size,runs:10,medianMs:+pct(vals,.5).toFixed(1),p90Ms:+pct(vals,.9).toFixed(1),p95Ms:+pct(vals,.95).toFixed(1),minMs:+Math.min(...vals).toFixed(1),maxMs:+Math.max(...vals).toFixed(1),failures:0}))}console.log('VALIDATE_1500_STABILITY_SUCCESS');agent.destroy()})().catch(e=>{agent.destroy();console.error(e.stack||String(e));process.exit(1)})
+          NODE
