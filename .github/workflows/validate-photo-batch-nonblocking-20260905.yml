@@ -134,11 +134,11 @@ jobs:
           URL="https://script.google.com/macros/s/${DEPLOY_ID}/exec"
 
           echo 'PHOTO_BATCH_BENCHMARK_BEGIN'
-          curl --max-time 180 -fsSL -X POST "${URL}?mode=batch" > /tmp/photo-batch-result.json &
+          curl --max-time 180 -fsSL -d '' "${URL}?mode=batch" > /tmp/photo-batch-result.json &
           BATCH_PID=$!
           sleep 3
           for i in 1 2 3; do
-            curl --max-time 30 -fsSL -X POST "${URL}?mode=lockProbe" > "/tmp/photo-lock-${i}.json"
+            curl --max-time 30 -fsSL -d '' "${URL}?mode=lockProbe" > "/tmp/photo-lock-${i}.json"
             cat "/tmp/photo-lock-${i}.json"
             echo
             sleep 1
