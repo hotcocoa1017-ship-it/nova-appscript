@@ -2,14 +2,17 @@
 (() => {
   'use strict';
 
-  // QM_BEGIN_DB_FIRST_V1
-  // 추가조회(CLEANED/VACANT)의 사용자 대기경로만 DB-first로 전환합니다.
-  // 일반 QM 점검/완료/재정비와 기존 Apps Script 경로는 그대로 fallback으로 유지합니다.
+  // QM_BEGIN_DB_FIRST_V2
+  // - 추가조회(CLEANED/VACANT): 객실 선점 + 점검시작 + DB 초안까지 DB-first
+  // - 일반 배정객실: 방금 새로 QM_START가 확정된 경우에만 DB 초안을 즉시 준비
+  // - 전환 이전부터 QM_CHECKING이던 기존 세션은 기존 Sheet 초안을 그대로 이어감
   const originalCallServer = window.callServer;
-  if (typeof originalCallServer !== 'function' || originalCallServer.__novaQmBeginDbFirstV1) return;
+  if (typeof originalCallServer !== 'function' || originalCallServer.__novaQmBeginDbFirstV2) return;
 
   const AUTH_CACHE_MS = 180000;
+  const NEW_START_MARKER_MS = 120000;
   const trackedDrafts = new Map();
+  const newAssignedStarts = new Map();
   let authCache = null;
   let authPromise = null;
   let configCache = null;
@@ -19,9 +22,30 @@
     return new Promise(resolve => window.setTimeout(resolve, Math.max(0, Number(ms || 0))));
   }
 
-  function requestId_(roomNo) {
+  function requestId_(roomNo, prefix = 'QM-BEGIN') {
     if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
-    return `QM-BEGIN-${Date.now()}-${String(roomNo || '')}-${Math.random().toString(36).slice(2)}`;
+    return `${prefix}-${Date.now()}-${String(roomNo || '')}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function roomKey_(businessDate, site, roomNo) {
+    return `${String(businessDate || '').trim()}|${String(site || '').trim()}|${String(roomNo || '').trim()}`;
+  }
+
+  function cleanupNewStartMarkers_() {
+    const now = Date.now();
+    newAssignedStarts.forEach((entry, key) => {
+      if (!entry || now - Number(entry.createdAt || 0) > NEW_START_MARKER_MS) newAssignedStarts.delete(key);
+    });
+  }
+
+  function getNewStartMarker_(payload) {
+    cleanupNewStartMarkers_();
+    const key = roomKey_(payload?.businessDate, payload?.site, payload?.roomNo);
+    const marker = newAssignedStarts.get(key);
+    if (!marker) return null;
+    const expected = Number(payload?.realtimeVersion || 0);
+    if (expected > 0 && Number(marker.version || 0) !== expected) return null;
+    return marker;
   }
 
   function normalizeRpcError_(response, data) {
@@ -127,6 +151,54 @@
     throw error;
   }
 
+  async function rpcPrepareNewDraft_(token, payload, marker, attempt = 0) {
+    const auth = await getAuth_(token, attempt > 0 && attempt === 1);
+    if (!auth) return null;
+    const endpoint = `${String(auth.supabaseUrl || '').replace(/\/+$/, '')}/rest/v1/rpc/nova_qm_prepare_new_draft_v1`;
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${String(auth.token || '')}`,
+          'apikey': String(auth.publishableKey || '')
+        },
+        body: JSON.stringify({
+          p_business_date: String(payload.businessDate || ''),
+          p_site: String(payload.site || ''),
+          p_room_no: String(payload.roomNo || ''),
+          p_expected_room_version: Number(marker?.version || payload.realtimeVersion || 0),
+          p_request_id: String(marker?.requestId || '')
+        })
+      });
+    } catch (networkError) {
+      if (attempt < 2) {
+        await sleep_([180, 520, 1100][attempt] || 1100);
+        return rpcPrepareNewDraft_(token, payload, marker, attempt + 1);
+      }
+      const error = new Error('QM 체크리스트 DB 저장준비 결과를 확인하지 못했습니다. 저장 시 같은 요청으로 다시 확인합니다.');
+      error.code = 'QM_DRAFT_RESULT_UNKNOWN';
+      throw error;
+    }
+
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data?.ok) return data;
+
+    const error = normalizeRpcError_(response, data);
+    const code = String(error.code || '').trim().toUpperCase();
+    if (response.status === 401 && (code === 'PGRST303' || attempt === 0) && attempt < 2) {
+      authCache = null;
+      await sleep_(220);
+      return rpcPrepareNewDraft_(token, payload, marker, attempt + 1);
+    }
+    if ((response.status === 429 || response.status >= 500) && attempt < 2) {
+      await sleep_([180, 520, 1100][attempt] || 1100);
+      return rpcPrepareNewDraft_(token, payload, marker, attempt + 1);
+    }
+    throw error;
+  }
+
   function mirrorPayload_(entry) {
     return {
       businessDate: entry.payload.businessDate,
@@ -171,6 +243,25 @@
     }
   }
 
+  function trackDraft_(token, payload, draft) {
+    const safeDraft = Object.assign({ answers: [], defects: [] }, draft || {});
+    if (!safeDraft.draftId) return null;
+    const entry = {
+      token,
+      payload: Object.assign({}, payload || {}),
+      draft: safeDraft,
+      mirrored: false,
+      mirrorResult: null,
+      mirrorPromise: null,
+      createdAt: Date.now()
+    };
+    trackedDrafts.set(String(safeDraft.draftId), entry);
+    void ensureMirror_(token, entry).catch(error => {
+      console.error('[NOVA QM] 점검시작 후 이력 동기화 오류:', error);
+    });
+    return entry;
+  }
+
   async function startBrowseDbFirst_(token, payload) {
     const safe = Object.assign({}, payload || {});
     const view = String(safe.view || '').trim().toUpperCase();
@@ -209,21 +300,7 @@
     if (!result.draft?.draftId) throw new Error('QM 점검 초안을 준비하지 못했습니다.');
 
     const draft = Object.assign({ answers: [], defects: [] }, result.draft || {});
-    const entry = {
-      token,
-      payload: safe,
-      draft,
-      mirrored: false,
-      mirrorResult: null,
-      mirrorPromise: null,
-      createdAt: Date.now()
-    };
-    trackedDrafts.set(String(draft.draftId), entry);
-
-    // 사용자 응답은 기다리지 않고 기존 Sheet/이력 호환만 후행 보완합니다.
-    void ensureMirror_(token, entry).catch(error => {
-      console.error('[NOVA QM] 점검시작 후 이력 동기화 오류:', error);
-    });
+    trackDraft_(token, safe, draft);
 
     return {
       ok: true,
@@ -246,10 +323,105 @@
     };
   }
 
+  async function prepareAssignedDraftDbFirst_(token, payload) {
+    const safe = Object.assign({}, payload || {});
+    if (!safe.realtimeStarted) return originalCallServer('startQmInspection', token, safe);
+    const marker = getNewStartMarker_(safe);
+    if (!marker) {
+      // 전환 이전부터 점검중이거나 새 시작으로 확정되지 않은 세션은 기존 Sheet 초안을 유지합니다.
+      return originalCallServer('startQmInspection', token, safe);
+    }
+
+    let config = null;
+    try { config = await getConfig_(token); } catch (error) {
+      console.warn('[NOVA QM] 일반점검 DB 초안 설정확인 실패 · 기존 경로 사용:', error?.message || error);
+    }
+    if (!config?.apiBase) {
+      newAssignedStarts.delete(marker.key);
+      return originalCallServer('startQmInspection', token, safe);
+    }
+
+    let result;
+    try {
+      result = await rpcPrepareNewDraft_(token, safe, marker);
+    } catch (error) {
+      const code = String(error?.code || '').trim().toUpperCase();
+      if (isMissingRpc_(error) || code === '40001') {
+        // 명시적 미배포/상태검증 실패는 DB 트랜잭션이 적용되지 않았으므로 기존 초안경로로 안전하게 전환합니다.
+        newAssignedStarts.delete(marker.key);
+        console.warn('[NOVA QM] 일반점검 DB 초안은 기존 경로로 전환합니다.', error?.message || error);
+        return originalCallServer('startQmInspection', token, safe);
+      }
+      // 네트워크 결과 불명확 시 legacy를 중복 실행하지 않습니다. 같은 marker/requestId로 저장 시 재확인합니다.
+      throw error;
+    }
+    if (!result?.ok || !result.draft?.draftId) throw new Error(result?.message || 'QM 체크리스트 DB 저장준비에 실패했습니다.');
+
+    const draft = Object.assign({ answers: [], defects: [] }, result.draft || {});
+    trackDraft_(token, {
+      businessDate: safe.businessDate,
+      site: safe.site,
+      roomNo: safe.roomNo,
+      rowNumber: Number(safe.rowNumber || 0)
+    }, draft);
+    newAssignedStarts.delete(marker.key);
+
+    return {
+      ok: true,
+      realtime: true,
+      dbFirst: true,
+      version: Number(result.version || result.room?.version || marker.version || 0),
+      room: result.room || null,
+      draft,
+      checklist: null,
+      requestId: marker.requestId
+    };
+  }
+
+  // 일반 QM 새 점검 시작을 표시합니다. 이미 QM_CHECKING이던 세션은 표시하지 않습니다.
+  const originalRoomActionHelper = typeof window.saveRoomActionRealtimeOrLegacy_ === 'function'
+    ? window.saveRoomActionRealtimeOrLegacy_
+    : null;
+  if (originalRoomActionHelper && !originalRoomActionHelper.__novaQmNewStartMarkerV2) {
+    const wrappedRoomActionHelper = async function(legacyMethod, payload) {
+      const safe = payload || {};
+      const action = String(safe.action || '').trim().toUpperCase();
+      const beforeVersion = Number(safe.expectedVersion || 0);
+      const beforeStatus = String(safe.expectedState?.cleaningStatus || '').trim().toUpperCase();
+      const result = await originalRoomActionHelper.apply(this, arguments);
+
+      if (legacyMethod === 'updateMobileRoomOperation' && action === 'QM_START' && beforeStatus !== 'QM_CHECKING') {
+        const afterVersion = Number(result?.version || result?.room?.version || 0);
+        const afterStatus = String(result?.room?.cleaningStatus || '').trim().toUpperCase();
+        if (afterVersion > beforeVersion && afterStatus === 'QM_CHECKING') {
+          cleanupNewStartMarkers_();
+          const key = roomKey_(safe.businessDate, safe.site, safe.roomNo);
+          newAssignedStarts.set(key, {
+            key,
+            businessDate: String(safe.businessDate || ''),
+            site: String(safe.site || ''),
+            roomNo: String(safe.roomNo || ''),
+            version: afterVersion,
+            requestId: requestId_(safe.roomNo, 'QM-DRAFT'),
+            createdAt: Date.now()
+          });
+        }
+      }
+      return result;
+    };
+    wrappedRoomActionHelper.__novaQmNewStartMarkerV2 = true;
+    wrappedRoomActionHelper.__novaOriginalRoomActionHelper = originalRoomActionHelper;
+    window.saveRoomActionRealtimeOrLegacy_ = wrappedRoomActionHelper;
+  }
+
   async function callServerQmDbFirst_(method, ...args) {
     const name = String(method || '');
     if (name === 'startQmMobileBrowseInspection') {
       return startBrowseDbFirst_(args[0], args[1]);
+    }
+
+    if (name === 'startQmInspection') {
+      return prepareAssignedDraftDbFirst_(args[0], args[1]);
     }
 
     if (name === 'saveQmInspectionDraft') {
@@ -274,7 +446,7 @@
     return originalCallServer(name, ...args);
   }
 
-  callServerQmDbFirst_.__novaQmBeginDbFirstV1 = true;
+  callServerQmDbFirst_.__novaQmBeginDbFirstV2 = true;
   callServerQmDbFirst_.__novaOriginalCallServer = originalCallServer;
   window.callServer = callServerQmDbFirst_;
 })();
