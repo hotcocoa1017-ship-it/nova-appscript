@@ -20,6 +20,8 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: JavaScript syntax checks
         shell: bash
@@ -97,6 +99,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main --force
           changed="$(git diff --name-only origin/main...HEAD | sort)"
           printf '%s\n' "$changed"
           expected="$(printf '%s\n' '04_Api.js' 'ArchiveAdmin.js' 'ArchiveAdminClient.html' 'Index.html' '.github/workflows/validate-archive-admin-ui-20260905.yml' | sort)"
