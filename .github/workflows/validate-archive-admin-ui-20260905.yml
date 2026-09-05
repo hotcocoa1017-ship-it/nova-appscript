@@ -1,0 +1,107 @@
+name: Validate Archive Admin UI
+
+on:
+  push:
+    branches: [feat/archive-admin-gateway-20260905]
+    paths:
+      - 'ArchiveAdmin.js'
+      - 'ArchiveAdminClient.html'
+      - '04_Api.js'
+      - 'Index.html'
+      - '.github/workflows/validate-archive-admin-ui-20260905.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JavaScript syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check ArchiveAdmin.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text=Path('ArchiveAdminClient.html').read_text(encoding='utf-8')
+          blocks=re.findall(r'<script>([\s\S]*?)</script>',text)
+          if len(blocks)!=1:
+              raise SystemExit(f'Archive client script block count={len(blocks)}')
+          Path('/tmp/archive-admin-client.js').write_text(blocks[0],encoding='utf-8')
+          PY
+          node --check /tmp/archive-admin-client.js
+          echo 'ARCHIVE_ADMIN_SYNTAX=OK'
+
+      - name: Validate ADMIN-only menu and isolated include
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          api=Path('04_Api.js').read_text(encoding='utf-8')
+          index=Path('Index.html').read_text(encoding='utf-8')
+          if api.count("{ id: 'archive', label: 'Archive 이력' }") != 1:
+              raise SystemExit('Archive menu anchor must exist exactly once')
+          admin=api.split('ADMIN: [',1)[1].split('],',1)[0]
+          order=api.split('ORDER: [',1)[1].split('],',1)[0]
+          if "id: 'archive'" not in admin:
+              raise SystemExit('Archive menu missing from ADMIN')
+          if "id: 'archive'" in order:
+              raise SystemExit('Archive menu leaked to ORDER')
+          if index.count("include_('ArchiveAdminClient')") != 1:
+              raise SystemExit('Archive client include count mismatch')
+          if index.index("include_('ArchiveAdminClient')") < index.index("include_('Client')"):
+              raise SystemExit('Archive client must load after core Client')
+          print('ARCHIVE_ADMIN_MENU_SCOPE=ADMIN_ONLY')
+          print('ARCHIVE_ADMIN_INCLUDE=ISOLATED')
+          PY
+
+      - name: Validate server authorization and browser secret isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          server=Path('ArchiveAdmin.js').read_text(encoding='utf-8')
+          client=Path('ArchiveAdminClient.html').read_text(encoding='utf-8')
+          required=[
+            'verifyNovaToken(token)',
+            "role !== 'ADMIN'",
+            "getProperty('NOVA_TOKEN_SECRET')",
+            'Utilities.computeHmacSha256Signature',
+            "'X-NOVA-Archive-Admin-Key'",
+            "novaArchiveAdminPost_(token, 'status'",
+            "novaArchiveAdminPost_(token, 'query'",
+            "novaArchiveAdminPost_(token, 'restore'",
+          ]
+          missing=[x for x in required if x not in server]
+          if missing:
+              raise SystemExit('Server security anchor missing: '+repr(missing))
+          forbidden=['NOVA_TOKEN_SECRET','X-NOVA-Archive-Admin-Key','SUPABASE_SERVICE_ROLE_KEY','nova_archive_restore_token']
+          leaked=[x for x in forbidden if x in client]
+          if leaked:
+              raise SystemExit('Browser secret surface detected: '+repr(leaked))
+          if "localStorage.getItem('novaToken')" not in client:
+              raise SystemExit('Client NOVA token bridge missing')
+          print('ARCHIVE_ADMIN_SERVER_AUTH=OK')
+          print('ARCHIVE_ADMIN_BROWSER_SECRET_EXPOSURE=NONE')
+          PY
+
+      - name: Validate only intended production files changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only origin/main...HEAD | sort)"
+          printf '%s\n' "$changed"
+          expected="$(printf '%s\n' '04_Api.js' 'ArchiveAdmin.js' 'ArchiveAdminClient.html' 'Index.html' '.github/workflows/validate-archive-admin-ui-20260905.yml' | sort)"
+          if [ "$changed" != "$expected" ]; then
+            echo '::error::Unexpected feature-branch files detected.'
+            exit 20
+          fi
+          echo 'ARCHIVE_ADMIN_CHANGE_SCOPE=MINIMAL'
