@@ -1,0 +1,74 @@
+name: Diagnose DB First Role Smoke 20260905
+
+on:
+  push:
+    branches: [diag/wif-cloudrun-access-20260829]
+    paths:
+      - .github/workflows/diag-dbfirst-role-smoke-20260905.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_REGION: asia-southeast1
+  CLOUD_RUN_SERVICE: nova-realtime-api
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Smoke actual DB-first endpoints using isolated LOADTEST data
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CLOUD_RUN_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/service.json
+          node <<'NODE'
+          const fs=require('fs'), crypto=require('crypto'), https=require('https');
+          const s=JSON.parse(fs.readFileSync('/tmp/service.json','utf8'));
+          const tspec=s?.spec?.template?.spec||{};
+          const env=Object.fromEntries(((tspec.containers||[{}])[0].env||[]).filter(e=>'value' in e).map(e=>[e.name,String(e.value||'')]));
+          const secret=env.NOVA_TOKEN_SECRET;
+          const serviceUrl=s?.status?.url;
+          if(!secret||!serviceUrl) throw new Error('required runtime configuration unavailable');
+          const b64web=b=>Buffer.from(b).toString('base64').replace(/\+/g,'-').replace(/\//g,'_');
+          function token(employeeNo){
+            const payload={employeeNo:String(employeeNo),site:'LOADTEST',issuedAt:Date.now(),expiresAt:Date.now()+60*60*1000};
+            const body=b64web(Buffer.from(JSON.stringify(payload)));
+            const sig=b64web(crypto.createHmac('sha256',secret).update(body).digest());
+            return `${body}.${sig}`;
+          }
+          const base=new URL(serviceUrl); const agent=new https.Agent({keepAlive:true,maxSockets:20});
+          function req(method,path,tok,body){return new Promise(resolve=>{
+            const data=body===undefined?'':JSON.stringify(body);
+            const r=https.request({hostname:base.hostname,port:443,path,method,agent,timeout:15000,headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json',...(data?{'Content-Length':Buffer.byteLength(data)}:{})}},res=>{
+              let text='';res.on('data',c=>text+=c);res.on('end',()=>{let json=null;try{json=JSON.parse(text||'null')}catch{}resolve({status:res.statusCode,json,text})});
+            });r.on('timeout',()=>r.destroy(new Error('timeout')));r.on('error',e=>resolve({status:0,error:e.message,json:null,text:''}));if(data)r.write(data);r.end();
+          })}
+          function assertOk(label,r){
+            const safe={status:r.status,ok:r.json?.ok,code:r.json?.code||'',message:r.json?.message||r.json?.error||''};
+            console.log(label+'='+JSON.stringify(safe));
+            if(r.status<200||r.status>=300||r.json?.ok!==true) throw new Error(label+' failed');
+          }
+          (async()=>{
+            const orderTok=token('990001'), hmTok=token('990002'), qmTok=token('990003'), publicTok=token('990004');
+            let r=await req('GET','/v1/rooms?businessDate=2099-12-31&site=LOADTEST',qmTok); assertOk('QM_ROOM_READ',r);
+            r=await req('POST','/v1/auth/realtime-token',qmTok,{}); assertOk('QM_REALTIME_TOKEN',r);
+            r=await req('GET','/v1/houseman-orders?businessDate=2099-12-31&site=LOADTEST',orderTok); assertOk('HOUSEMAN_LIST',r);
+            const orderId='HO-20991231-LTSMOKE01';
+            const requestId='LT-SMOKE-PUBLIC-'+Date.now();
+            const assignment={building:'1동',employeeNo:'990002',name:'LOADTEST HOUSEMAN',employeeNos:['990002'],names:['LOADTEST HOUSEMAN'],candidates:[{employeeNo:'990002',name:'LOADTEST HOUSEMAN',shiftCodes:['A'],pendingCount:0}],shiftCodes:['A'],pendingCount:0,currentShift:'A',activeShiftCodes:['A']};
+            r=await req('POST','/v1/houseman-orders',publicTok,{orderId,requestId,businessDate:'2099-12-31',site:'LOADTEST',roomNo:'1000',part:'기타',items:[{name:'LOADTEST',quantity:1}],note:'LOADTEST',requester:'LOADTEST PUBLIC',requestSource:'PUBLIC',assignmentMode:'AUTO',important:false,handover:false,assignment,handoverTargetShift:''}); assertOk('PUBLIC_ORDER_CREATE',r);
+            r=await req('POST',`/v1/houseman-orders/${encodeURIComponent(orderId)}/action`,hmTok,{action:'ACCEPT_START',reason:'',requestId:'LT-SMOKE-HM-'+Date.now()}); assertOk('HOUSEMAN_ACTION',r);
+            r=await req('POST','/v1/rooms/1000/action',qmTok,{businessDate:'2099-12-31',site:'LOADTEST',action:'QM_START',requestId:'LT-SMOKE-QM-'+Date.now(),expectedVersion:1,expectedState:{cleaningStatus:'QM_WAITING',qmEmployeeNo:'990003'}}); assertOk('QM_START',r);
+            console.log('DBFIRST_ROLE_SMOKE=PASS'); agent.destroy();
+          })().catch(e=>{agent.destroy();console.error(e.stack||String(e));process.exit(1)});
+          NODE
