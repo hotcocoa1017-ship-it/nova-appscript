@@ -1,0 +1,76 @@
+name: Run Photo Save Web Benchmark 20260905
+
+on:
+  push:
+    branches: [diag/photo-save-speed-20260905]
+    paths:
+      - .github/workflows/run-photo-save-web-benchmark-20260905.yml
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install clasp
+        run: npm install --global @google/clasp
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo "::error::Apps Script OAuth secret missing"
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+      - name: Push diagnostic source to HEAD
+        run: clasp push --force
+      - name: Create temporary deployment and benchmark
+        id: diag
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPLOY_OUTPUT="$(clasp create-deployment --description 'TEMP NOVA photo save speed diag 20260905')"
+          printf '%s\n' "$DEPLOY_OUTPUT"
+          DEPLOY_ID="$(printf '%s\n' "$DEPLOY_OUTPUT" | grep -oE 'AKfy[a-zA-Z0-9_-]+' | tail -1)"
+          if [ -z "$DEPLOY_ID" ]; then
+            echo '::error::Could not parse temporary deployment id'
+            exit 4
+          fi
+          echo "deployment_id=$DEPLOY_ID" >> "$GITHUB_OUTPUT"
+          echo 'PHOTO_WEB_BENCHMARK_BEGIN'
+          START_MS="$(date +%s%3N)"
+          RESULT="$(curl --retry 2 --retry-delay 1 --max-time 180 -fsSL -d '' "https://script.google.com/macros/s/${DEPLOY_ID}/exec")"
+          END_MS="$(date +%s%3N)"
+          echo "$RESULT"
+          echo "HTTP_WALL_MS=$((END_MS-START_MS))"
+          echo 'PHOTO_WEB_BENCHMARK_END'
+          printf '%s' "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d.get('ok') is True, d"
+      - name: Remove temporary deployment
+        if: always() && steps.diag.outputs.deployment_id != ''
+        shell: bash
+        run: clasp undeploy "${{ steps.diag.outputs.deployment_id }}" || true
+      - name: Restore Apps Script HEAD to production main source
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git reset --hard origin/main
+          clasp push --force
+          echo 'APPS_SCRIPT_HEAD_RESTORED=main'
