@@ -1,0 +1,75 @@
+name: Validate QM Inspection DB First V1
+
+on:
+  push:
+    branches: [feat/full-db-houseman-ui-20260907]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+
+      - name: Apply QM inspection DB-first patch
+        run: python3 scripts/patch_qm_inspection_dbfirst_v1.py
+
+      - name: Validate DB-first ordering and markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'QM_INSPECTION_FINALIZE_DB_FIRST_V1' 16_QmChecklist.js
+          grep -q 'novaQmInspectionDbFirstEnabled_' 16_QmChecklist.js
+          grep -q 'novaQmInspectionDbFinalize_' 16_QmChecklist.js
+          grep -q 'QM_INSPECTION_V1:' 16_QmChecklist.js
+          grep -q 'nova_qm_inspection_finalize_v1' RealtimeDbFirstServer.js
+          grep -q 'nova_room_upload_state_v1' RealtimeDbFirstServer.js
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('16_QmChecklist.js').read_text(encoding='utf-8')
+          start = text.index('function submitQmChecklistInspection')
+          end = text.index('function getQmInspectionAnalytics', start)
+          block = text[start:end]
+          db = block.index('dbInspectionCommit = novaQmInspectionDbFinalize_')
+          sheet = block.index('updateRowByHeaders_(sheet, rowInfo.rowNumber, updates)')
+          history = block.index("'처리상태': passed ? 'PASS' : 'FAIL'")
+          assert db < sheet < history, (db, sheet, history)
+          assert 'checklistRecordId = `QMCL-' in block
+          print('QM validate -> DB -> Sheet ordering OK')
+          PY
+
+      - name: Validate JavaScript syntax
+        run: |
+          node --check 16_QmChecklist.js
+          node --check RealtimeDbFirstServer.js
+
+      - name: Validate NOVA regression gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum 16_QmChecklist.js | awk '{print $1}')"
+          python3 scripts/patch_qm_inspection_dbfirst_v1.py
+          after="$(sha256sum 16_QmChecklist.js | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Persist validated QM source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 16_QmChecklist.js; then
+            echo 'Validated source already persisted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 16_QmChecklist.js
+          git commit -m 'Persist QM inspection DB-first v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
