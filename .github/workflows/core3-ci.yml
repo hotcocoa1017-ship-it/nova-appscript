@@ -110,3 +110,119 @@ jobs:
             echo 'CORE3_TARGET_STATE=ABSENT'
           fi
           echo 'CORE3_GCP_PREFLIGHT=OK'
+
+  cloudrun-dev-deploy:
+    needs: [room-state-domain, cloudrun-readonly-preflight]
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'nova-core3-room-state-20260906'
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    concurrency:
+      group: nova-core3-api-dev-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate Google Cloud using existing NOVA WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Capture production revision and Core environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$CORE3_TARGET_SERVICE" != "$CORE3_SOURCE_SERVICE"
+          gcloud run services describe "$CORE3_SOURCE_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/source-before.json
+          python3 - <<'PY'
+          import json, os, sys
+          s=json.load(open('/tmp/source-before.json'))
+          status=s.get('status') or {}
+          active=[(str(t.get('revisionName') or ''), int(t.get('percent') or 0)) for t in status.get('traffic') or [] if int(t.get('percent') or 0)>0]
+          if len(active)!=1 or active[0][1]!=100 or not active[0][0]:
+              print('::error::Production Realtime service does not have one 100% active revision.', file=sys.stderr)
+              sys.exit(30)
+          template=((s.get('spec') or {}).get('template') or {}).get('spec') or {}
+          containers=template.get('containers') or []
+          envs=(containers[0].get('env') or []) if containers else []
+          by={str(e.get('name','')):e for e in envs}
+          values={}
+          for name in ('SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY'):
+              e=by.get(name) or {}
+              value=str(e.get('value') or '').strip()
+              if not value:
+                  print(f'::error::{name} must be a direct value for isolated dev copy.', file=sys.stderr)
+                  sys.exit(31)
+              values[name]=value
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write('CORE3_SOURCE_REVISION='+active[0][0]+'\n')
+              f.write('CORE3_SUPABASE_URL='+values['SUPABASE_URL']+'\n')
+              f.write('CORE3_SUPABASE_PUBLISHABLE_KEY='+values['SUPABASE_PUBLISHABLE_KEY']+'\n')
+          print('SOURCE_REVISION_CAPTURED=OK')
+          PY
+
+      - name: Mask inherited environment values
+        shell: bash
+        run: |
+          echo "::add-mask::$CORE3_SUPABASE_URL"
+          echo "::add-mask::$CORE3_SUPABASE_PUBLISHABLE_KEY"
+
+      - name: Deploy isolated NOVA Core 3 dev service
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run deploy "$CORE3_TARGET_SERVICE" \
+            --source core3/server \
+            --project="$GCP_PROJECT_ID" \
+            --region="$GCP_REGION" \
+            --allow-unauthenticated \
+            --cpu=1 \
+            --memory=512Mi \
+            --concurrency=80 \
+            --min=0 \
+            --max=10 \
+            --timeout=15s \
+            --set-env-vars="SUPABASE_URL=$CORE3_SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY=$CORE3_SUPABASE_PUBLISHABLE_KEY,NOVA_CORE_RPC_TIMEOUT_MS=2500,NOVA_CORE_RPC_ATTEMPTS=3" \
+            --quiet
+
+      - name: Verify Core 3 dev health and production isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CORE3_TARGET_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/core3-target.json
+          TARGET_URL="$(python3 - <<'PY'
+          import json
+          s=json.load(open('/tmp/core3-target.json'))
+          print((s.get('status') or {}).get('url') or '')
+          PY
+          )"
+          test -n "$TARGET_URL"
+          HTTP="$(curl -sS --retry 4 --retry-delay 2 -o /tmp/core3-health.json -w '%{http_code}' "$TARGET_URL/health")"
+          echo "CORE3_HEALTH_HTTP=$HTTP"
+          test "$HTTP" = '200'
+          python3 - <<'PY'
+          import json, sys
+          b=json.load(open('/tmp/core3-health.json'))
+          if b.get('ok') is not True or b.get('service') != 'nova-core3' or not str(b.get('revision') or ''):
+              print('::error::Unexpected Core 3 health payload.', file=sys.stderr)
+              sys.exit(40)
+          print('CORE3_HEALTH=OK')
+          print('CORE3_REVISION='+str(b.get('revision')))
+          PY
+
+          AFTER_REV="$(gcloud run services describe "$CORE3_SOURCE_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" \
+            --format='value(status.traffic[0].revisionName)')"
+          test "$AFTER_REV" = "$CORE3_SOURCE_REVISION"
+          echo 'PRODUCTION_REALTIME_REVISION_UNCHANGED=OK'
+
+      - name: Deployment summary
+        shell: bash
+        run: |
+          echo "Core 3 dev service deployed: $CORE3_TARGET_SERVICE"
+          echo 'Apps Script @271 was not deployed or modified by this workflow.'
