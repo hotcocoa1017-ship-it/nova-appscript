@@ -30,7 +30,7 @@ class _NovaMobileAppState extends State<NovaMobileApp>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && controller.isAuthenticated) {
-      controller.refreshRooms(silent: true);
+      controller.handleAppResumed();
     }
   }
 
