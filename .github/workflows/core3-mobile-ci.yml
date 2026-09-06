@@ -32,10 +32,18 @@ jobs:
         with:
           channel: stable
           cache: true
-      - name: Ensure Android scaffold exists
+      - name: Ensure Android scaffold exists without touching app sources
+        shell: bash
         run: |
+          set -euo pipefail
           if [ ! -d android ]; then
-            flutter create --platforms=android --org=kr.co.novaworks --project-name=nova_mobile .
+            TMP="$(mktemp -d)"
+            flutter create \
+              --platforms=android \
+              --org=kr.co.novaworks \
+              --project-name=nova_mobile \
+              "$TMP/nova_mobile"
+            cp -R "$TMP/nova_mobile/android" ./android
           fi
       - run: flutter pub get
       - run: flutter analyze
@@ -55,10 +63,18 @@ jobs:
         with:
           channel: stable
           cache: true
-      - name: Ensure iOS scaffold exists
+      - name: Ensure iOS scaffold exists without touching app sources
+        shell: bash
         run: |
+          set -euo pipefail
           if [ ! -d ios ]; then
-            flutter create --platforms=ios --org=kr.co.novaworks --project-name=nova_mobile .
+            TMP="$(mktemp -d)"
+            flutter create \
+              --platforms=ios \
+              --org=kr.co.novaworks \
+              --project-name=nova_mobile \
+              "$TMP/nova_mobile"
+            cp -R "$TMP/nova_mobile/ios" ./ios
           fi
       - run: flutter pub get
       - name: Build iOS without signing
