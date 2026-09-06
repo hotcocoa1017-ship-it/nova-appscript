@@ -2496,11 +2496,21 @@
     const volume = $('novaPrefVolume');
     const output = $('novaPrefVolumeValue');
     volume?.addEventListener('input', () => { if (output) output.textContent = `${Number(volume.value || 0)}%`; });
-    $('novaPrefPreview')?.addEventListener('click', () => {
+    $('novaPrefPreview')?.addEventListener('click', async () => {
+      const button = $('novaPrefPreview');
       const prefs = readNotificationPreferencesPanel_();
       if (!prefs.soundEnabled) prefs.soundEnabled = true;
-      window.NOVA_NOTIFICATION_PREFS_V2?.preview?.(prefs);
-    });
+      try {
+        const preview = window.NOVA_NOTIFICATION_PREFS_V2?.preview;
+        if (typeof preview !== 'function') throw new Error('알림음 엔진을 준비하고 있습니다. 잠시 후 다시 눌러주세요.');
+        if (button) { button.disabled = true; button.textContent = '재생 중'; }
+        await preview(prefs);
+      } catch (error) {
+        showToast(error?.message || '알림음을 재생하지 못했습니다.');
+      } finally {
+        if (button) { button.disabled = false; button.textContent = '미리 듣기'; }
+      }
+    }); // NOVA_NOTIFICATION_PREVIEW_AUDIO_UNLOCK_V1
     $('novaPrefSave')?.addEventListener('click', saveNotificationPreferencesSettings_);
   }
 
