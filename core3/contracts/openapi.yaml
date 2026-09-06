@@ -1,0 +1,169 @@
+openapi: 3.1.0
+info:
+  title: NOVA Core API
+  version: 3.0.0-alpha.1
+  description: >-
+    Initial server contract for the Room State migration. PostgreSQL is the
+    authoritative live-state source. Mutations require a stable request ID.
+servers:
+  - url: https://api.nova.invalid
+    description: Placeholder; never used for production deployment.
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      security: []
+      operationId: health
+      responses:
+        '200':
+          description: Service is ready to receive requests.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+                  revision: { type: string }
+  /v1/rooms:
+    get:
+      operationId: listRooms
+      parameters:
+        - in: query
+          name: businessDate
+          required: true
+          schema: { type: string, format: date }
+        - in: query
+          name: site
+          required: true
+          schema: { type: string, minLength: 1 }
+        - in: query
+          name: changedAfterVersion
+          required: false
+          schema: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Authoritative current room state visible to the authenticated user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, rooms]
+                properties:
+                  ok: { type: boolean, const: true }
+                  rooms:
+                    type: array
+                    items: { $ref: '#/components/schemas/Room' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/rooms/{roomNo}/actions:
+    post:
+      operationId: mutateRoom
+      parameters:
+        - in: path
+          name: roomNo
+          required: true
+          schema: { type: string, minLength: 1 }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 160 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoomActionRequest' }
+      responses:
+        '200':
+          description: The requested intent is committed, or was already safely committed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomActionResponse' }
+        '409':
+          description: A real semantic conflict remains after reading the latest room state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConflictResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Room:
+      type: object
+      required:
+        - businessDate
+        - site
+        - roomNo
+        - roomStatus
+        - cleaningStatus
+        - version
+      properties:
+        businessDate: { type: string, format: date }
+        site: { type: string }
+        roomNo: { type: string }
+        building: { type: string }
+        roomStatus: { type: string }
+        cleaningStatus:
+          type: string
+          enum: [WAITING, ASSIGNED, CLEANING, COMPLETED, QM_WAITING, QM_CHECKING, QM_COMPLETED, REWORK, NOT_REQUIRED]
+        cleaningType: { type: string }
+        assignmentType: { type: string }
+        roommaidEmployeeNo: { type: string }
+        secondaryRoommaidEmployeeNo: { type: string }
+        qmEmployeeNo: { type: string }
+        operationalStatus: { type: string }
+        version: { type: integer, minimum: 0 }
+        cleaningStartedAt: { type: [string, 'null'], format: date-time }
+        cleaningCompletedAt: { type: [string, 'null'], format: date-time }
+        updatedAt: { type: string, format: date-time }
+    RoomActionRequest:
+      type: object
+      required: [businessDate, site, action]
+      properties:
+        businessDate: { type: string, format: date }
+        site: { type: string, minLength: 1 }
+        action:
+          type: string
+          enum:
+            - CLEANING_START
+            - CLEANING_COMPLETE
+            - ASSIGN_ROOMMAID
+            - CLEAR_ASSIGNMENT
+            - CLEANING_RESET
+            - QM_ASSIGN
+            - QM_START
+            - QM_COMPLETE
+            - QM_REWORK
+            - UPDATE_ROOM_OPERATION_STATUS
+            - UPDATE_OPERATION_FLAGS
+            - CHANGE_ROOM_STATUS
+        expectedVersion: { type: integer, minimum: 0 }
+        payload: { type: object, additionalProperties: true }
+    RoomActionResponse:
+      type: object
+      required: [ok, requestId, room]
+      properties:
+        ok: { type: boolean, const: true }
+        requestId: { type: string }
+        idempotent: { type: boolean }
+        alreadyApplied: { type: boolean }
+        room: { $ref: '#/components/schemas/Room' }
+    ConflictResponse:
+      type: object
+      required: [ok, code, message, room]
+      properties:
+        ok: { type: boolean, const: false }
+        code: { type: string }
+        message: { type: string }
+        room: { $ref: '#/components/schemas/Room' }
+  responses:
+    Unauthorized:
+      description: Authentication is missing or expired.
+    Forbidden:
+      description: Authenticated identity is not allowed to perform this operation.
