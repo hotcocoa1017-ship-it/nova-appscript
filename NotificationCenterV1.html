@@ -1,0 +1,366 @@
+<style>
+  .nova-notification-wrap.nova-unified-active { display:inline-flex !important; }
+  .nova-notification-panel.nova-unified-panel { overflow:auto; }
+  .nova-unified-server { border-bottom:1px solid #e5e7eb; background:#fff; }
+  .nova-unified-server-head,
+  .nova-unified-task-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 12px; background:#f8fafc; color:#475569; font-size:11px; font-weight:800; }
+  .nova-unified-server-actions { display:flex; align-items:center; gap:6px; }
+  .nova-unified-small-button { min-height:28px; padding:0 8px; border:1px solid #dbe2ea; border-radius:7px; background:#fff; color:#334155; font-size:10px; font-weight:800; cursor:pointer; }
+  .nova-unified-server-list { max-height:260px; overflow-y:auto; }
+  .nova-unified-server-empty { padding:20px 14px; color:#64748b; font-size:11px; text-align:center; }
+  .nova-unified-item { position:relative; display:block; width:100%; padding:11px 13px 11px 17px; border:0; border-bottom:1px solid #f1f5f9; background:#fff; color:#111827; text-align:left; cursor:pointer; }
+  .nova-unified-item:last-child { border-bottom:0; }
+  .nova-unified-item.unread { background:#f8fbff; }
+  .nova-unified-item.unread::before { content:''; position:absolute; left:7px; top:17px; width:6px; height:6px; border-radius:999px; background:#2563eb; }
+  .nova-unified-item.high::before { background:#dc2626; }
+  .nova-unified-item-top { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px; }
+  .nova-unified-item-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:900; }
+  .nova-unified-item-time { flex:0 0 auto; color:#94a3b8; font-size:10px; font-weight:700; }
+  .nova-unified-item-body { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#475569; font-size:11px; }
+  .nova-unified-item-meta { display:block; margin-top:3px; color:#94a3b8; font-size:10px; }
+  .nova-notification-list { max-height:250px; }
+  .nova-unified-highlight { outline:3px solid rgba(37,99,235,.24) !important; outline-offset:2px; border-radius:10px; }
+  .nova-unified-toast { position:fixed; top:72px; right:14px; z-index:10080; width:min(360px,calc(100vw - 28px)); padding:12px 14px; border:1px solid #dbe2ea; border-radius:12px; background:#fff; box-shadow:0 16px 38px rgba(15,23,42,.2); transform:translateY(-8px); opacity:0; pointer-events:none; transition:opacity .16s ease,transform .16s ease; }
+  .nova-unified-toast.show { transform:translateY(0); opacity:1; }
+  .nova-unified-toast strong { display:block; margin-bottom:3px; font-size:13px; }
+  .nova-unified-toast span { display:block; color:#475569; font-size:11px; line-height:1.4; }
+  @media(max-width:760px){
+    .nova-unified-server-list { max-height:34vh; }
+    .nova-notification-list { max-height:30vh; }
+    .nova-unified-toast { top:66px; right:8px; width:calc(100vw - 16px); box-sizing:border-box; }
+  }
+</style>
+<script>
+(() => {
+  'use strict';
+  const MARKER = 'NOVA_NOTIFICATION_CENTER_V1';
+  const N = {
+    token: '', auth: null, employeeNo: '', apiBase: '', client: null, channel: null,
+    items: [], unread: 0, taskCount: 0, knownIds: new Set(), initialLoaded: false,
+    authBusy: false, refreshBusy: false, soundEnabled: localStorage.getItem('novaNotificationSound') !== '0',
+    audioCtx: null, audioReady: false, writingBadge: false, badgeObserver: null, badgeTarget: null,
+    shellObserver: null, authTimer: null, pollTimer: null, toastTimer: null, started: false
+  };
+
+  function token_() { return String(localStorage.getItem('novaToken') || '').trim(); }
+  function esc_(v) { return String(v ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;'); }
+  function callServer_(method, ...args) {
+    return new Promise((resolve, reject) => {
+      const runner = google.script.run.withSuccessHandler(resolve).withFailureHandler(e => reject(new Error(e?.message || String(e))));
+      runner[method](...args);
+    });
+  }
+  function decodeJwt_(jwt) {
+    try {
+      const part = String(jwt || '').split('.')[1] || '';
+      const base = part.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(part.length/4)*4,'=');
+      const raw = atob(base); const bytes = Uint8Array.from(raw, c => c.charCodeAt(0));
+      return JSON.parse(new TextDecoder().decode(bytes));
+    } catch (_) { return {}; }
+  }
+  function loggedIn_() {
+    const main = document.getElementById('mainView');
+    return Boolean(token_() && main && !main.classList.contains('hidden'));
+  }
+
+  function ensureShell_() {
+    const wrap = document.getElementById('novaNotificationWrap');
+    const panel = document.getElementById('novaNotificationPanel');
+    const legacyList = document.getElementById('novaNotificationList');
+    if (!wrap || !panel || !legacyList) return false;
+    wrap.classList.add('nova-unified-active');
+    panel.classList.add('nova-unified-panel');
+    if (!document.getElementById('novaUnifiedServer')) {
+      const block = document.createElement('section');
+      block.id = 'novaUnifiedServer';
+      block.className = 'nova-unified-server';
+      block.innerHTML = `
+        <div class="nova-unified-server-head">
+          <span>새 알림</span>
+          <div class="nova-unified-server-actions">
+            <button id="novaUnifiedSound" class="nova-unified-small-button" type="button" aria-label="알림음">${N.soundEnabled ? '🔊 알림음' : '🔇 알림음'}</button>
+            <button id="novaUnifiedReadAll" class="nova-unified-small-button" type="button">모두 읽음</button>
+          </div>
+        </div>
+        <div id="novaUnifiedServerList" class="nova-unified-server-list"><div class="nova-unified-server-empty">알림을 연결하고 있습니다.</div></div>
+        <div class="nova-unified-task-head"><span>현재 처리할 업무</span><span id="novaUnifiedTaskCount">0건</span></div>`;
+      legacyList.parentNode.insertBefore(block, legacyList);
+      document.getElementById('novaUnifiedSound')?.addEventListener('click', toggleSound_);
+      document.getElementById('novaUnifiedReadAll')?.addEventListener('click', markAllRead_);
+    }
+    wireBadge_();
+    renderServer_();
+    return true;
+  }
+
+  function wireBadge_() {
+    const badge = document.getElementById('novaNotificationBadge');
+    if (!badge || N.badgeTarget === badge) return;
+    N.badgeObserver?.disconnect();
+    N.badgeTarget = badge;
+    N.taskCount = parseInt(String(badge.textContent || '0').replace(/\D/g,''),10) || 0;
+    N.badgeObserver = new MutationObserver(() => {
+      if (N.writingBadge) return;
+      const raw = String(badge.textContent || '0');
+      N.taskCount = raw.includes('99+') ? 99 : (parseInt(raw.replace(/\D/g,''),10) || 0);
+      applyCombinedBadge_();
+    });
+    N.badgeObserver.observe(badge, { childList:true, characterData:true, subtree:true, attributes:true, attributeFilter:['class'] });
+    applyCombinedBadge_();
+  }
+
+  function applyCombinedBadge_() {
+    const wrap = document.getElementById('novaNotificationWrap');
+    const badge = document.getElementById('novaNotificationBadge');
+    const count = document.getElementById('novaNotificationCountText');
+    if (!badge) return;
+    wrap?.classList.add('nova-unified-active');
+    const total = Math.max(0, Number(N.taskCount || 0)) + Math.max(0, Number(N.unread || 0));
+    N.writingBadge = true;
+    badge.textContent = total > 99 ? '99+' : String(total);
+    badge.classList.toggle('hidden', total < 1);
+    if (count) count.textContent = `새 알림 ${N.unread} · 업무 ${N.taskCount}`;
+    const task = document.getElementById('novaUnifiedTaskCount'); if (task) task.textContent = `${N.taskCount}건`;
+    window.setTimeout(() => { N.writingBadge = false; }, 0);
+  }
+
+  function relativeTime_(value) {
+    const t = new Date(value || '').getTime(); if (!Number.isFinite(t)) return '';
+    const sec = Math.max(0, Math.floor((Date.now()-t)/1000));
+    if (sec < 60) return '방금'; if (sec < 3600) return `${Math.floor(sec/60)}분 전`;
+    if (sec < 86400) return `${Math.floor(sec/3600)}시간 전`;
+    return `${Math.floor(sec/86400)}일 전`;
+  }
+  function meta_(x) { return [x.site, x.room_no ? `${x.room_no}호` : ''].filter(Boolean).join(' · '); }
+
+  function renderServer_() {
+    ensureShell_();
+    const root = document.getElementById('novaUnifiedServerList'); if (!root) return;
+    const sound = document.getElementById('novaUnifiedSound'); if (sound) sound.textContent = N.soundEnabled ? '🔊 알림음' : '🔇 알림음';
+    if (!N.items.length) {
+      root.innerHTML = `<div class="nova-unified-server-empty">${N.initialLoaded ? '새 알림이 없습니다.' : '알림을 연결하고 있습니다.'}</div>`;
+      applyCombinedBadge_(); return;
+    }
+    root.innerHTML = N.items.slice(0,30).map(x => {
+      const unread = !x.read_at; const high = String(x.priority || '').toUpperCase() === 'HIGH';
+      return `<button class="nova-unified-item ${unread?'unread':''} ${high?'high':''}" type="button" data-nova-unified-id="${esc_(x.notification_id)}">
+        <span class="nova-unified-item-top"><strong class="nova-unified-item-title">${esc_(x.title || 'NOVA 알림')}</strong><span class="nova-unified-item-time">${esc_(relativeTime_(x.created_at))}</span></span>
+        <span class="nova-unified-item-body">${esc_(x.body || '')}</span>
+        <span class="nova-unified-item-meta">${esc_(meta_(x))}</span>
+      </button>`;
+    }).join('');
+    root.querySelectorAll('[data-nova-unified-id]').forEach(btn => btn.addEventListener('click', () => openNotification_(String(btn.dataset.novaUnifiedId || ''))));
+    applyCombinedBadge_();
+  }
+
+  async function authBundle_() {
+    const novaToken = token_(); if (!novaToken) throw new Error('로그인 정보가 없습니다.');
+    const config = await callServer_('getNovaRealtimeClientConfig', novaToken);
+    if (!config?.ok || !config?.enabled || !config?.apiBase) throw new Error('알림 Realtime 설정을 사용할 수 없습니다.');
+    const apiBase = String(config.apiBase || '').replace(/\/+$/,'');
+    const response = await fetch(`${apiBase}/v1/auth/realtime-token`, { method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${novaToken}`}, body:'{}' });
+    let auth = {}; try { auth = await response.json(); } catch (_) {}
+    if (!response.ok || !auth?.ok || !auth?.token || !auth?.supabaseUrl || !auth?.publishableKey) throw new Error(auth?.message || `알림 인증 실패 (${response.status})`);
+    const claims = decodeJwt_(auth.token); const employeeNo = String(claims?.employee_no || '').trim();
+    if (!employeeNo) throw new Error('알림 사용자 정보를 확인할 수 없습니다.');
+    return { ...auth, apiBase, employeeNo };
+  }
+
+  async function rest_(query, options = {}) {
+    if (!N.auth) throw new Error('알림 인증이 없습니다.');
+    const response = await fetch(`${String(N.auth.supabaseUrl).replace(/\/+$/,'')}/rest/v1/${query}`, {
+      method: options.method || 'GET',
+      headers: Object.assign({
+        'apikey': N.auth.publishableKey,
+        'Authorization': `Bearer ${N.auth.token}`,
+        'Content-Type': 'application/json'
+      }, options.headers || {}),
+      body: options.body
+    });
+    if (!response.ok) {
+      let data = {}; try { data = await response.json(); } catch (_) {}
+      const error = new Error(data?.message || data?.hint || `알림 API 오류 (${response.status})`); error.status = response.status; throw error;
+    }
+    return response;
+  }
+
+  async function refreshList_(notifyNew = false) {
+    if (!N.auth || N.refreshBusy) return;
+    N.refreshBusy = true;
+    try {
+      const response = await rest_('nova_notifications?select=notification_id,kind,title,body,site,room_no,entity_type,entity_id,priority,payload,created_at,read_at&order=created_at.desc&limit=50');
+      const rows = await response.json();
+      const next = Array.isArray(rows) ? rows : [];
+      const newUnread = next.filter(x => !x.read_at && !N.knownIds.has(String(x.notification_id)));
+      N.items = next;
+      N.unread = next.filter(x => !x.read_at).length;
+      next.forEach(x => N.knownIds.add(String(x.notification_id)));
+      renderServer_();
+      if (notifyNew && N.initialLoaded && newUnread.length) {
+        const newest = newUnread[0];
+        playSound_(); showToast_(newest);
+      }
+      N.initialLoaded = true;
+    } catch (error) {
+      console.warn('[NOVA Notification] 목록 조회 실패', error);
+      if (error?.status === 401) window.setTimeout(connect_, 500);
+    } finally { N.refreshBusy = false; }
+  }
+
+  async function markRead_(id) {
+    const item = N.items.find(x => String(x.notification_id) === String(id));
+    if (!item || item.read_at) return;
+    item.read_at = new Date().toISOString(); N.unread = Math.max(0, N.unread - 1); renderServer_();
+    try {
+      await rest_(`nova_notifications?notification_id=eq.${encodeURIComponent(id)}`, { method:'PATCH', headers:{'Prefer':'return=minimal'}, body:JSON.stringify({read_at:item.read_at}) });
+    } catch (error) { console.warn('[NOVA Notification] 읽음 저장 실패', error); void refreshList_(false); }
+  }
+
+  async function markAllRead_() {
+    unlockAudio_();
+    if (!N.auth || !N.unread) return;
+    const at = new Date().toISOString();
+    N.items.forEach(x => { if (!x.read_at) x.read_at = at; }); N.unread = 0; renderServer_();
+    try {
+      await rest_('nova_notifications?read_at=is.null', { method:'PATCH', headers:{'Prefer':'return=minimal'}, body:JSON.stringify({read_at:at}) });
+    } catch (error) { console.warn('[NOVA Notification] 모두 읽음 실패', error); void refreshList_(false); }
+  }
+
+  async function openNotification_(id) {
+    unlockAudio_();
+    const item = N.items.find(x => String(x.notification_id) === String(id)); if (!item) return;
+    await markRead_(id);
+    document.getElementById('novaNotificationPanel')?.classList.add('hidden');
+    document.getElementById('novaNotificationButton')?.setAttribute('aria-expanded','false');
+    route_(item);
+  }
+
+  function route_(item) {
+    const p = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+    const route = String(p.route || '').toLowerCase();
+    const labels = {
+      cleaning:['오늘의 정비','룸메이드'], qm:['QM 점검'], houseman:['하우스맨 오더','하우스맨'], archive:['Archive 이력']
+    }[route] || [];
+    if (labels.length) {
+      const buttons = [...document.querySelectorAll('#menu button')];
+      const target = buttons.find(b => labels.some(label => String(b.textContent || '').trim().includes(label)));
+      if (target && !target.classList.contains('active')) target.click();
+    }
+    const room = String(p.roomNo || item.room_no || '').trim();
+    const entity = String(p.orderId || item.entity_id || '').trim();
+    window.setTimeout(() => focusTarget_(room, entity), 650);
+    window.setTimeout(() => focusTarget_(room, entity), 1400);
+  }
+
+  function focusTarget_(room, entity) {
+    let target = null;
+    if (entity) {
+      target = [...document.querySelectorAll('[data-mobile-order-id],[data-order-id]')].find(el => String(el.dataset.mobileOrderId || el.dataset.orderId || '') === entity) || null;
+    }
+    if (!target && room) {
+      target = [...document.querySelectorAll('.mobile-room-card,.mobile-task-card,.order-mini-row,[data-room-no]')].find(el => {
+        const value = String(el.dataset.roomNo || el.querySelector?.('.mobile-card-top strong,.order-room')?.textContent || el.textContent || '').trim();
+        return value === room || value.startsWith(`${room}호`) || value.includes(`${room}호`);
+      }) || null;
+    }
+    if (!target) return;
+    target.scrollIntoView({behavior:'smooth', block:'center'});
+    target.classList.add('nova-unified-highlight');
+    window.setTimeout(() => target.classList.remove('nova-unified-highlight'), 2400);
+  }
+
+  function unlockAudio_() {
+    if (N.audioReady) return;
+    const Ctx = window.AudioContext || window.webkitAudioContext; if (!Ctx) return;
+    try { N.audioCtx = N.audioCtx || new Ctx(); void N.audioCtx.resume(); N.audioReady = true; } catch (_) {}
+  }
+  function playSound_() {
+    if (!N.soundEnabled || !N.audioReady || !N.audioCtx) return;
+    try {
+      const now = N.audioCtx.currentTime;
+      [[740,0],[980,.12]].forEach(([freq,delay]) => {
+        const osc = N.audioCtx.createOscillator(); const gain = N.audioCtx.createGain();
+        osc.type = 'sine'; osc.frequency.value = freq;
+        gain.gain.setValueAtTime(.0001, now+delay); gain.gain.exponentialRampToValueAtTime(.075, now+delay+.02); gain.gain.exponentialRampToValueAtTime(.0001, now+delay+.14);
+        osc.connect(gain); gain.connect(N.audioCtx.destination); osc.start(now+delay); osc.stop(now+delay+.16);
+      });
+    } catch (_) {}
+  }
+  function toggleSound_() {
+    unlockAudio_(); N.soundEnabled = !N.soundEnabled; localStorage.setItem('novaNotificationSound', N.soundEnabled ? '1' : '0'); renderServer_();
+    if (N.soundEnabled) playSound_();
+  }
+
+  function showToast_(item) {
+    let toast = document.getElementById('novaUnifiedToast');
+    if (!toast) { toast = document.createElement('div'); toast.id='novaUnifiedToast'; toast.className='nova-unified-toast'; document.body.appendChild(toast); }
+    toast.innerHTML = `<strong>${esc_(item?.title || 'NOVA 알림')}</strong><span>${esc_(item?.body || '')}</span>`;
+    window.clearTimeout(N.toastTimer); requestAnimationFrame(() => toast.classList.add('show'));
+    N.toastTimer = window.setTimeout(() => toast.classList.remove('show'), 4200);
+  }
+
+  async function connect_() {
+    const currentToken = token_();
+    if (!currentToken || !loggedIn_() || N.authBusy) return;
+    if (N.token === currentToken && N.auth && N.channel) { ensureShell_(); return; }
+    N.authBusy = true;
+    try {
+      await disconnect_(false);
+      const auth = await authBundle_();
+      if (token_() !== currentToken) return;
+      N.token = currentToken; N.auth = auth; N.employeeNo = auth.employeeNo; N.apiBase = auth.apiBase;
+      N.client = window.supabase?.createClient?.(auth.supabaseUrl, auth.publishableKey, { auth:{persistSession:false,autoRefreshToken:false} }) || null;
+      if (N.client) {
+        await N.client.realtime.setAuth(auth.token);
+        const topic = `nova:user:${auth.employeeNo}:notifications`;
+        N.channel = N.client.channel(topic, {config:{private:true}})
+          .on('broadcast', {event:'NOTIFICATION'}, () => { void refreshList_(true); })
+          .subscribe(status => {
+            if (status === 'SUBSCRIBED') void refreshList_(false);
+            if (['CHANNEL_ERROR','TIMED_OUT','CLOSED'].includes(String(status || '').toUpperCase())) window.setTimeout(connect_, 1800);
+          });
+      }
+      await refreshList_(false);
+      scheduleAuthRefresh_(); schedulePoll_();
+    } catch (error) {
+      console.warn('[NOVA Notification] 연결 실패', error);
+      window.setTimeout(connect_, 2500);
+    } finally { N.authBusy = false; }
+  }
+
+  async function refreshAuth_() {
+    if (!loggedIn_() || !N.client) return connect_();
+    try {
+      const auth = await authBundle_();
+      if (auth.employeeNo !== N.employeeNo) return connect_();
+      N.auth = auth; await N.client.realtime.setAuth(auth.token); scheduleAuthRefresh_();
+    } catch (error) { console.warn('[NOVA Notification] 인증 갱신 실패', error); window.setTimeout(refreshAuth_, 3000); }
+  }
+  function scheduleAuthRefresh_() { window.clearTimeout(N.authTimer); N.authTimer = window.setTimeout(refreshAuth_, 9*60*1000); }
+  function schedulePoll_() { window.clearTimeout(N.pollTimer); N.pollTimer = window.setTimeout(async () => { if (loggedIn_()) await refreshList_(N.initialLoaded); schedulePoll_(); }, 45000); }
+
+  async function disconnect_(clear = true) {
+    window.clearTimeout(N.authTimer); window.clearTimeout(N.pollTimer);
+    if (N.client && N.channel) { try { await N.client.removeChannel(N.channel); } catch (_) {} }
+    N.channel = null; N.client = null; N.auth = null;
+    if (clear) { N.token=''; N.employeeNo=''; N.items=[]; N.unread=0; N.knownIds.clear(); N.initialLoaded=false; renderServer_(); }
+  }
+
+  function lifecycle_() {
+    if (loggedIn_()) { ensureShell_(); void connect_(); }
+    else if (N.token || N.auth) void disconnect_(true);
+  }
+  function start_() {
+    if (N.started) return; N.started = true;
+    document.addEventListener('pointerdown', unlockAudio_, {passive:true});
+    document.addEventListener('keydown', unlockAudio_, {passive:true});
+    N.shellObserver = new MutationObserver(() => lifecycle_());
+    N.shellObserver.observe(document.body, {subtree:true, childList:true, attributes:true, attributeFilter:['class']});
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && loggedIn_()) { ensureShell_(); void refreshList_(false); void connect_(); } });
+    window.addEventListener('focus', () => { if (loggedIn_()) { ensureShell_(); void refreshList_(false); } });
+    lifecycle_();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start_, {once:true}); else start_();
+  console.info(`[${MARKER}] ready`);
+})();
+</script>
