@@ -10,8 +10,16 @@ function service(overrides = {}) {
   };
 }
 
-async function withServer(roomActionService, fn) {
-  const server = createNovaCoreServer({ roomActionService, revision: 'test-revision' });
+function authService(overrides = {}) {
+  return {
+    async login() { return { status: 200, body: { ok: true, accessToken: 'token' } }; },
+    async me() { return { status: 200, body: { ok: true, employeeNo: '321516' } }; },
+    ...overrides,
+  };
+}
+
+async function withServer(roomActionService, fn, auth = authService()) {
+  const server = createNovaCoreServer({ roomActionService, authService: auth, revision: 'test-revision' });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   try {
@@ -29,6 +37,42 @@ test('health endpoint exposes revision without auth', async () => {
     assert.equal(body.ok, true);
     assert.equal(body.revision, 'test-revision');
   });
+});
+
+test('login endpoint forwards credentials without logging/token handling in router', async () => {
+  let captured;
+  await withServer(service(), async base => {
+    const response = await fetch(`${base}/v1/session/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '테스트', employeeNo: '1234', site: '쏘라노' }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.accessToken, 'issued.jwt');
+    assert.equal(captured.employeeNo, '1234');
+  }, authService({
+    async login(body) {
+      captured = body;
+      return { status: 200, body: { ok: true, accessToken: 'issued.jwt' } };
+    },
+  }));
+});
+
+test('me endpoint forwards bearer authorization', async () => {
+  let captured;
+  await withServer(service(), async base => {
+    const response = await fetch(`${base}/v1/session/me`, {
+      headers: { Authorization: 'Bearer employee.jwt' },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(captured.authorization, 'Bearer employee.jwt');
+  }, authService({
+    async me(request) {
+      captured = request;
+      return { status: 200, body: { ok: true, employeeNo: '321516' } };
+    },
+  }));
 });
 
 test('authoritative room list endpoint forwards auth/date/site', async () => {
