@@ -1,0 +1,75 @@
+name: Validate Daily Close Read DB First V1
+
+on:
+  push:
+    branches: [feat/full-db-houseman-ui-20260907]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+
+      - name: Apply DB-first close read patch
+        run: python3 scripts/patch_daily_close_read_dbfirst_v1.py
+
+      - name: Validate markers and source priority
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'DAILY_CLOSE_READ_DB_FIRST_V1' 14_DailyClose.js
+          grep -q 'readDailyCloseDbSnapshots_' 14_DailyClose.js
+          grep -q 'mergeDailyCloseSnapshots_' 14_DailyClose.js
+          grep -q "buildDailyCloseOverviewForRequest_(request, token)" 11_Monthly.js
+          grep -q "const saved = dbSaved || historyBundle.saved" 19_RoommaidCloseJournal.js
+          grep -q "savedSource: dbSaved ? 'REALTIME_DB'" 19_RoommaidCloseJournal.js
+          grep -q 'nova_daily_close_read_v1' RealtimeDbFirstServer.js
+          python3 - <<'PY'
+          from pathlib import Path
+          close = Path('14_DailyClose.js').read_text(encoding='utf-8')
+          daily = close[close.index('function buildDailyCloseDailyOverview_'):close.index('function buildDailyCloseMonthlyOverview_')]
+          assert daily.index('readDailyCloseDbSnapshots_') < daily.index('readCurrentRowsForClose_')
+          merge = close[close.index('function mergeDailyCloseSnapshots_'):close.index('function readDailyCloseSummaries_')]
+          assert merge.index('(Array.isArray(sheetItems)') < merge.index('(Array.isArray(dbItems)')
+          print('DB close snapshot priority OK')
+          PY
+
+      - name: Validate JavaScript syntax
+        run: |
+          node --check 14_DailyClose.js
+          node --check 11_Monthly.js
+          node --check 19_RoommaidCloseJournal.js
+          node --check RealtimeDbFirstServer.js
+
+      - name: Validate NOVA regression gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum 14_DailyClose.js 11_Monthly.js 19_RoommaidCloseJournal.js | sha256sum | awk '{print $1}')"
+          python3 scripts/patch_daily_close_read_dbfirst_v1.py
+          after="$(sha256sum 14_DailyClose.js 11_Monthly.js 19_RoommaidCloseJournal.js | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Persist validated DB-first close reads
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(14_DailyClose.js 11_Monthly.js 19_RoommaidCloseJournal.js)
+          if git diff --quiet -- "${files[@]}"; then
+            echo 'Validated sources already persisted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "${files[@]}"
+          git commit -m 'Persist daily close DB-first reads v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
