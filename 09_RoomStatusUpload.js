@@ -133,6 +133,16 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
         : [];
       const existingForTarget = {};
       const keptRows = [];
+      const dbFirstEnabled = typeof novaRoomUploadDbFirstEnabled_ === 'function' && novaRoomUploadDbFirstEnabled_(); // ROOM_UPLOAD_DB_FIRST_V2
+      let dbBundle = null;
+      let dbCurrentRows = [];
+      let dbCurrentVersion = 0;
+      if (dbFirstEnabled) {
+        dbBundle = novaRoomUploadDbBundle_(token, preview.businessDate, preview.site);
+        if (!dbBundle || dbBundle.ok === false) throw new Error('DB 최신 객실현황을 확인하지 못했습니다.');
+        dbCurrentRows = Array.isArray(dbBundle.currentRows) ? dbBundle.currentRows : [];
+        dbCurrentVersion = dbCurrentRows.reduce((max, row) => Math.max(max, Number(row && row['마지막변경버전'] || 0)), 0);
+      }
       const targetRowNumbers = [];
       let removedTargetRowCount = 0;
 
@@ -150,9 +160,36 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
         }
       });
 
-      const version = resetExisting
-        ? reserveRoomUploadResetVersion_(preview.businessDate, preview.site)
-        : reserveDataVersion_({ lockHeld: true });
+      if (dbFirstEnabled) {
+        // DB가 Sheet보다 최신일 수 있으므로 핵심 객실상태/배정값은 DB를 우선해 업로드 계산 기준을 맞춥니다.
+        dbCurrentRows.forEach(data => {
+          const roomNo = normalizeRoomNo_(data && data['객실번호']);
+          if (!roomNo) return;
+          const previous = existingForTarget[roomNo] || {};
+          existingForTarget[roomNo] = Object.assign({}, previous, {
+            '업무일자': String(data['업무일자'] || preview.businessDate).trim(),
+            '사업장': String(data['사업장'] || preview.site).trim(),
+            '객실번호': roomNo,
+            '동': String(data['동'] || previous['동'] || '').trim(),
+            '객실상태': String(data['객실상태'] || '').trim().toUpperCase(),
+            '청소상태': String(data['청소상태'] || '').trim().toUpperCase(),
+            '정비유형': String(data['정비유형'] || previous['정비유형'] || NOVA.CLEANING_TYPES.NORMAL).trim().toUpperCase(),
+            '배정유형': String(data['배정유형'] || previous['배정유형'] || '').trim().toUpperCase(),
+            '룸메이드사번': String(data['룸메이드사번'] || '').trim(),
+            '보조룸메이드사번': String(data['보조룸메이드사번'] || '').trim(),
+            'QM사번': String(data['QM사번'] || '').trim(),
+            '객실운영상태': String(data['객실운영상태'] || '').trim(),
+            '마지막변경버전': Number(data['마지막변경버전'] || 0),
+            '수정일시': String(data['수정일시'] || previous['수정일시'] || '').trim()
+          });
+        });
+      }
+
+      let version = dbFirstEnabled
+        ? reserveRoomUploadDbAlignedVersion_(dbCurrentVersion, resetExisting, preview.businessDate, preview.site)
+        : (resetExisting
+          ? reserveRoomUploadResetVersion_(preview.businessDate, preview.site)
+          : reserveDataVersion_({ lockHeld: true }));
       const updatedAt = nowText_();
       const usersByEmployeeNo = getUserIndex_().byEmployeeNo;
       const requestedAssignments = normalizeRoommaidUploadAssignment_(preview.roommaidAssignment).byRoom;
@@ -211,6 +248,47 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
 
       if (resetExisting) {
         assertResetRoomUploadAssignments_(newRows, headerMap, appliedAssignments);
+      }
+
+      let dbCommitMs = 0;
+      let dbCommit = null;
+      if (dbFirstEnabled) {
+        const dbCommitStartedMs = Date.now();
+        const dbRooms = buildRoomUploadDbRows_(newRows, headerMap);
+        dbCommit = novaRoomUploadDbApply_(token, {
+          businessDate: preview.businessDate,
+          site: preview.site,
+          rooms: dbRooms,
+          expectedVersion: dbCurrentVersion,
+          version,
+          requestId: `ROOM_UPLOAD_V2:${String(previewId || '').trim()}`,
+          upload: {
+            fileName: preview.fileName,
+            extension: preview.extension,
+            counts: preview.counts || {},
+            totalRooms: dbRooms.length,
+            roomsByStatus: buildUploadRoomsByStatus_(preview.statusByRoom),
+            applyMode: resetExisting ? 'RESET_REPLACE' : 'MERGE_REPLACE',
+            roommaidAssignment: {
+              sheetFound: Boolean(preview.roommaidAssignment && preview.roommaidAssignment.sheetFound),
+              requestedCount: Number(preview.roommaidAssignment && preview.roommaidAssignment.requestedCount || 0),
+              validCount: Number(preview.roommaidAssignment && preview.roommaidAssignment.validCount || 0),
+              appliedCount: appliedAssignments.length,
+              skippedCount: skippedAssignments.length,
+              appliedByEmployee: buildAppliedAssignmentSummary_(appliedAssignments)
+            }
+          }
+        });
+        dbCommitMs = Date.now() - dbCommitStartedMs;
+        const committedVersion = Number(dbCommit && dbCommit.version || 0);
+        if (!committedVersion) throw new Error('DB 업로드 확정 버전을 확인하지 못했습니다.');
+        if (committedVersion !== version) {
+          // 동일 previewId 재시도 시 DB는 기존 확정을 멱등 반환합니다. Sheet도 그 확정버전에 맞춥니다.
+          version = committedVersion;
+          const versionColumn = Number(headerMap['마지막변경버전'] || 0);
+          if (!versionColumn) throw new Error('현재객실현황 마지막변경버전 열을 찾을 수 없습니다.');
+          newRows.forEach(row => { row[versionColumn - 1] = version; });
+        }
       }
 
       const currentWriteStartedMs = Date.now();
@@ -346,9 +424,17 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
         resetExisting,
         removedTargetRowCount,
         maintenanceReset,
+        dbFirst: Boolean(dbFirstEnabled),
+        dbCommit: dbCommit ? {
+          version: Number(dbCommit.version || 0),
+          previousVersion: Number(dbCommit.previousVersion || 0),
+          idempotent: Boolean(dbCommit.idempotent),
+          requestId: String(dbCommit.requestId || '')
+        } : null,
         timing: {
           totalMs: Date.now() - applyStartedMs,
           lockWaitMs: lockAcquiredMs - lockRequestedMs,
+          dbCommitMs,
           currentWriteMs,
           maintenanceMs,
           flushMs,
@@ -360,6 +446,41 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
       lock.releaseLock();
     }
   });
+}
+
+
+function reserveRoomUploadDbAlignedVersion_(dbCurrentVersion, resetExisting, businessDate, site) { // ROOM_UPLOAD_DB_FIRST_V2
+  const dbVersion = Math.max(0, Number(dbCurrentVersion || 0));
+  let reserved = resetExisting
+    ? Number(reserveRoomUploadResetVersion_(businessDate, site) || 0)
+    : Number(reserveDataVersion_({ lockHeld: true }) || 0);
+  if (reserved > dbVersion) return reserved;
+
+  // DB room version이 Apps Script 전역버전보다 앞선 경우 전역버전도 같이 전진시켜
+  // 이후 Sheet/DB expectedVersion이 다시 어긋나지 않도록 합니다.
+  reserved = dbVersion + 1;
+  PropertiesService.getScriptProperties().setProperty('NOVA_DATA_VERSION', String(reserved));
+  return reserved;
+}
+
+function buildRoomUploadDbRows_(rows, headerMap) { // ROOM_UPLOAD_DB_FIRST_V2
+  return (rows || []).map(row => {
+    const data = rowObjectFromValues_(row, headerMap);
+    return {
+      roomNo: String(data['객실번호'] || '').trim(),
+      building: String(data['동'] || '').trim(),
+      roomStatus: String(data['객실상태'] || '').trim().toUpperCase(),
+      cleaningStatus: String(data['청소상태'] || 'WAITING').trim().toUpperCase(),
+      cleaningType: String(data['정비유형'] || NOVA.CLEANING_TYPES.NORMAL).trim().toUpperCase(),
+      assignmentType: String(data['배정유형'] || '').trim().toUpperCase(),
+      roommaidEmployeeNo: String(data['룸메이드사번'] || '').trim(),
+      secondaryRoommaidEmployeeNo: String(data['보조룸메이드사번'] || '').trim(),
+      qmEmployeeNo: String(data['QM사번'] || '').trim(),
+      operationalStatus: typeof normalizeIndicatorRoomOperationalStatus_ === 'function'
+        ? normalizeIndicatorRoomOperationalStatus_(data['객실운영상태'])
+        : String(data['객실운영상태'] || '').trim()
+    };
+  }).filter(row => row.roomNo);
 }
 
 
