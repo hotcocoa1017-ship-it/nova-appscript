@@ -1,0 +1,140 @@
+name: Validate 1500-room cleaning max acceleration
+
+on:
+  push:
+    branches:
+      - test/dbfirst-1000-20260905
+    paths:
+      - .github/workflows/validate-cleaning-1500-max-acceleration-20260906.yml
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_URL: https://evoetxfjmkkjptucwxsv.supabase.co
+      SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV2b2V0eGZqbWtranB0dWN3eHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0MTI4NzgsImV4cCI6MjEwMjk4ODg3OH0.wNWMvTIFfCU2lN-c7LBFj2QYE2S4FiFg1moOXm-F_C8
+    steps:
+      - name: Benchmark batch sizes
+        shell: bash
+        run: |
+          node <<'NODE'
+          const https = require('https');
+          const { URL } = require('url');
+          const base = new URL(process.env.SUPABASE_URL);
+          const key = process.env.SUPABASE_ANON_KEY;
+          const agent = new https.Agent({ keepAlive: true, maxSockets: 64, maxFreeSockets: 64 });
+
+          function rpc(name, body) {
+            return new Promise(resolve => {
+              const payload = JSON.stringify(body || {});
+              const started = process.hrtime.bigint();
+              const req = https.request({
+                hostname: base.hostname,
+                port: 443,
+                path: `/rest/v1/rpc/${name}`,
+                method: 'POST',
+                agent,
+                headers: {
+                  apikey: key,
+                  Authorization: `Bearer ${key}`,
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(payload),
+                  Connection: 'keep-alive'
+                },
+                timeout: 30000
+              }, res => {
+                let data = '';
+                res.on('data', c => data += c);
+                res.on('end', () => {
+                  const ms = Number(process.hrtime.bigint() - started) / 1e6;
+                  let json = null;
+                  try { json = JSON.parse(data || 'null'); } catch (_) {}
+                  resolve({ status: res.statusCode, ms, json, text: data });
+                });
+              });
+              req.on('timeout', () => req.destroy(new Error('timeout')));
+              req.on('error', e => resolve({ status: 0, ms: Number(process.hrtime.bigint()-started)/1e6, error: e.message, json:null, text:'' }));
+              req.end(payload);
+            });
+          }
+
+          const rooms = Array.from({length:1500}, (_,i)=>i+1);
+          const chunks = (arr,size) => Array.from({length:Math.ceil(arr.length/size)}, (_,i)=>arr.slice(i*size,(i+1)*size));
+          function pct(v,p){const a=v.slice().sort((x,y)=>x-y);return a[Math.min(a.length-1,Math.max(0,Math.ceil(a.length*p)-1))]||0;}
+
+          async function reset(){
+            const r=await rpc('nova_loadtest_cleaning_reset',{});
+            if(r.status!==200||!r.json?.ok) throw new Error(`reset ${r.status} ${r.text}`);
+          }
+          async function summary(){
+            const r=await rpc('nova_loadtest_cleaning_summary',{});
+            if(r.status!==200) throw new Error(`summary ${r.status} ${r.text}`);
+            return r.json;
+          }
+          async function runAction(action,batchSize,tag){
+            const parts=chunks(rooms,batchSize);
+            const t0=process.hrtime.bigint();
+            const rs=await Promise.all(parts.map((ids,i)=>rpc('nova_loadtest_cleaning_batch',{
+              p_action:action,
+              p_room_ids:ids,
+              p_request_prefix:`${tag}:${action}:${i}`
+            })));
+            const wallMs=Number(process.hrtime.bigint()-t0)/1e6;
+            const failures=rs.filter(r=>r.status!==200||!r.json?.ok);
+            const changed=rs.reduce((s,r)=>s+Number(r.json?.changed||0),0);
+            const events=rs.reduce((s,r)=>s+Number(r.json?.events||0),0);
+            const lats=rs.map(r=>r.ms);
+            if(failures.length||changed!==1500||events!==1500){
+              throw new Error(`${action} batch=${batchSize}: failures=${failures.length}, changed=${changed}, events=${events}, examples=${JSON.stringify(failures.slice(0,3))}`);
+            }
+            return { wallMs, requests:parts.length, p50:pct(lats,.5), p95:pct(lats,.95), p99:pct(lats,.99), max:Math.max(...lats) };
+          }
+
+          async function stage(batchSize){
+            await reset();
+            await new Promise(r=>setTimeout(r,250));
+            const tag=`b${batchSize}-${Date.now()}`;
+            const total0=process.hrtime.bigint();
+            const start=await runAction('CLEANING_START',batchSize,tag);
+            const s1=await summary();
+            if(Number(s1.cleaning)!==1500||Number(s1.events)!==1500) throw new Error(`after start invalid b=${batchSize}: ${JSON.stringify(s1)}`);
+            const complete=await runAction('CLEANING_COMPLETE',batchSize,tag);
+            const s2=await summary();
+            if(Number(s2.cleaning)!==0||Number(s2.waiting)!==0||Number(s2.qmWaiting)!==500||Number(s2.completed)!==1000||Number(s2.events)!==3000){
+              throw new Error(`after complete invalid b=${batchSize}: ${JSON.stringify(s2)}`);
+            }
+            const totalMs=Number(process.hrtime.bigint()-total0)/1e6;
+            const out={
+              batchSize,
+              callsPerAction:start.requests,
+              startMs:+start.wallMs.toFixed(1),
+              completeMs:+complete.wallMs.toFixed(1),
+              totalMs:+totalMs.toFixed(1),
+              startP95:+start.p95.toFixed(1),
+              completeP95:+complete.p95.toFixed(1),
+              final:s2
+            };
+            console.log(JSON.stringify(out));
+            return out;
+          }
+
+          (async()=>{
+            const sizes=[25,50,75,100,125,150,200,250,300,375,500,750,1500];
+            const results=[];
+            for(const size of sizes){
+              results.push(await stage(size));
+              await new Promise(r=>setTimeout(r,400));
+            }
+            results.sort((a,b)=>a.totalMs-b.totalMs);
+            console.log('MAX_ACCELERATION_RANKING');
+            console.log(JSON.stringify(results,null,2));
+            const best=results[0];
+            console.log('BEST_MODE',JSON.stringify(best));
+            if(best.totalMs>5000) throw new Error(`Best total time too slow: ${best.totalMs}ms`);
+            agent.destroy();
+          })().catch(e=>{agent.destroy();console.error(e.stack||e);process.exit(1);});
+          NODE
