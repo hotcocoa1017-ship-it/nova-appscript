@@ -4,6 +4,12 @@ import sys
 CLIENT = Path('Client.html')
 text = CLIENT.read_text(encoding='utf-8')
 
+start_marker = '  function startMobileSync() {'
+end_marker = '  function scheduleMobileSync_() {'
+start = text.find(start_marker)
+end = text.find(end_marker, start + 1) if start >= 0 else -1
+mobile_start_block = text[start:end] if start >= 0 and end > start else ''
+
 checks = [
     ('marker', text.count('ROOM_STATE_SYNC_HARDENING_V1') >= 8),
     ('indicator full reconcile state', 'indicatorFullReconcileAt: 0' in text),
@@ -15,10 +21,11 @@ checks = [
     ('indicator full reconcile every 15s', '>= 15000' in text),
     ('indicator first reconcile starts quickly', 'window.setTimeout(run, 80)' in text),
     ('event cursor fallback preserved', 'novaRealtimeHydrateIndicatorFallback_()' in text),
-    ('ROOMMAID push subscription', "role === 'ROOMMAID' && state.activeMenu === 'cleaning'" in text and 'void novaRealtimeEnsureSubscriptions_()' in text),
-    ('QM push subscription', "role === 'QM' && state.activeMenu === 'qm'" in text and 'void novaRealtimeEnsureSubscriptions_()' in text),
+    ('ROOMMAID push subscription', "role === 'ROOMMAID' && state.activeMenu === 'cleaning'" in mobile_start_block and 'void novaRealtimeEnsureSubscriptions_()' in mobile_start_block),
+    ('QM push subscription', "role === 'QM' && state.activeMenu === 'qm'" in mobile_start_block and 'void novaRealtimeEnsureSubscriptions_()' in mobile_start_block),
+    ('HOUSEMAN push subscription preserved', "role === 'HOUSEMAN' && state.activeMenu === 'houseman'" in mobile_start_block),
     ('mobile polling fallback preserved', 'delay = 3000 + Math.round(Math.random() * 700)' in text),
-    ('mobile immediate DB reconcile on start', 'window.setTimeout(() => { void syncMobileDelta(); }, 0)' in text),
+    ('mobile immediate DB reconcile on start', 'window.setTimeout(() => { void syncMobileDelta(); }, 0)' in mobile_start_block),
     ('roommaid optimistic pending action', "__pendingAction: action === 'START' ? 'CLEANING_START'" in text),
     ('stale DB does not revert pending start', "merged.cleaningStatus = String(legacyRoom.cleaningStatus" in text),
     ('DB confirmation clears pending action', 'delete merged.__pendingAction' in text),
@@ -39,9 +46,9 @@ for label, ok in checks:
     if not ok:
         failed.append(label)
 
-# Negative checks for regression-prone old behavior.
+# Negative checks are scoped to the function they are intended to protect.
 negative = [
-    ('HOUSEMAN-only subscription gate removed', "if (novaRealtimeIsEnabled_() && role === 'HOUSEMAN' && state.activeMenu === 'houseman')" not in text),
+    ('startMobileSync is no longer HOUSEMAN-only', "if (novaRealtimeIsEnabled_() && role === 'HOUSEMAN' && state.activeMenu === 'houseman')" not in mobile_start_block),
     ('indicator no longer depends only on recent cursor', 'novaRealtime_.indicatorFullReconcileAt = 0' in text),
 ]
 for label, ok in negative:
