@@ -1,0 +1,40 @@
+name: NOVA Core 3.0 CI
+
+on:
+  push:
+    branches:
+      - 'nova-core3-*'
+    paths:
+      - 'core3/**'
+      - 'db/nova_core3_*'
+      - '.github/workflows/core3-ci.yml'
+  pull_request:
+    paths:
+      - 'core3/**'
+      - 'db/nova_core3_*'
+      - '.github/workflows/core3-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  room-state-domain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check domain JavaScript syntax
+        run: node --check core3/server/src/room-state-engine.mjs
+      - name: Run room-state domain tests
+        run: node --test core3/server/test/*.test.mjs
+      - name: Ensure production backup branch is not referenced as a deploy target
+        run: |
+          set -euo pipefail
+          if grep -R --line-number --fixed-string 'backup/nova-room-prod-271-20260906' .github/workflows | grep -v 'core3-ci.yml'; then
+            echo '::error::Production backup branch must never be used as a deployment target.'
+            exit 1
+          fi
+          echo 'Backup branch isolation check passed.'
