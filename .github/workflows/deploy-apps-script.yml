@@ -89,8 +89,14 @@ jobs:
       - name: Apply QM direct DB-first start patch
         run: python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
 
+      - name: Apply QM end-to-end acceleration
+        run: python3 scripts/patch_qm_end_to_end_accel_20260906.py
+
       - name: Validate QM direct DB-first start
         run: python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
+
+      - name: Validate QM end-to-end acceleration
+        run: python3 scripts/validate_qm_end_to_end_accel_20260906.py
 
       - name: Validate full Realtime routing
         shell: bash
@@ -149,6 +155,8 @@ jobs:
           grep -q "await loadQmMobileBrowse_({ force: Boolean(options.force) })" Client.html
           grep -q "restoreScrollPending: true" Client.html
           grep -q "새 업무범위의 기존 동·층 저장값은 삭제하지 않습니다" Client.html
+          grep -q "QM_END_TO_END_ACCEL_V1" Client.html
+          grep -q "NOVA_QM_PHOTO_EDGE_SLUG_ = 'nova-qm-photo-v1'" Client.html
           if grep -q "include_('OperationalStatusHotfix')" Index.html; then
             echo "::error::OperationalStatusHotfix must not intercept the Realtime path."
             exit 2
@@ -224,9 +232,11 @@ jobs:
           python3 scripts/patch_mobile_location_filter_persistence_20260904.py
           python3 scripts/patch_mobile_view_state_persistence_20260904.py
           python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
+          python3 scripts/patch_qm_end_to_end_accel_20260906.py
           python3 scripts/validate_site_scope_indicator_close_v2.py
           python3 scripts/validate_order_site_context_v1.py
           python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
+          python3 scripts/validate_qm_end_to_end_accel_20260906.py
           after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
           test "$before" = "$after"
 
