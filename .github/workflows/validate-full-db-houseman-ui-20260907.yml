@@ -1,0 +1,100 @@
+name: Validate Full DB Houseman UI 20260907
+
+on:
+  push:
+    branches: [feat/full-db-houseman-ui-20260907]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+
+      - name: Apply shift zone DB-first and Houseman UI patch
+        run: python3 scripts/patch_shift_zone_dbfirst_houseman_ui_v1.py
+
+      - name: Validate DB-first markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'NOVA_BUSINESS_DATE_0900_V1' 00_Config.js
+          grep -q 'NOVA_SHIFT_ZONE_DB_FIRST_ENABLED' RealtimeBridge.js
+          grep -q 'nova_houseman_shift_zone_get_v2' Client.html
+          grep -q 'nova_houseman_shift_save_v2' Client.html
+          grep -q 'nova_houseman_zone_save_v1' Client.html
+          grep -q 'novaShiftZoneDbFirstLoad_' Client.html
+          grep -q 'novaShiftAssignmentsDbFirstSave_' Client.html
+          grep -q 'novaHousemanZoneDbFirstSave_' Client.html
+          grep -q 'houseman-card-v2' Client.html
+          grep -q "include_('HousemanUiV2')" Index.html
+          grep -q 'HOUSEMAN_MOBILE_UI_V2' HousemanUiV2.html
+
+      - name: Validate legacy mirror remains but primary calls are replaced
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('Client.html').read_text(encoding='utf-8')
+          forbidden = [
+              "const result = await callServer('getShiftManagementData', state.token, {",
+              "const result = await callServer('saveShiftAssignments', state.token, {",
+              "const result = await callServer('saveHousemanZoneAssignment', state.token, {",
+          ]
+          for item in forbidden:
+              if item in text:
+                  raise SystemExit(f'legacy primary call remains: {item}')
+          for item in ["callServer('saveShiftAssignments'", "callServer('saveHousemanZoneAssignment'"]:
+              if item not in text:
+                  raise SystemExit(f'legacy mirror fallback missing: {item}')
+          PY
+
+      - name: Validate NOVA regression gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check 00_Config.js
+          node --check RealtimeBridge.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('Client.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if not scripts:
+              raise SystemExit('Client script block missing')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum 00_Config.js RealtimeBridge.js Client.html Index.html | sha256sum | awk '{print $1}')"
+          python3 scripts/patch_shift_zone_dbfirst_houseman_ui_v1.py
+          after="$(sha256sum 00_Config.js RealtimeBridge.js Client.html Index.html | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Persist validated feature sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          generated=(00_Config.js RealtimeBridge.js Client.html Index.html)
+          if git diff --quiet -- "${generated[@]}"; then
+            echo 'Validated sources already persisted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "${generated[@]}"
+          git commit -m 'Persist shift zone DB-first and Houseman UI v2 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
