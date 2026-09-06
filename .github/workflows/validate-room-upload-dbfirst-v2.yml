@@ -1,0 +1,83 @@
+name: Validate Room Upload DB First V2
+
+on:
+  push:
+    branches: [feat/full-db-houseman-ui-20260907]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+
+      - name: Apply room upload DB-first patch
+        run: python3 scripts/patch_room_upload_dbfirst_v2.py
+
+      - name: Validate DB-first ordering and markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'ROOM_UPLOAD_DB_FIRST_V2' 09_RoomStatusUpload.js
+          grep -q 'novaRoomUploadDbBundle_' 09_RoomStatusUpload.js
+          grep -q 'novaRoomUploadDbApply_' 09_RoomStatusUpload.js
+          grep -q 'reserveRoomUploadDbAlignedVersion_' 09_RoomStatusUpload.js
+          grep -q 'REALTIME_DB_FIRST_SERVER_V1' RealtimeDbFirstServer.js
+          grep -q 'nova_room_upload_apply_v2' RealtimeDbFirstServer.js
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('09_RoomStatusUpload.js').read_text(encoding='utf-8')
+          db = text.index('dbCommit = novaRoomUploadDbApply_')
+          sheet = text.index('const currentWriteStartedMs = Date.now();')
+          history = text.index('appendUnifiedHistory_({', db)
+          assert db < sheet < history, (db, sheet, history)
+          assert "requestId: `ROOM_UPLOAD_V2:${String(previewId || '').trim()}`" in text
+          assert "dbCurrentRows.forEach" in text
+          print('DB commit ordering OK')
+          PY
+
+      - name: Validate reset parity migration markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'ROOM_UPLOAD_RESET_DB_PARITY_V1' db/room_upload_reset_db_parity_v1.sql
+          grep -q 'delete from public.nova_room_events' db/room_upload_reset_db_parity_v1.sql
+          grep -q 'delete from public.nova_qm_drafts' db/room_upload_reset_db_parity_v1.sql
+          grep -q 'delete from public.nova_qm_inspections' db/room_upload_reset_db_parity_v1.sql
+          grep -q 'nova_houseman_orders' db/room_upload_reset_db_parity_v1.sql
+
+      - name: Validate Apps Script JavaScript syntax
+        run: |
+          node --check 09_RoomStatusUpload.js
+          node --check RealtimeDbFirstServer.js
+
+      - name: Validate NOVA regression gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum 09_RoomStatusUpload.js | awk '{print $1}')"
+          python3 scripts/patch_room_upload_dbfirst_v2.py
+          after="$(sha256sum 09_RoomStatusUpload.js | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Persist validated room upload source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 09_RoomStatusUpload.js; then
+            echo 'Validated source already persisted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 09_RoomStatusUpload.js
+          git commit -m 'Persist room upload DB-first v2 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
