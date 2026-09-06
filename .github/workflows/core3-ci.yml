@@ -121,7 +121,7 @@ jobs:
           containers=template.get('containers') or []
           envs=(containers[0].get('env') or []) if containers else []
           by={str(e.get('name','')):e for e in envs}
-          for name in ('SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY'):
+          for name in ('SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET'):
               e=by.get(name)
               if not e:
                   print(f'::error::{name}=MISSING', file=sys.stderr)
@@ -188,7 +188,7 @@ jobs:
           envs=(containers[0].get('env') or []) if containers else []
           by={str(e.get('name','')):e for e in envs}
           values={}
-          for name in ('SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY'):
+          for name in ('SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET'):
               e=by.get(name) or {}
               value=str(e.get('value') or '').strip()
               if not value:
@@ -199,6 +199,7 @@ jobs:
               f.write('CORE3_SOURCE_REVISION='+active[0][0]+'\n')
               f.write('CORE3_SUPABASE_URL='+values['SUPABASE_URL']+'\n')
               f.write('CORE3_SUPABASE_PUBLISHABLE_KEY='+values['SUPABASE_PUBLISHABLE_KEY']+'\n')
+              f.write('CORE3_SUPABASE_JWT_SECRET='+values['SUPABASE_JWT_SECRET']+'\n')
           print('SOURCE_REVISION_CAPTURED=OK')
           PY
 
@@ -207,6 +208,7 @@ jobs:
         run: |
           echo "::add-mask::$CORE3_SUPABASE_URL"
           echo "::add-mask::$CORE3_SUPABASE_PUBLISHABLE_KEY"
+          echo "::add-mask::$CORE3_SUPABASE_JWT_SECRET"
 
       - name: Deploy isolated NOVA Core 3 dev service
         shell: bash
@@ -223,7 +225,7 @@ jobs:
             --min=0 \
             --max=10 \
             --timeout=15s \
-            --set-env-vars="SUPABASE_URL=$CORE3_SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY=$CORE3_SUPABASE_PUBLISHABLE_KEY,NOVA_CORE_RPC_TIMEOUT_MS=2500,NOVA_CORE_RPC_ATTEMPTS=3" \
+            --set-env-vars="SUPABASE_URL=$CORE3_SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY=$CORE3_SUPABASE_PUBLISHABLE_KEY,SUPABASE_JWT_SECRET=$CORE3_SUPABASE_JWT_SECRET,NOVA_CORE_RPC_TIMEOUT_MS=2500,NOVA_CORE_RPC_ATTEMPTS=3,NOVA_CORE_ACCESS_TOKEN_SECONDS=43200" \
             --quiet
 
       - name: Verify Core 3 dev health and production isolation
@@ -252,11 +254,18 @@ jobs:
           print('CORE3_REVISION='+str(b.get('revision')))
           PY
 
-          AFTER_REV="$(gcloud run services describe "$CORE3_SOURCE_SERVICE" \
-            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" \
-            --format='value(status.traffic[0].revisionName)')"
-          test "$AFTER_REV" = "$CORE3_SOURCE_REVISION"
-          echo 'PRODUCTION_REALTIME_REVISION_UNCHANGED=OK'
+          gcloud run services describe "$CORE3_SOURCE_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/source-after.json
+          python3 - <<'PY'
+          import json, os, sys
+          s=json.load(open('/tmp/source-after.json'))
+          active=[(str(t.get('revisionName') or ''), int(t.get('percent') or 0)) for t in (s.get('status') or {}).get('traffic') or [] if int(t.get('percent') or 0)>0]
+          expected=os.environ['CORE3_SOURCE_REVISION']
+          if len(active)!=1 or active[0][1]!=100 or active[0][0]!=expected:
+              print(f'::error::Production Realtime revision changed: {active} expected={expected}', file=sys.stderr)
+              sys.exit(41)
+          print('PRODUCTION_REALTIME_REVISION_UNCHANGED=OK')
+          PY
 
       - name: Deployment summary
         shell: bash
