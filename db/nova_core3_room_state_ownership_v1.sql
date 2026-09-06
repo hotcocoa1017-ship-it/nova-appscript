@@ -28,7 +28,7 @@ update public.nova_rooms_current r
 create or replace function public.nova_guard_live_room_state_ownership_v1()
 returns trigger
 language plpgsql
-security definer
+security invoker
 set search_path = ''
 as $function$
 begin
