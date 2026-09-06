@@ -11,6 +11,7 @@ on:
     paths:
       - 'core3/mobile/nova_mobile/**'
       - '.github/workflows/core3-mobile-ci.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,19 +33,13 @@ jobs:
         with:
           channel: stable
           cache: true
-      - name: Ensure Android scaffold exists without touching app sources
+      - name: Verify committed Android scaffold
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d android ]; then
-            TMP="$(mktemp -d)"
-            flutter create \
-              --platforms=android \
-              --org=kr.co.novaworks \
-              --project-name=nova_mobile \
-              "$TMP/nova_mobile"
-            cp -R "$TMP/nova_mobile/android" ./android
-          fi
+          test -d android
+          test -f android/app/build.gradle.kts
+          test -f android/settings.gradle.kts
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
@@ -63,19 +58,13 @@ jobs:
         with:
           channel: stable
           cache: true
-      - name: Ensure iOS scaffold exists without touching app sources
+      - name: Verify committed iOS scaffold
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d ios ]; then
-            TMP="$(mktemp -d)"
-            flutter create \
-              --platforms=ios \
-              --org=kr.co.novaworks \
-              --project-name=nova_mobile \
-              "$TMP/nova_mobile"
-            cp -R "$TMP/nova_mobile/ios" ./ios
-          fi
+          test -d ios
+          test -f ios/Runner.xcodeproj/project.pbxproj
+          test -f ios/Runner/Info.plist
       - run: flutter pub get
       - name: Build iOS without signing
         run: flutter build ios --debug --no-codesign --dart-define=NOVA_API_BASE_URL=https://nova-core3-api-dev-479836905263.asia-southeast1.run.app
