@@ -14,6 +14,18 @@ function authService(overrides = {}) {
   return {
     async login() { return { status: 200, body: { ok: true, accessToken: 'token' } }; },
     async me() { return { status: 200, body: { ok: true, employeeNo: '321516' } }; },
+    async realtimeConfig() {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          supabaseUrl: 'https://example.supabase.co',
+          publishableKey: 'sb_publishable_example',
+          privateChannel: true,
+          topicPattern: 'nova:site:{site}:rooms',
+        },
+      };
+    },
     ...overrides,
   };
 }
@@ -71,6 +83,36 @@ test('me endpoint forwards bearer authorization', async () => {
     async me(request) {
       captured = request;
       return { status: 200, body: { ok: true, employeeNo: '321516' } };
+    },
+  }));
+});
+
+test('realtime config endpoint forwards bearer without exposing router secrets', async () => {
+  let captured;
+  await withServer(service(), async base => {
+    const response = await fetch(`${base}/v1/realtime/config`, {
+      headers: { Authorization: 'Bearer employee.jwt' },
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(captured.authorization, 'Bearer employee.jwt');
+    assert.equal(body.ok, true);
+    assert.equal(body.privateChannel, true);
+    assert.equal(body.topicPattern, 'nova:site:{site}:rooms');
+    assert.equal(body.jwtSecret, undefined);
+  }, authService({
+    async realtimeConfig(request) {
+      captured = request;
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          supabaseUrl: 'https://example.supabase.co',
+          publishableKey: 'sb_publishable_example',
+          privateChannel: true,
+          topicPattern: 'nova:site:{site}:rooms',
+        },
+      };
     },
   }));
 });
