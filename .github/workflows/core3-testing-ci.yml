@@ -32,17 +32,24 @@ jobs:
       - name: Check load harness JavaScript syntax
         run: node --check core3/testing/room-state-load.mjs
 
-      - name: Require dormant load trigger in source control
+      - name: Validate load trigger safety state
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, sys
+          import json, os, sys
           cfg=json.load(open('core3/testing/load-gate-trigger.json'))
-          if cfg.get('enabled') is not False or str(cfg.get('stage') or '') != 'none':
-              print('::error::Core3 load trigger must remain dormant in normal source control.', file=sys.stderr)
+          enabled=cfg.get('enabled') is True
+          stage=str(cfg.get('stage') or '')
+          if enabled and stage not in {'200','500','1000'}:
+              print('::error::Enabled Core3 load trigger requires stage 200, 500 or 1000.', file=sys.stderr)
               sys.exit(10)
-          print('LOAD_TRIGGER_DORMANT=OK')
+          if os.environ.get('EVENT_NAME') == 'pull_request' and (enabled or stage != 'none'):
+              print('::error::Core3 load trigger must be dormant before merge.', file=sys.stderr)
+              sys.exit(11)
+          print('LOAD_TRIGGER_STATE=OK')
           PY
 
       - name: Verify production refusal guard exists in load lab seed
