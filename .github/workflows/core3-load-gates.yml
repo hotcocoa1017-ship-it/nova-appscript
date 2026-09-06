@@ -1,0 +1,210 @@
+name: NOVA Core 3 Isolated Load Gates
+
+on:
+  push:
+    branches:
+      - 'nova-core3-room-state-20260906'
+    paths:
+      - 'core3/testing/load-gate-trigger.json'
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_PROJECT_NUMBER: '479836905263'
+  GCP_REGION: asia-southeast1
+  PRODUCTION_SERVICE: nova-realtime-api
+  CORE3_DEV_SERVICE: nova-core3-api-dev
+  CORE3_LOAD_SERVICE: nova-core3-api-load
+
+jobs:
+  isolated-room-state-load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    concurrency:
+      group: nova-core3-isolated-load-gates
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Read explicit load trigger
+        id: trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          cfg=json.load(open('core3/testing/load-gate-trigger.json'))
+          enabled=cfg.get('enabled') is True
+          stage=str(cfg.get('stage') or '').strip()
+          if enabled and stage not in {'200','500','1000'}:
+              print('::error::enabled load trigger requires stage 200, 500 or 1000', file=sys.stderr)
+              sys.exit(2)
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as f:
+              f.write(f"enabled={'true' if enabled else 'false'}\n")
+              f.write(f"stage={stage}\n")
+          print('LOAD_TRIGGER=' + ('ENABLED' if enabled else 'DISABLED'))
+          print('LOAD_STAGE=' + stage)
+          PY
+
+      - name: Stop when trigger is dormant
+        if: steps.trigger.outputs.enabled != 'true'
+        run: echo 'Core3 isolated load gate remains dormant.'
+
+      - name: Authenticate Google Cloud
+        if: steps.trigger.outputs.enabled == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+
+      - name: Setup gcloud
+        if: steps.trigger.outputs.enabled == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Prove load service and database are isolated
+        if: steps.trigger.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$CORE3_LOAD_SERVICE" != "$PRODUCTION_SERVICE"
+          test "$CORE3_LOAD_SERVICE" != "$CORE3_DEV_SERVICE"
+
+          gcloud run services describe "$PRODUCTION_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/prod-before.json
+          gcloud run services describe "$CORE3_LOAD_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/load.json
+
+          python3 - <<'PY'
+          import json, os, sys
+
+          def env_map(path):
+              service=json.load(open(path))
+              template=((service.get('spec') or {}).get('template') or {}).get('spec') or {}
+              containers=template.get('containers') or []
+              envs=(containers[0].get('env') or []) if containers else []
+              return service, {str(e.get('name') or ''): e for e in envs}
+
+          prod, prod_env=env_map('/tmp/prod-before.json')
+          load, load_env=env_map('/tmp/load.json')
+
+          def direct(env, name):
+              return str((env.get(name) or {}).get('value') or '').strip()
+
+          prod_url=direct(prod_env,'SUPABASE_URL')
+          load_url=direct(load_env,'SUPABASE_URL')
+          marker=direct(load_env,'NOVA_CORE_LOAD_DB_MODE')
+          if not prod_url or not load_url:
+              print('::error::SUPABASE_URL must be a direct value on both compared services.', file=sys.stderr)
+              sys.exit(10)
+          if prod_url == load_url:
+              print('::error::Load service points to the production Supabase database.', file=sys.stderr)
+              sys.exit(11)
+          if marker != 'ISOLATED_BRANCH_ONLY':
+              print('::error::Load service isolation marker is missing.', file=sys.stderr)
+              sys.exit(12)
+
+          prod_status=prod.get('status') or {}
+          active=[(str(t.get('revisionName') or ''), int(t.get('percent') or 0)) for t in prod_status.get('traffic') or [] if int(t.get('percent') or 0)>0]
+          if len(active) != 1 or active[0][1] != 100 or not active[0][0]:
+              print('::error::Production service must have one 100% active revision before load test.', file=sys.stderr)
+              sys.exit(13)
+
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write('PRODUCTION_REVISION_BEFORE='+active[0][0]+'\n')
+          print('LOAD_DATABASE_ISOLATION=OK')
+          print('PRODUCTION_REVISION_CAPTURED=OK')
+          PY
+
+      - name: Resolve isolated load service URL
+        if: steps.trigger.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOAD_URL="$(gcloud run services describe "$CORE3_LOAD_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format='value(status.url)')"
+          test -n "$LOAD_URL"
+          HTTP="$(curl -sS --retry 3 --retry-delay 1 -o /tmp/load-health.json -w '%{http_code}' "$LOAD_URL/health")"
+          test "$HTTP" = '200'
+          python3 - <<'PY'
+          import json
+          b=json.load(open('/tmp/load-health.json'))
+          assert b.get('ok') is True
+          assert b.get('service') == 'nova-core3'
+          PY
+          echo "NOVA_LOAD_BASE_URL=$LOAD_URL" >> "$GITHUB_ENV"
+          echo 'LOAD_SERVICE_HEALTH=OK'
+
+      - name: Run Room State correctness gate
+        if: steps.trigger.outputs.enabled == 'true'
+        shell: bash
+        env:
+          LOAD_STAGE: ${{ steps.trigger.outputs.stage }}
+          NOVA_LOAD_NAME: NOVA LOAD
+          NOVA_LOAD_SITE: 쏘라노
+          NOVA_LOAD_BUSINESS_DATE: '2099-01-01'
+          NOVA_LOAD_REQUEST_TIMEOUT_MS: '25000'
+        run: |
+          set -euo pipefail
+          mkdir -p core3-load-reports
+
+          run_case() {
+            local mode="$1" count="$2" employee="$3" prefix="$4" output="$5"
+            echo "=== $mode / $count ==="
+            NOVA_LOAD_MODE="$mode" \
+            NOVA_LOAD_COUNT="$count" \
+            NOVA_LOAD_EMPLOYEE_NO="$employee" \
+            NOVA_LOAD_PREFIX="$prefix" \
+            node core3/testing/room-state-load.mjs | tee "core3-load-reports/$output.json"
+          }
+
+          stage="$LOAD_STAGE"
+          run_case independent-start "$stage" "LOAD$stage" "S$stage" "${stage}-independent-start"
+          run_case independent-complete "$stage" "LOAD$stage" "C$stage" "${stage}-independent-complete"
+          run_case duplicate-start "$stage" LOADDUP "DUP$stage" "${stage}-duplicate-start"
+          run_case contention-start "$stage" LOADCONT "CONT$stage" "${stage}-contention-start"
+
+          if [ "$stage" = '200' ]; then
+            run_case post-commit-discard 1 LOADFAIL FAIL "200-post-commit-discard"
+            run_case timeout-retry 1 LOADTIME TIME "200-timeout-retry"
+            run_case reconcile-without-realtime 1 LOADMISS MISS "200-reconcile-without-realtime"
+          fi
+
+      - name: Verify production service stayed untouched
+        if: steps.trigger.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$PRODUCTION_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/prod-after.json
+          python3 - <<'PY'
+          import json, os, sys
+          s=json.load(open('/tmp/prod-after.json'))
+          active=[(str(t.get('revisionName') or ''), int(t.get('percent') or 0)) for t in (s.get('status') or {}).get('traffic') or [] if int(t.get('percent') or 0)>0]
+          expected=os.environ['PRODUCTION_REVISION_BEFORE']
+          if len(active) != 1 or active[0][1] != 100 or active[0][0] != expected:
+              print('::error::Production Realtime service changed during isolated load test.', file=sys.stderr)
+              sys.exit(20)
+          print('PRODUCTION_SERVICE_UNCHANGED=OK')
+          PY
+
+      - name: Upload load reports
+        if: steps.trigger.outputs.enabled == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core3-room-state-load-${{ steps.trigger.outputs.stage }}-${{ github.run_id }}
+          path: core3-load-reports/*.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Load gate summary
+        if: steps.trigger.outputs.enabled == 'true'
+        run: |
+          echo "Core3 Room State isolated load gate ${{ steps.trigger.outputs.stage }} passed."
+          echo 'Production Apps Script @271 and nova-realtime-api were not deployment targets.'
