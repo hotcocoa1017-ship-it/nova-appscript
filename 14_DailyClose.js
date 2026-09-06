@@ -34,7 +34,8 @@ function saveDailyCloseSnapshot(token, payload) { // (업무일자 공식 마감
       const results = sites.map(site => saveDailyCloseSnapshotForSite_(businessDate, site, user, {
         currentRows: allCurrentRows.filter(data => String(data['사업장'] || '').trim() === site),
         historyRows: allHistoryRows.filter(data => String(data['사업장'] || '').trim() === site),
-        attendanceEmployeeNos: Array.isArray(safe.attendanceEmployeeNos) ? safe.attendanceEmployeeNos : []
+        attendanceEmployeeNos: Array.isArray(safe.attendanceEmployeeNos) ? safe.attendanceEmployeeNos : [],
+        dbToken: token // DAILY_CLOSE_SAVE_DB_FIRST_V1 · 수동 사용자 마감만 DB-first
       }));
       return {
         ok: true,
@@ -136,6 +137,28 @@ function saveDailyCloseSnapshotForSite_(businessDate, site, user, preloaded) { /
   });
   if (!snapshot.totalRooms) throw new Error(`${businessDate} ${site} 현재객실현황이 없습니다.`);
 
+  let dbCloseCommit = null; // DAILY_CLOSE_SAVE_DB_FIRST_V1
+  const dbCloseFirst = Boolean(preload.dbToken)
+    && typeof novaDailyCloseDbFirstEnabled_ === 'function'
+    && novaDailyCloseDbFirstEnabled_();
+  if (dbCloseFirst) {
+    const dbRequestId = dailyCloseDbRequestId_(businessDate, site, snapshot);
+    dbCloseCommit = novaDailyCloseDbSave_(preload.dbToken, {
+      businessDate,
+      site,
+      snapshot,
+      requestId: dbRequestId
+    });
+    if (!dbCloseCommit || dbCloseCommit.ok === false) {
+      throw new Error(`${site} 일일마감을 DB에 확정하지 못했습니다.`);
+    }
+    // 멱등 재시도면 최초 DB 확정시각을 그대로 Sheet 미러에도 사용합니다.
+    snapshot.closedAt = String(dbCloseCommit.closedAt || snapshot.closedAt || '').trim();
+    snapshot.closedBy = String(dbCloseCommit.closedBy || snapshot.closedBy || user.employeeNo).trim();
+    snapshot.closedByName = String(dbCloseCommit.closedByName || snapshot.closedByName || user.name || '').trim();
+  }
+
+  // PostgreSQL 확정 이후에만 기존 Sheet DAILY_CLOSE를 교체합니다.
   const historySheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
   markExistingDailyCloseDeleted_(historySheet, businessDate, site, closedAt);
   const version = reserveDataVersion_({ lockHeld: true });
@@ -191,7 +214,33 @@ function saveDailyCloseSnapshotForSite_(businessDate, site, user, preloaded) { /
   historySheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
   SpreadsheetApp.flush();
   publishDataVersion_(version, { domains: ['REPORT'], businessDate, site, lockHeld: true });
-  return Object.assign({ source: 'CLOSED', chunkCount: rows.length - 1 }, summaryDetail);
+  return Object.assign({
+    source: 'CLOSED',
+    chunkCount: rows.length - 1,
+    dbFirst: Boolean(dbCloseFirst),
+    dbClose: dbCloseCommit ? {
+      version: Number(dbCloseCommit.version || 0),
+      requestId: String(dbCloseCommit.requestId || ''),
+      idempotent: Boolean(dbCloseCommit.idempotent)
+    } : null
+  }, summaryDetail);
+}
+
+function dailyCloseDbRequestId_(businessDate, site, snapshot) { // DAILY_CLOSE_SAVE_DB_FIRST_V1
+  const source = snapshot || {};
+  const stable = [
+    String(businessDate || ''),
+    String(site || ''),
+    String(source.sourceSignature || ''),
+    String(source.sourceUpdatedAt || ''),
+    String(source.totalRooms || 0),
+    String(source.cleaningCompleted || 0),
+    String(source.qmCompleted || 0),
+    String(source.housemanCompleted || 0)
+  ].join('|');
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, stable, Utilities.Charset.UTF_8);
+  const hash = Utilities.base64EncodeWebSafe(bytes).replace(/=+$/g, '').slice(0, 48);
+  return `DAILY_CLOSE_V1:${hash}`;
 }
 
 function buildDailyCloseSnapshot_(businessDate, site, options) { // (현재 객실·업무이력 기반 마감통계 계산)
