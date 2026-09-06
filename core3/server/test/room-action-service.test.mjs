@@ -21,15 +21,27 @@ function request(overrides = {}) {
   };
 }
 
+function rpcClient(overrides = {}) {
+  return {
+    async executeRoommaidAction(input) {
+      return { ok: true, requestId: input.requestId, changed: true };
+    },
+    async listRoommaidRooms(input) {
+      return { ok: true, businessDate: input.businessDate, site: input.site, rooms: [] };
+    },
+    ...overrides,
+  };
+}
+
 test('passes authenticated mutation to DB RPC using stable request id', async () => {
   const calls = [];
   const service = createRoomActionService({
-    rpcClient: {
+    rpcClient: rpcClient({
       async executeRoommaidAction(input) {
         calls.push(input);
         return { ok: true, requestId: input.requestId, changed: true };
       },
-    },
+    }),
   });
 
   const result = await service.mutateRoom(request());
@@ -41,10 +53,34 @@ test('passes authenticated mutation to DB RPC using stable request id', async ()
   assert.equal(calls[0].action, 'CLEANING_START');
 });
 
+test('authoritative room list uses authenticated DB RPC', async () => {
+  const calls = [];
+  const service = createRoomActionService({
+    rpcClient: rpcClient({
+      async listRoommaidRooms(input) {
+        calls.push(input);
+        return { ok: true, rooms: [{ roomNo: '7217', cleaningStatus: 'COMPLETED', version: 3 }] };
+      },
+    }),
+  });
+  const result = await service.listRooms({
+    authorization: 'Bearer user.jwt.token',
+    businessDate: '2026-09-06',
+    site: '쏘라노',
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.rooms[0].roomNo, '7217');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].site, '쏘라노');
+});
+
 test('rejects missing bearer token before DB call', async () => {
   let calls = 0;
   const service = createRoomActionService({
-    rpcClient: { async executeRoommaidAction() { calls += 1; } },
+    rpcClient: rpcClient({
+      async executeRoommaidAction() { calls += 1; },
+      async listRoommaidRooms() { calls += 1; },
+    }),
   });
   const result = await service.mutateRoom(request({ authorization: '' }));
   assert.equal(result.status, 401);
@@ -54,22 +90,22 @@ test('rejects missing bearer token before DB call', async () => {
 
 test('maps DB authorization and semantic conflicts without legacy fallback', async () => {
   const forbidden = createRoomActionService({
-    rpcClient: {
+    rpcClient: rpcClient({
       async executeRoommaidAction() {
         throw new SupabaseRpcError('본인에게 배정된 객실만 처리할 수 있습니다.', { status: 403, code: '42501' });
       },
-    },
+    }),
   });
   const forbiddenResult = await forbidden.mutateRoom(request());
   assert.equal(forbiddenResult.status, 403);
   assert.equal(forbiddenResult.body.code, 'FORBIDDEN');
 
   const conflict = createRoomActionService({
-    rpcClient: {
+    rpcClient: rpcClient({
       async executeRoommaidAction() {
         throw new SupabaseRpcError('현재 상태에서는 청소를 시작할 수 없습니다.', { status: 400, code: '55000' });
       },
-    },
+    }),
   });
   const conflictResult = await conflict.mutateRoom(request());
   assert.equal(conflictResult.status, 409);
@@ -78,11 +114,11 @@ test('maps DB authorization and semantic conflicts without legacy fallback', asy
 
 test('ambiguous network result instructs same idempotency-key retry', async () => {
   const service = createRoomActionService({
-    rpcClient: {
+    rpcClient: rpcClient({
       async executeRoommaidAction() {
         throw new SupabaseResultUnknownError('unknown');
       },
-    },
+    }),
   });
   const result = await service.mutateRoom(request());
   assert.equal(result.status, 503);
@@ -96,7 +132,7 @@ test('200 unrelated room requests are not serialized by the application service'
   let maxInFlight = 0;
   const seen = new Set();
   const service = createRoomActionService({
-    rpcClient: {
+    rpcClient: rpcClient({
       async executeRoommaidAction(input) {
         inFlight += 1;
         maxInFlight = Math.max(maxInFlight, inFlight);
@@ -105,7 +141,7 @@ test('200 unrelated room requests are not serialized by the application service'
         inFlight -= 1;
         return { ok: true, requestId: input.requestId, changed: true };
       },
-    },
+    }),
   });
 
   const results = await Promise.all(Array.from({ length: 200 }, (_, index) => service.mutateRoom(request({
