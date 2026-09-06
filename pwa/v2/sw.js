@@ -1,4 +1,4 @@
-const CACHE='nova-pwa-v2-vercel-3';
+const CACHE='nova-pwa-v2-vercel-4';
 const ICON='https://evoetxfjmkkjptucwxsv.supabase.co/storage/v1/object/public/nova-pwa-v2/icon-192.png';
 const BADGE='https://evoetxfjmkkjptucwxsv.supabase.co/storage/v1/object/public/nova-pwa-v2/badge-96.png';
 self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(['./index.html','./manifest.webmanifest'])).then(()=>self.skipWaiting()))});
@@ -17,9 +17,22 @@ self.addEventListener('push',e=>{e.waitUntil((async()=>{
   let p={title:'NOVA 알림',body:'새 알림이 도착했습니다.',data:{}};try{if(e.data)p=e.data.json()}catch(_){}
   const data=p.data||{};await setBadge(data.badgeCount||0);
   const wins=await clients.matchAll({type:'window',includeUncontrolled:true});
-  const visible=wins.find(c=>c.visibilityState==='visible');
-  if(visible){visible.postMessage({type:'NOVA_PUSH_FOREGROUND',badgeCount:data.badgeCount||0});return}
-  await self.registration.showNotification(p.title||'NOVA 알림',{body:p.body||'',icon:p.icon||ICON,badge:p.badge||BADGE,tag:p.tag||'nova',data,requireInteraction:!!p.requireInteraction,timestamp:p.timestamp||Date.now()});
+  const foreground=wins.find(c=>c.visibilityState==='visible'&&c.focused===true);
+  if(foreground){foreground.postMessage({type:'NOVA_PUSH_FOREGROUND',badgeCount:data.badgeCount||0});return}
+  const tag=String(p.tag||`nova-${data.notificationId||Date.now()}`);
+  const options={
+    body:p.body||'',
+    icon:p.icon||ICON,
+    badge:p.badge||BADGE,
+    tag,
+    renotify:true,
+    silent:false,
+    vibrate:[260,120,260,120,520],
+    data,
+    requireInteraction:!!p.requireInteraction,
+    timestamp:p.timestamp||Date.now()
+  };
+  await self.registration.showNotification(p.title||'NOVA 알림',options);
 })())});
 self.addEventListener('notificationclick',e=>{e.notification.close();e.waitUntil((async()=>{
   const url=e.notification.data?.url||'./index.html';
