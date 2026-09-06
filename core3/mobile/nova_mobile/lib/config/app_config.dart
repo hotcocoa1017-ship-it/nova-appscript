@@ -5,6 +5,7 @@ class AppConfig {
   );
 
   static const requestTimeout = Duration(seconds: 8);
+  static const roomReconcileInterval = Duration(seconds: 15);
 
   static DateTime koreaNow() => DateTime.now().toUtc().add(const Duration(hours: 9));
 
