@@ -5,12 +5,12 @@ on:
     branches:
       - 'nova-core3-*'
     paths:
-      - 'core3/**'
+      - 'core3/server/**'
       - 'db/nova_core3_*'
       - '.github/workflows/core3-ci.yml'
   pull_request:
     paths:
-      - 'core3/**'
+      - 'core3/server/**'
       - 'db/nova_core3_*'
       - '.github/workflows/core3-ci.yml'
 
@@ -195,7 +195,6 @@ jobs:
                   print(f'::error::{name} must be a direct value for isolated dev copy.', file=sys.stderr)
                   sys.exit(31)
               values[name]=value
-          # Mask BEFORE writing values to GITHUB_ENV so the next step's env summary cannot reveal them.
           for value in values.values():
               print('::add-mask::'+value, flush=True)
           with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
@@ -262,6 +261,37 @@ jobs:
               sys.exit(41)
           print('PRODUCTION_REALTIME_REVISION_UNCHANGED=OK')
           PY
+
+      - name: Verify signed JWT against live Core 3 session
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET_URL="$(gcloud run services describe "$CORE3_TARGET_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format='value(status.url)')"
+          TOKEN="$(SUPABASE_JWT_SECRET="$CORE3_SUPABASE_JWT_SECRET" node --input-type=module - <<'NODE'
+          import { createSessionTokenSigner } from './core3/server/src/session-token.mjs';
+          const signer = createSessionTokenSigner({ secret: process.env.SUPABASE_JWT_SECRET, ttlSeconds: 600 });
+          const signed = signer.sign({ employeeNo: 'ot001', name: '', role: 'ORDER', sessionSite: '' });
+          process.stdout.write(signed.accessToken);
+          NODE
+          )"
+          echo "::add-mask::$TOKEN"
+          HTTP="$(curl -sS -o /tmp/core3-me.json -w '%{http_code}' "$TARGET_URL/v1/session/me" \
+            -H "Authorization: Bearer $TOKEN")"
+          echo "CORE3_SESSION_ME_HTTP=$HTTP"
+          test "$HTTP" = '200'
+          python3 - <<'PY'
+          import json
+          b=json.load(open('/tmp/core3-me.json'))
+          assert b.get('ok') is True
+          assert b.get('employeeNo') == 'ot001'
+          assert b.get('role') == 'ORDER'
+          print('CORE3_SIGNED_JWT_COMPATIBILITY=OK')
+          PY
+
+          NOAUTH="$(curl -sS -o /tmp/noauth.json -w '%{http_code}' "$TARGET_URL/v1/session/me")"
+          test "$NOAUTH" = '401'
+          echo 'CORE3_SESSION_GUARD=OK'
 
       - name: Deployment summary
         shell: bash
