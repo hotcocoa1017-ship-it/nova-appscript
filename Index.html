@@ -79,6 +79,8 @@
   <div id="modalRoot" class="modal-root hidden" aria-hidden="true"></div>
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
+  <script>window.__NOVA_PWA_ROUTE_V2__ = <?!= pwaRouteJson ?>;</script> <!-- NOVA_PWA_WEB_PUSH_V2 -->
+
   <!-- Realtime client library: secret key는 포함하지 않습니다. -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <?!= include_('Client'); ?>
