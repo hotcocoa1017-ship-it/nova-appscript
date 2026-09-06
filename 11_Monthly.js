@@ -11,7 +11,7 @@ function getMonthlyHistory(token, filters) { // (월별 이력 페이지 조회)
   return measureResponse_('getMonthlyHistory', () => {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const request = normalizeMonthlyFilters_(filters, user);
-    const bundle = buildMonthlyHistoryBundle_(request);
+    const bundle = buildMonthlyHistoryBundle_(request, token); // MONTHLY_HISTORY_DB_FIRST_V1
     const pageCount = Math.max(1, Math.ceil(bundle.items.length / request.pageSize));
     const page = Math.min(request.page, pageCount);
     const start = (page - 1) * request.pageSize;
@@ -249,7 +249,7 @@ function getMonthlyHistoryExport(token, filters) { // (월별 이력 엑셀용 �
   return measureResponse_('getMonthlyHistoryExport', () => {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const request = normalizeMonthlyFilters_(Object.assign({}, filters, { page: 1, pageSize: 500 }), user);
-    const bundle = buildMonthlyHistoryBundle_(request);
+    const bundle = buildMonthlyHistoryBundle_(request, token); // MONTHLY_HISTORY_DB_FIRST_V1
     if (bundle.items.length > 20000) {
       throw new Error('조회 결과가 20,000건을 초과합니다. 사업장·직원·상태 조건을 추가해 범위를 줄여주세요.');
     }
@@ -267,7 +267,7 @@ function writeMonthlyViewSheet(token, filters) { // (웹 조회조건을 월별�
   return measureResponse_('writeMonthlyViewSheet', () => {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const request = normalizeMonthlyFilters_(Object.assign({}, filters, { page: 1, pageSize: 500 }), user);
-    const bundle = buildMonthlyHistoryBundle_(request);
+    const bundle = buildMonthlyHistoryBundle_(request, token); // MONTHLY_HISTORY_DB_FIRST_V1
     if (bundle.items.length > 20000) {
       throw new Error('월별조회 시트에 표시할 데이터가 20,000건을 초과합니다. 조회조건을 좁혀주세요.');
     }
@@ -370,8 +370,8 @@ function monthlyRecordTypesForType_(type) { // (월별조회 소분류별 실제
   ];
 }
 
-function buildMonthlyHistoryBundle_(request) { // (월별 이력 조회·필터·집계)
-  const rawRows = readMonthlyHistoryRows_(request, monthlyRecordTypesForType_(request.type));
+function buildMonthlyHistoryBundle_(request, dbToken) { // (월별 이력 조회·필터·집계 · MONTHLY_HISTORY_DB_FIRST_V1)
+  const rawRows = readMonthlyHistoryRowsDbFirst_(request, monthlyRecordTypesForType_(request.type), dbToken);
   const users = getUserIndex_().byEmployeeNo;
   const orderStatusMap = {};
   getCodes_('하우스맨상태').forEach(code => { orderStatusMap[code.code] = code.label; });
@@ -407,6 +407,74 @@ function buildMonthlyHistoryBundle_(request) { // (월별 이력 조회·필터�
       : {},
     options
   };
+}
+
+function readMonthlyHistoryRowsDbFirst_(request, allowedRecordTypesOverride, token) { // MONTHLY_HISTORY_DB_FIRST_V1
+  const allowed = (allowedRecordTypesOverride && allowedRecordTypesOverride.length
+    ? allowedRecordTypesOverride
+    : monthlyRecordTypesForType_(request.type))
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  const sheetRows = readMonthlyHistoryRows_(request, allowed);
+
+  // Houseman 관리(수정·취소·삭제)는 아직 Sheet rowNumber를 사용하므로
+  // 이번 단계에서는 HOUSEMAN_ORDER를 DB 목록으로 대체하지 않습니다.
+  const dbReplaceTypes = new Set([
+    String(NOVA.RECORD_TYPES.CLEANING || '').trim(),
+    String(NOVA.RECORD_TYPES.QM || '').trim(),
+    String(NOVA.RECORD_TYPES.QM_CHECKLIST || '').trim()
+  ]);
+  if (!token || !allowed.some(type => dbReplaceTypes.has(type))) return sheetRows;
+  if (typeof novaMonthlyHistoryDbFirstEnabled_ !== 'function' || !novaMonthlyHistoryDbFirstEnabled_()) return sheetRows;
+  if (typeof novaMonthlyHistoryDbRead_ !== 'function') return sheetRows;
+
+  const range = monthlyHistoryDbDateRange_(request);
+  try {
+    const result = novaMonthlyHistoryDbRead_(token, {
+      startDate: range.startDate,
+      endDate: range.endDate,
+      site: String(request.site || '').trim()
+    });
+    const nativeKeys = new Set((Array.isArray(result && result.nativeKeys) ? result.nativeKeys : [])
+      .map(item => `${String(item && item.businessDate || '').trim()}|${String(item && item.site || '').trim()}`)
+      .filter(key => key !== '|'));
+    if (!nativeKeys.size) return sheetRows;
+
+    const keptSheet = sheetRows.filter(row => {
+      const data = row && row.data ? row.data : {};
+      const type = String(data['기록구분'] || '').trim();
+      if (!dbReplaceTypes.has(type)) return true;
+      const key = `${String(data['업무일자'] || '').trim()}|${String(data['사업장'] || '').trim()}`;
+      return !nativeKeys.has(key);
+    });
+
+    const allowedSet = new Set(allowed);
+    const dbRows = (Array.isArray(result && result.items) ? result.items : [])
+      .filter(data => allowedSet.has(String(data && data['기록구분'] || '').trim()))
+      .filter(data => dbReplaceTypes.has(String(data && data['기록구분'] || '').trim()))
+      .map((data, index) => ({
+        rowNumber: -(index + 1),
+        data: Object.assign({}, data, { __NOVA_DB_FIRST: 'Y' })
+      }));
+
+    return keptSheet.concat(dbRows);
+  } catch (error) {
+    console.warn('[NOVA MONTHLY DB read fallback]', error && error.message ? error.message : error);
+    return sheetRows;
+  }
+}
+
+function monthlyHistoryDbDateRange_(request) { // MONTHLY_HISTORY_DB_FIRST_V1
+  if (String(request && request.period || '').trim().toUpperCase() === 'DAILY') {
+    const date = String(request && request.date || '').trim();
+    return { startDate: date, endDate: date };
+  }
+  const year = Number(request && request.year || 0);
+  const month = Number(request && request.month || 0);
+  const monthText = String(month).padStart(2, '0');
+  const startDate = `${year}-${monthText}-01`;
+  const endDate = Utilities.formatDate(new Date(year, month, 0), NOVA.TIMEZONE, NOVA.DATE_FORMAT);
+  return { startDate, endDate };
 }
 
 function readMonthlyHistoryRows_(request, allowedRecordTypesOverride) { // (업무이력 월·일 행 선별·행 인덱스 캐시)
