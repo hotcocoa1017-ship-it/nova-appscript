@@ -96,3 +96,19 @@ function novaQmInspectionDbFinalize_(token, payload) { // QM_INSPECTION_FINALIZE
     p_request_id: String(safe.requestId || '').trim()
   });
 }
+
+function novaDailyCloseDbFirstEnabled_() { // DAILY_CLOSE_SAVE_DB_FIRST_V1
+  const props = PropertiesService.getScriptProperties();
+  if (String(props.getProperty('NOVA_REALTIME_ENABLED') || 'N').trim().toUpperCase() !== 'Y') return false;
+  return String(props.getProperty('NOVA_DAILY_CLOSE_DB_FIRST_ENABLED') || 'Y').trim().toUpperCase() !== 'N';
+}
+
+function novaDailyCloseDbSave_(token, payload) { // DAILY_CLOSE_SAVE_DB_FIRST_V1
+  const safe = payload || {};
+  return novaRealtimeUserRpc_(token, 'nova_daily_close_save_v2', {
+    p_business_date: String(safe.businessDate || '').trim(),
+    p_site: String(safe.site || '').trim(),
+    p_snapshot: safe.snapshot && typeof safe.snapshot === 'object' ? safe.snapshot : {},
+    p_request_id: String(safe.requestId || '').trim()
+  });
+}
