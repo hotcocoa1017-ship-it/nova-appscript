@@ -2,6 +2,9 @@ import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { createRoomActionService } from './room-action-service.mjs';
 import { createSupabaseRoomActionClient } from './supabase-room-action-client.mjs';
+import { createSupabaseAuthClient } from './supabase-auth-client.mjs';
+import { createAuthService } from './auth-service.mjs';
+import { createSessionTokenSigner } from './session-token.mjs';
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -46,11 +49,16 @@ async function readJsonBody(req) {
   }
 }
 
-export function createNovaCoreServer({ roomActionService, revision = 'dev' } = {}) {
+export function createNovaCoreServer({ roomActionService, authService, revision = 'dev' } = {}) {
   if (!roomActionService
       || typeof roomActionService.mutateRoom !== 'function'
       || typeof roomActionService.listRooms !== 'function') {
     throw new Error('roomActionService.listRooms and mutateRoom are required');
+  }
+  if (!authService
+      || typeof authService.login !== 'function'
+      || typeof authService.me !== 'function') {
+    throw new Error('authService.login and authService.me are required');
   }
 
   return http.createServer(async (req, res) => {
@@ -63,6 +71,19 @@ export function createNovaCoreServer({ roomActionService, revision = 'dev' } = {
           service: 'nova-core3',
           revision,
         });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/session/login') {
+        const body = await readJsonBody(req);
+        const result = await authService.login(body);
+        sendJson(res, result.status, result.body);
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/session/me') {
+        const result = await authService.me({ authorization: req.headers.authorization });
+        sendJson(res, result.status, result.body);
         return;
       }
 
@@ -89,7 +110,10 @@ export function createNovaCoreServer({ roomActionService, revision = 'dev' } = {
         return;
       }
 
-      if (match || url.pathname === '/v1/rooms') {
+      if (match
+          || url.pathname === '/v1/rooms'
+          || url.pathname === '/v1/session/login'
+          || url.pathname === '/v1/session/me') {
         sendJson(res, 405, {
           ok: false,
           code: 'METHOD_NOT_ALLOWED',
@@ -134,8 +158,10 @@ export function createNovaCoreServer({ roomActionService, revision = 'dev' } = {
 export function createServerFromEnvironment(env = process.env) {
   const supabaseUrl = String(env.SUPABASE_URL || '').trim();
   const apiKey = String(env.SUPABASE_PUBLISHABLE_KEY || env.SUPABASE_ANON_KEY || '').trim();
+  const jwtSecret = String(env.SUPABASE_JWT_SECRET || '').trim();
   const timeoutMs = Number(env.NOVA_CORE_RPC_TIMEOUT_MS || 2500);
   const maxAttempts = Number(env.NOVA_CORE_RPC_ATTEMPTS || 3);
+  const accessTokenSeconds = Number(env.NOVA_CORE_ACCESS_TOKEN_SECONDS || 12 * 60 * 60);
 
   const rpcClient = createSupabaseRoomActionClient({
     supabaseUrl,
@@ -144,8 +170,21 @@ export function createServerFromEnvironment(env = process.env) {
     maxAttempts,
   });
   const roomActionService = createRoomActionService({ rpcClient });
+
+  const authClient = createSupabaseAuthClient({
+    supabaseUrl,
+    apiKey,
+    timeoutMs,
+  });
+  const tokenSigner = createSessionTokenSigner({
+    secret: jwtSecret,
+    ttlSeconds: accessTokenSeconds,
+  });
+  const authService = createAuthService({ authClient, tokenSigner });
+
   return createNovaCoreServer({
     roomActionService,
+    authService,
     revision: String(env.K_REVISION || env.NOVA_CORE_REVISION || 'dev'),
   });
 }
