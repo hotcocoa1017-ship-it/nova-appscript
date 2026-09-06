@@ -6,15 +6,22 @@ import '../config/app_config.dart';
 import '../models/room.dart';
 import '../models/session.dart';
 import '../services/api_client.dart';
+import '../services/realtime_service.dart';
 import '../services/session_store.dart';
 
 class AppController extends ChangeNotifier {
-  AppController({NovaApiClient? apiClient, SessionStore? sessionStore})
-      : api = apiClient ?? NovaApiClient(),
-        store = sessionStore ?? SessionStore();
+  AppController({
+    NovaApiClient? apiClient,
+    SessionStore? sessionStore,
+    NovaRealtimeGateway? realtimeGateway,
+  })  : api = apiClient ?? NovaApiClient(),
+        store = sessionStore ?? SessionStore() {
+    realtime = realtimeGateway ?? SupabaseNovaRealtimeGateway(api: api);
+  }
 
   final NovaApiClient api;
   final SessionStore store;
+  late final NovaRealtimeGateway realtime;
 
   NovaSession? session;
   List<NovaRoom> rooms = const [];
@@ -26,6 +33,8 @@ class AppController extends ChangeNotifier {
 
   Timer? _reconcileTimer;
   bool _reconcileInFlight = false;
+  bool _realtimeRefreshInFlight = false;
+  bool _realtimeRefreshQueued = false;
 
   bool get isAuthenticated => session != null;
   NovaUser? get user => session?.user;
@@ -56,8 +65,10 @@ class AppController extends ChangeNotifier {
         await refreshRooms(silent: true);
       }
       _startReconcileLoop();
+      await _startRealtimeSafely();
     } on NovaApiException catch (error) {
       if (error.status == 401 || error.status == 403) {
+        await realtime.stop();
         await store.clear();
         session = null;
         rooms = const [];
@@ -84,6 +95,7 @@ class AppController extends ChangeNotifier {
       await store.save(next);
       await refreshRooms(silent: true);
       _startReconcileLoop();
+      await _startRealtimeSafely();
       return true;
     } on NovaApiException catch (error) {
       globalError = error.message;
@@ -96,12 +108,21 @@ class AppController extends ChangeNotifier {
 
   Future<void> logout() async {
     _stopReconcileLoop();
+    _realtimeRefreshQueued = false;
+    await realtime.stop();
     await store.clear();
     session = null;
     rooms = const [];
     pendingRoomNos.clear();
     globalError = null;
     notifyListeners();
+  }
+
+  Future<void> handleAppResumed() async {
+    if (!isAuthenticated) return;
+    await refreshRooms(silent: true);
+    if (!isAuthenticated) return;
+    await _startRealtimeSafely();
   }
 
   Future<void> refreshRooms({bool silent = false}) async {
@@ -118,6 +139,7 @@ class AppController extends ChangeNotifier {
         businessDate: businessDate,
         site: active.user.sessionSite,
       );
+      if (session?.accessToken != active.accessToken) return;
       _applyRoomSnapshot(latest, preservePending: true);
       globalError = null;
     } on NovaApiException catch (error) {
@@ -199,6 +221,7 @@ class AppController extends ChangeNotifier {
         businessDate: businessDate,
         site: active.user.sessionSite,
       );
+      if (session?.accessToken != active.accessToken) return false;
       _applyRoomSnapshot(latest, preservePending: false);
       NovaRoom? matched;
       for (final item in latest) {
@@ -210,6 +233,40 @@ class AppController extends ChangeNotifier {
       return matched?.isDesiredFor(action) ?? false;
     } catch (_) {
       return false;
+    }
+  }
+
+  Future<void> _startRealtimeSafely() async {
+    final active = session;
+    if (active == null || active.user.sessionSite.isEmpty) return;
+    try {
+      await realtime.start(
+        accessToken: active.accessToken,
+        site: active.user.sessionSite,
+        onSignal: _handleRealtimeSignal,
+      );
+    } catch (error) {
+      // Realtime is an acceleration path only. The 15-second authoritative
+      // reconcile continues even if channel bootstrap or reconnect fails.
+      debugPrint('[NOVA Realtime] signal channel unavailable: $error');
+    }
+  }
+
+  Future<void> _handleRealtimeSignal() async {
+    if (!isAuthenticated) return;
+    if (_realtimeRefreshInFlight) {
+      _realtimeRefreshQueued = true;
+      return;
+    }
+
+    _realtimeRefreshInFlight = true;
+    try {
+      do {
+        _realtimeRefreshQueued = false;
+        await refreshRooms(silent: true);
+      } while (_realtimeRefreshQueued && isAuthenticated);
+    } finally {
+      _realtimeRefreshInFlight = false;
     }
   }
 
@@ -281,6 +338,7 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _stopReconcileLoop();
+    realtime.dispose();
     api.close();
     super.dispose();
   }
