@@ -262,7 +262,7 @@ jobs:
           print('PRODUCTION_REALTIME_REVISION_UNCHANGED=OK')
           PY
 
-      - name: Verify signed JWT against live Core 3 session
+      - name: Verify signed JWT against live Core 3 session and Realtime bootstrap
         shell: bash
         run: |
           set -euo pipefail
@@ -289,9 +289,27 @@ jobs:
           print('CORE3_SIGNED_JWT_COMPATIBILITY=OK')
           PY
 
+          CONFIG_HTTP="$(curl -sS -o /tmp/core3-realtime-config.json -w '%{http_code}' "$TARGET_URL/v1/realtime/config" \
+            -H "Authorization: Bearer $TOKEN")"
+          echo "CORE3_REALTIME_CONFIG_HTTP=$CONFIG_HTTP"
+          test "$CONFIG_HTTP" = '200'
+          python3 - <<'PY'
+          import json
+          b=json.load(open('/tmp/core3-realtime-config.json'))
+          assert b.get('ok') is True
+          assert isinstance(b.get('supabaseUrl'), str) and b['supabaseUrl'].strip()
+          assert isinstance(b.get('publishableKey'), str) and b['publishableKey'].strip()
+          assert b.get('privateChannel') is True
+          assert b.get('topicPattern') == 'nova:site:{site}:rooms'
+          assert 'jwtSecret' not in b
+          print('CORE3_REALTIME_BOOTSTRAP=OK')
+          PY
+
           NOAUTH="$(curl -sS -o /tmp/noauth.json -w '%{http_code}' "$TARGET_URL/v1/session/me")"
           test "$NOAUTH" = '401'
-          echo 'CORE3_SESSION_GUARD=OK'
+          CONFIG_NOAUTH="$(curl -sS -o /tmp/noauth-realtime.json -w '%{http_code}' "$TARGET_URL/v1/realtime/config")"
+          test "$CONFIG_NOAUTH" = '401'
+          echo 'CORE3_SESSION_AND_REALTIME_GUARD=OK'
 
       - name: Deployment summary
         shell: bash
