@@ -32,3 +32,8 @@ subprocess.run([sys.executable, 'scripts/patch_realtime_event_drain_3000_v1.py']
 # 권한/검증/결과불명 오류에서는 legacy Sheet로 이중쓰기하지 않도록 전용 검증까지 즉시 실행합니다.
 subprocess.run([sys.executable, 'scripts/patch_qm_houseman_dbfirst_20260906.py'], check=True)
 subprocess.run([sys.executable, 'scripts/validate_qm_houseman_dbfirst_20260906.py'], check=True)
+
+# ROOMMAID 청소시작/완료와 인디게이터는 Broadcast + 경량 polling + 주기 전체 DB 보정의
+# 3중 동기화로 수렴시킵니다. 네트워크 응답이 멈춰 actionInFlight가 고착되는 경로도 제한시간으로 해제합니다.
+subprocess.run([sys.executable, 'scripts/patch_room_state_sync_hardening_20260906.py'], check=True)
+subprocess.run([sys.executable, 'scripts/validate_room_state_sync_hardening_20260906.py'], check=True)
