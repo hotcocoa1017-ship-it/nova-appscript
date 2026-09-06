@@ -16,6 +16,13 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_REGION: asia-southeast1
+  CORE3_SOURCE_SERVICE: nova-realtime-api
+  CORE3_TARGET_SERVICE: nova-core3-api-dev
 
 jobs:
   room-state-domain:
@@ -50,3 +57,56 @@ jobs:
             exit 1
           fi
           echo 'Backup branch isolation check passed.'
+
+  cloudrun-readonly-preflight:
+    needs: room-state-domain
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate Google Cloud using existing NOVA WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Inspect production source environment without printing values
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CORE3_SOURCE_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/source.json
+          python3 - <<'PY'
+          import json, sys
+          s=json.load(open('/tmp/source.json'))
+          template=((s.get('spec') or {}).get('template') or {}).get('spec') or {}
+          containers=template.get('containers') or []
+          envs=(containers[0].get('env') or []) if containers else []
+          by={str(e.get('name','')):e for e in envs}
+          for name in ('SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY'):
+              e=by.get(name)
+              if not e:
+                  print(f'::error::{name}=MISSING', file=sys.stderr)
+                  sys.exit(20)
+              if str(e.get('value','')).strip(): mode='VALUE'
+              elif e.get('valueFrom') or e.get('valueSource'): mode='SECRET_REF'
+              else:
+                  print(f'::error::{name}=EMPTY', file=sys.stderr)
+                  sys.exit(21)
+              print(f'{name}_MODE={mode}')
+          print('CORE3_SOURCE_ENV=OK')
+          PY
+      - name: Confirm Core 3 target is isolated from production service
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$CORE3_TARGET_SERVICE" != "$CORE3_SOURCE_SERVICE"
+          if gcloud run services describe "$CORE3_TARGET_SERVICE" \
+              --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format='value(metadata.name)' \
+              >/tmp/target.txt 2>/dev/null; then
+            echo 'CORE3_TARGET_STATE=EXISTS'
+          else
+            echo 'CORE3_TARGET_STATE=ABSENT'
+          fi
+          echo 'CORE3_GCP_PREFLIGHT=OK'
