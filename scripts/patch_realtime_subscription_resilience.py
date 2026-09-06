@@ -2,14 +2,15 @@ from pathlib import Path
 import subprocess
 import sys
 
-for patch_script, label in [
+for step_script, label in [
     ('scripts/patch_archive_prune_admin_ui.py', 'Archive prune admin UI'),
     ('scripts/patch_archive_prune_realtime_refresh.py', 'Archive prune realtime refresh'),
+    ('scripts/validate_notification_center_v1.py', 'NOVA notification center V1 validation'),
 ]:
-    archive_patch = subprocess.run([sys.executable, patch_script], check=False)
-    if archive_patch.returncode != 0:
-        print(f'ERROR: {label} patch failed ({archive_patch.returncode})', file=sys.stderr)
-        sys.exit(archive_patch.returncode)
+    step = subprocess.run([sys.executable, step_script], check=False)
+    if step.returncode != 0:
+        print(f'ERROR: {label} failed ({step.returncode})', file=sys.stderr)
+        sys.exit(step.returncode)
 
 path = Path('Client.html')
 text = path.read_text(encoding='utf-8')
