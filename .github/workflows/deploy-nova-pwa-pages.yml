@@ -1,0 +1,62 @@
+name: Deploy NOVA PWA Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pwa/v2/**'
+      - '.github/workflows/deploy-nova-pwa-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: nova-pwa-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Stage NOVA PWA
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _site
+          mkdir -p _site
+          cp -R pwa/v2/. _site/
+          curl -fsSL 'https://evoetxfjmkkjptucwxsv.supabase.co/storage/v1/object/public/nova-pwa-v2/icon-192.png' -o _site/icon-192.png
+          curl -fsSL 'https://evoetxfjmkkjptucwxsv.supabase.co/storage/v1/object/public/nova-pwa-v2/icon-512.png' -o _site/icon-512.png
+          curl -fsSL 'https://evoetxfjmkkjptucwxsv.supabase.co/storage/v1/object/public/nova-pwa-v2/badge-96.png' -o _site/badge-96.png
+          touch _site/.nojekyll
+          test -s _site/index.html
+          test -s _site/manifest.webmanifest
+          test -s _site/sw.js
+          test -s _site/icon-192.png
+          test -s _site/icon-512.png
+          test -s _site/badge-96.png
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
