@@ -28,7 +28,7 @@ require(center, "claims?.employee_no", 'employee number claim binding')
 require(center, "novaNotificationSound", 'notification sound preference')
 require(center, 'playSound_', 'notification sound playback')
 require(center, 'markAllRead_', 'mark-all-read action')
-require(center, "route:'", 'notification route payload compatibility') if False else None
+require(center, 'function route_', 'notification click routing')
 forbid(center, 'SUPABASE_SERVICE_ROLE_KEY', 'service role secret in browser')
 forbid(center, 'service_role', 'service role literal in browser')
 
