@@ -5,10 +5,30 @@ function doGet(e) { // (웹앱 진입)
   const template = HtmlService.createTemplateFromFile('Index');
   template.appName = NOVA.APP_NAME;
   template.version = NOVA.VERSION;
+  template.pwaRouteJson = getNovaPwaRouteJson_(e); // NOVA_PWA_WEB_PUSH_V2
   return template.evaluate()
     .setTitle(NOVA.APP_NAME)
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover');
+}
+
+function getNovaPwaRouteJson_(e) { // (PWA Push 딥링크 파라미터를 안전한 JSON으로 제한)
+  const p = e && e.parameter ? e.parameter : {};
+  const allowedRoutes = ['cleaning', 'qm', 'houseman', 'archive'];
+  const routeValue = String(p.route || '').trim().toLowerCase();
+  const siteValue = String(p.site || '').trim();
+  const roomValue = String(p.roomNo || '').trim().replace(/[^0-9A-Za-z가-힣_-]/g, '').slice(0, 24);
+  const notificationId = String(p.notificationId || '').replace(/[^0-9]/g, '').slice(0, 24);
+  const payload = {
+    route: allowedRoutes.includes(routeValue) ? routeValue : '',
+    site: NOVA_LOGIN_SITES_.includes(siteValue) ? siteValue : '',
+    roomNo: roomValue,
+    notificationId
+  };
+  return JSON.stringify(payload)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
 }
 
 function include_(filename) { // (HTML 부분파일 포함)
