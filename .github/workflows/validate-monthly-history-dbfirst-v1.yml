@@ -1,0 +1,72 @@
+name: Validate Monthly History DB First V1
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+
+      - name: Apply monthly DB-first patch
+        run: python3 scripts/patch_monthly_history_dbfirst_v1.py
+
+      - name: Validate markers and safety gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'MONTHLY_HISTORY_DB_FIRST_V1' 11_Monthly.js
+          grep -q 'readMonthlyHistoryRowsDbFirst_' 11_Monthly.js
+          grep -q 'monthlyHistoryDbDateRange_' 11_Monthly.js
+          grep -q 'novaMonthlyHistoryDbRead_' 11_Monthly.js
+          grep -q 'MONTHLY_HISTORY_DB_FIRST_V1' MonthlyDbFirstServer.js
+          grep -q 'nova_monthly_history_v1' db/monthly_history_db_first_v1.sql
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('11_Monthly.js').read_text(encoding='utf-8')
+          assert "const dbReplaceTypes = new Set([" in text
+          assert "NOVA.RECORD_TYPES.HOUSEMAN_ORDER" not in text[text.index('const dbReplaceTypes = new Set(['):text.index(']);', text.index('const dbReplaceTypes = new Set(['))]
+          assert "return keptSheet.concat(dbRows);" in text
+          assert "rowNumber: -(index + 1)" in text
+          print('monthly DB hybrid gate OK')
+          PY
+
+      - name: Validate JavaScript syntax
+        run: |
+          node --check 11_Monthly.js
+          node --check MonthlyDbFirstServer.js
+
+      - name: Validate NOVA regression gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum 11_Monthly.js | awk '{print $1}')"
+          python3 scripts/patch_monthly_history_dbfirst_v1.py
+          after="$(sha256sum 11_Monthly.js | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Persist validated monthly source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 11_Monthly.js; then
+            echo 'Validated monthly source already persisted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 11_Monthly.js
+          git commit -m 'Persist monthly history DB-first v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
