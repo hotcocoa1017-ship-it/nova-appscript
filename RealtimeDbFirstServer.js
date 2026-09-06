@@ -144,3 +144,13 @@ function novaDailyCloseDbCancel_(token, payload) { // DAILY_CLOSE_CANCEL_DB_FIRS
     p_request_id: String(safe.requestId || '').trim()
   });
 }
+
+function novaDailyCloseDbCancelMany_(token, payload) { // DAILY_CLOSE_CANCEL_MANY_DB_FIRST_V1
+  const safe = payload || {};
+  return novaRealtimeUserRpc_(token, 'nova_daily_close_cancel_many_v1', {
+    p_business_date: String(safe.businessDate || '').trim(),
+    p_sites: Array.isArray(safe.sites) ? safe.sites : [],
+    p_reason: String(safe.reason || '').trim(),
+    p_request_id: String(safe.requestId || '').trim()
+  });
+}
