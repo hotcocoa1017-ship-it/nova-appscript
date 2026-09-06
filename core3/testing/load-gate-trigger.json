@@ -1,0 +1,5 @@
+{
+  "enabled": false,
+  "stage": "none",
+  "note": "Change only after the isolated Supabase load branch and nova-core3-api-load service are verified."
+}
