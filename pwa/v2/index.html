@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="NOVA">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <title>NOVA WORKS</title>
+  <style>
+    html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111827}
+    #novaFrame{position:fixed;inset:0;width:100%;height:100%;border:0;background:#fff}
+    #pushGate{position:fixed;z-index:50;right:12px;bottom:max(12px,env(safe-area-inset-bottom));display:none;max-width:min(320px,calc(100vw - 24px));padding:10px 12px;border:1px solid #d1d5db;border-radius:14px;background:rgba(255,255,255,.97);box-shadow:0 10px 28px rgba(0,0,0,.18);font:600 12px/1.35 system-ui,-apple-system,sans-serif;color:#111827}
+    #pushGate.show{display:flex;align-items:center;gap:8px}
+    #pushGate button{border:0;border-radius:10px;background:#111827;color:#fff;padding:9px 11px;font-weight:800;white-space:nowrap}
+    #pushGate span{min-width:0}
+  </style>
+</head>
+<body>
+  <iframe id="novaFrame" title="NOVA WORKS"></iframe>
+  <div id="pushGate"><span id="pushGateText">앱 알림을 켜면 NOVA를 닫아도 알림을 받을 수 있습니다.</span><button id="pushGateButton" type="button">알림 켜기</button></div>
+<script>
+(()=>{'use strict';
+const FRAME=document.getElementById('novaFrame'),GATE=document.getElementById('pushGate'),BTN=document.getElementById('pushGateButton'),TEXT=document.getElementById('pushGateText');
+const VAPID='BIcs42B7cfuzFyx_-h0Ji8G8TfsU7CvoX8RBZo65MZe-J1VQvP9VrFOL_o2VCHQo0Y01zxN4vDbkcbcvspg3Hr8',PUB='sb_publishable_yKpHBqwrzlNdpIYzgmUMXg_5wApTA7L';
+const APPS='https://script.google.com/macros/s/AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf/exec',SUPABASE='https://evoetxfjmkkjptucwxsv.supabase.co';
+let bridge=null,registration=null,syncBusy=false;
+
+function isiOS(){return /iphone|ipad|ipod/i.test(navigator.userAgent)}
+function standalone(){return matchMedia('(display-mode: standalone)').matches || navigator.standalone===true}
+function b64uToBytes(v){const p='='.repeat((4-v.length%4)%4),b=atob((v+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(b,c=>c.charCodeAt(0))}
+function subscriptionJSON(s){const j=s.toJSON();return {endpoint:j.endpoint,keys:{p256dh:j.keys?.p256dh||'',auth:j.keys?.auth||''}}}
+async function badge(n){try{if('setAppBadge' in navigator){if(Number(n)>0)await navigator.setAppBadge(Number(n));else await navigator.clearAppBadge()}}catch(_ ){}}
+function claims(jwt){try{const p=String(jwt||'').split('.')[1]||'',b=p.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(p.length/4)*4,'='),raw=atob(b);return JSON.parse(new TextDecoder().decode(Uint8Array.from(raw,c=>c.charCodeAt(0))))}catch(_){return{}}}
+function iframeUrl(){const src=new URL(APPS),q=new URLSearchParams(location.search);['route','site','roomNo','notificationId'].forEach(k=>{const v=q.get(k);if(v)src.searchParams.set(k,v)});return src.toString()}
+async function registerSW(){if(!('serviceWorker' in navigator))return null;registration=await navigator.serviceWorker.register('./sw.js',{scope:'./'});await navigator.serviceWorker.ready;return registration}
+function showGate(message=''){TEXT.textContent=message||'앱 알림을 켜면 NOVA를 닫아도 알림을 받을 수 있습니다.';GATE.classList.add('show')}
+function hideGate(){GATE.classList.remove('show')}
+async function upsertSubscription(sub){
+  if(!bridge)throw new Error('NOVA 로그인 후 다시 시도하세요.');
+  const j=subscriptionJSON(sub);
+  const body={employee_no:bridge.employeeNo,endpoint:j.endpoint,p256dh:j.keys.p256dh,auth_secret:j.keys.auth,user_agent:navigator.userAgent,platform:isiOS()?'iOS':(/android/i.test(navigator.userAgent)?'Android':'Web'),enabled:true,updated_at:new Date().toISOString(),last_seen_at:new Date().toISOString()};
+  const url=`${bridge.supabaseUrl}/rest/v1/nova_push_subscriptions?on_conflict=endpoint`;
+  const r=await fetch(url,{method:'POST',headers:{apikey:bridge.publishableKey||PUB,Authorization:`Bearer ${bridge.token}`,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(body)});
+  if(!r.ok)throw new Error(`Push 구독 저장 실패 (${r.status})`);
+}
+async function syncExisting(){
+  if(syncBusy||!bridge)return;syncBusy=true;
+  try{
+    const reg=registration||await registerSW(); if(!reg)return;
+    let sub=await reg.pushManager.getSubscription();
+    if(Notification.permission==='granted'&&!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64uToBytes(VAPID)});
+    if(sub){await upsertSubscription(sub);hideGate()}else if(Notification.permission!=='denied')showGate();
+  }catch(e){console.warn('[NOVA PWA] push sync',e);if(Notification.permission!=='denied')showGate()}finally{syncBusy=false}
+}
+async function enablePush(){
+  try{
+    if(isiOS()&&!standalone()){showGate('iPhone은 먼저 공유 버튼 → 홈 화면에 추가 후 NOVA 앱에서 알림을 켜세요.');return}
+    if(!bridge){showGate('먼저 NOVA에 로그인한 뒤 알림을 켜세요.');return}
+    const reg=registration||await registerSW();
+    const permission=Notification.permission==='granted'?'granted':await Notification.requestPermission();
+    if(permission!=='granted'){showGate('브라우저 알림 권한이 허용되지 않았습니다.');return}
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64uToBytes(VAPID)});
+    await upsertSubscription(sub);hideGate();
+  }catch(e){console.error('[NOVA PWA] enable push',e);showGate(e.message||'알림 설정을 확인하세요.')}
+}
+window.addEventListener('message',e=>{
+  const d=e.data||{};
+  if(d.type!=='NOVA_PUSH_BRIDGE_V2'||!d.token||!d.employeeNo)return;
+  const supabaseUrl=String(d.supabaseUrl||'').replace(/\/+$/,'');
+  const employeeNo=String(d.employeeNo||'').trim(),c=claims(d.token);
+  if(supabaseUrl!==SUPABASE||String(c?.employee_no||'').trim()!==employeeNo)return;
+  bridge={supabaseUrl:SUPABASE,publishableKey:String(d.publishableKey||PUB),token:String(d.token),employeeNo};
+  badge(Number(d.unread||0));void syncExisting();
+});
+navigator.serviceWorker?.addEventListener('message',e=>{const d=e.data||{};if(d.type==='NOVA_PUSH_FOREGROUND'&&d.badgeCount!=null)badge(d.badgeCount)});
+BTN.addEventListener('click',enablePush);
+FRAME.src=iframeUrl();
+registerSW().then(()=>{if(Notification.permission==='default')showGate();else if(Notification.permission==='granted')void syncExisting()}).catch(e=>console.warn('[NOVA PWA] sw',e));
+})();
+</script>
+</body>
+</html>
