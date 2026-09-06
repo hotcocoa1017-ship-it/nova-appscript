@@ -1,0 +1,2 @@
+Emergency production deploy after reverting NOVA Push permission settings V1.
+Restores last known good Client.html and pwa/v2/index.html login path.
