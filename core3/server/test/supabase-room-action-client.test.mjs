@@ -17,7 +17,7 @@ function input() {
   };
 }
 
-test('calls v2 RPC with employee JWT and publishable key', async () => {
+test('calls v2 mutation RPC with employee JWT and publishable key', async () => {
   const calls = [];
   const client = createSupabaseRoomActionClient({
     supabaseUrl: 'https://example.supabase.co/',
@@ -42,7 +42,30 @@ test('calls v2 RPC with employee JWT and publishable key', async () => {
   assert.equal(body.p_room_no, '7217');
 });
 
-test('retries transient 5xx using exactly the same request body', async () => {
+test('calls authoritative room list RPC with same employee JWT', async () => {
+  const calls = [];
+  const client = createSupabaseRoomActionClient({
+    supabaseUrl: 'https://example.supabase.co',
+    apiKey: 'publishable-key',
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ ok: true, rooms: [{ roomNo: '7217' }] }), { status: 200 });
+    },
+  });
+
+  const result = await client.listRoommaidRooms({
+    authToken: 'employee.jwt',
+    businessDate: '2026-09-06',
+    site: '쏘라노',
+  });
+  assert.equal(result.rooms[0].roomNo, '7217');
+  assert.equal(calls[0].url, 'https://example.supabase.co/rest/v1/rpc/nova_roommaid_rooms_v1');
+  const body = JSON.parse(calls[0].options.body);
+  assert.equal(body.p_business_date, '2026-09-06');
+  assert.equal(body.p_site, '쏘라노');
+});
+
+test('retries transient 5xx using exactly the same mutation request body', async () => {
   const bodies = [];
   let attempt = 0;
   const client = createSupabaseRoomActionClient({
