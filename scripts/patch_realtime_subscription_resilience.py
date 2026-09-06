@@ -1,5 +1,14 @@
 from pathlib import Path
+import subprocess
 import sys
+
+archive_patch = subprocess.run(
+    [sys.executable, 'scripts/patch_archive_prune_admin_ui.py'],
+    check=False,
+)
+if archive_patch.returncode != 0:
+    print(f'ERROR: Archive prune admin UI patch failed ({archive_patch.returncode})', file=sys.stderr)
+    sys.exit(archive_patch.returncode)
 
 path = Path('Client.html')
 text = path.read_text(encoding='utf-8')
