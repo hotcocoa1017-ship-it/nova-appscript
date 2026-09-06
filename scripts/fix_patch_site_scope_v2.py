@@ -27,3 +27,8 @@ subprocess.run([sys.executable, 'scripts/patch_qm_clear_rework_controls_20260905
 # DB-first 대량처리에서 1,500 START + 1,500 COMPLETE 이벤트가 한 번에 몰려도
 # 기존 500건 단위 Sheet 미러를 최대 6페이지까지 한 예약실행에서 배수하도록 보장합니다.
 subprocess.run([sys.executable, 'scripts/patch_realtime_event_drain_3000_v1.py'], check=True)
+
+# QM 하우스맨 요청은 PostgreSQL에서 먼저 확정하고 Sheet/Telegram은 후행 미러합니다.
+# 권한/검증/결과불명 오류에서는 legacy Sheet로 이중쓰기하지 않도록 전용 검증까지 즉시 실행합니다.
+subprocess.run([sys.executable, 'scripts/patch_qm_houseman_dbfirst_20260906.py'], check=True)
+subprocess.run([sys.executable, 'scripts/validate_qm_houseman_dbfirst_20260906.py'], check=True)
