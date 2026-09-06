@@ -8,6 +8,7 @@ for step_script, label in [
     ('scripts/patch_pwa_web_push_v2.py', 'NOVA PWA Web Push V2 bridge'),
     ('scripts/patch_pwa_bridge_login_resilience.py', 'NOVA PWA login bridge resilience'),
     ('scripts/patch_notification_preferences_archive_settings_v2.py', 'NOVA personal notification settings + Archive settings'),
+    ('scripts/patch_notification_preview_audio_unlock_v1.py', 'NOVA notification preview audio unlock V1'),
     ('scripts/patch_personal_settings_role_access_v3.py', 'NOVA personal settings role access V3'),
     ('scripts/validate_notification_preferences_archive_settings_v2.py', 'NOVA notification preferences + Archive settings validation'),
     ('scripts/validate_notification_center_v1.py', 'NOVA notification center V1 validation'),
