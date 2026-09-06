@@ -5,7 +5,8 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 // Hash only; the raw internal dispatch token is stored in Supabase Vault.
 const TOKEN_SHA256 = "f5312c52debdc03e2129a2498c0e28afd0d33142650382df6844c001f90a965b";
-const PWA_BASE = `${SUPABASE_URL}/storage/v1/object/public/nova-pwa-v2`;
+const PWA_BASE = "https://nova-pwa-hotcocoa1017-3826.vercel.app";
+const ASSET_BASE = `${SUPABASE_URL}/storage/v1/object/public/nova-pwa-v2`;
 const db = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
@@ -95,13 +96,13 @@ Deno.serve(async (req) => {
   if (site) params.set("site", site);
   if (roomNo) params.set("roomNo", roomNo);
   params.set("notificationId", String(notificationId));
-  const clickUrl = `${PWA_BASE}/index.html?${params.toString()}`;
+  const clickUrl = `${PWA_BASE}/?${params.toString()}`;
 
   const payload = {
     title: text(notification.title) || "NOVA 알림",
     body: text(notification.body),
-    icon: `${PWA_BASE}/icon-192.png`,
-    badge: `${PWA_BASE}/badge-96.png`,
+    icon: `${ASSET_BASE}/icon-192.png`,
+    badge: `${ASSET_BASE}/badge-96.png`,
     tag: `nova-${notificationId}`,
     data: {
       url: clickUrl,
