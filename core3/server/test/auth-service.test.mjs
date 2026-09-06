@@ -85,3 +85,43 @@ test('me requires bearer token and forwards token only', async () => {
   assert.equal(result.status, 200);
   assert.equal(captured.authToken, 'abc.def.ghi');
 });
+
+test('realtime config verifies bearer before returning only public bootstrap values', async () => {
+  let captured;
+  const signer = createSessionTokenSigner({ secret: 'unit-test-secret' });
+  const service = createAuthService({
+    authClient: client({
+      async me(arg) {
+        captured = arg;
+        return { ok: true, employeeNo: '321516', role: 'ROOMMAID', sessionSite: '쏘라노' };
+      },
+    }),
+    tokenSigner: signer,
+    realtimeConfig: {
+      supabaseUrl: 'https://example.supabase.co',
+      publishableKey: 'sb_publishable_example',
+    },
+  });
+
+  const noAuth = await service.realtimeConfig({});
+  assert.equal(noAuth.status, 401);
+
+  const result = await service.realtimeConfig({ authorization: 'Bearer employee.jwt' });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.ok, true);
+  assert.equal(result.body.supabaseUrl, 'https://example.supabase.co');
+  assert.equal(result.body.publishableKey, 'sb_publishable_example');
+  assert.equal(result.body.privateChannel, true);
+  assert.equal(result.body.topicPattern, 'nova:site:{site}:rooms');
+  assert.equal(result.body.sessionSite, '쏘라노');
+  assert.equal(captured.authToken, 'employee.jwt');
+  assert.equal(Object.hasOwn(result.body, 'jwtSecret'), false);
+});
+
+test('realtime config fails closed when public bootstrap environment is missing', async () => {
+  const signer = createSessionTokenSigner({ secret: 'unit-test-secret' });
+  const service = createAuthService({ authClient: client(), tokenSigner: signer });
+  const result = await service.realtimeConfig({ authorization: 'Bearer employee.jwt' });
+  assert.equal(result.status, 503);
+  assert.equal(result.body.code, 'REALTIME_CONFIG_UNAVAILABLE');
+});
