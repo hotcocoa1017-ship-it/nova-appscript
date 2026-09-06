@@ -63,11 +63,10 @@ function novaRoomUploadDbFirstEnabled_() { // ROOM_UPLOAD_DB_FIRST_V2
   return String(props.getProperty('NOVA_ROOM_UPLOAD_DB_FIRST_ENABLED') || 'Y').trim().toUpperCase() !== 'N';
 }
 
-function novaRoomUploadDbBundle_(token, businessDate, site) { // ROOM_UPLOAD_DB_FIRST_V2
-  return novaRealtimeUserRpc_(token, 'nova_report_bundle_v1', {
+function novaRoomUploadDbBundle_(token, businessDate, site) { // ROOM_UPLOAD_DB_FIRST_V2 · ROOM_UPLOAD_STATE_RPC_V1
+  return novaRealtimeUserRpc_(token, 'nova_room_upload_state_v1', {
     p_business_date: String(businessDate || '').trim(),
-    p_site: String(site || '').trim(),
-    p_include_history: false
+    p_site: String(site || '').trim()
   });
 }
 
