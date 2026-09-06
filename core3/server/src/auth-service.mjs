@@ -27,12 +27,26 @@ function mapAuthError(error) {
   return errorResponse(500, 'AUTH_UPSTREAM_ERROR', '인증 처리 중 오류가 발생했습니다.');
 }
 
-export function createAuthService({ authClient, tokenSigner } = {}) {
+export function createAuthService({ authClient, tokenSigner, realtimeConfig = {} } = {}) {
   if (!authClient || typeof authClient.loginIdentity !== 'function' || typeof authClient.me !== 'function') {
     throw new Error('authClient.loginIdentity and authClient.me are required');
   }
   if (!tokenSigner || typeof tokenSigner.sign !== 'function') {
     throw new Error('tokenSigner.sign is required');
+  }
+
+  const realtimeSupabaseUrl = text(realtimeConfig.supabaseUrl);
+  const realtimePublishableKey = text(realtimeConfig.publishableKey);
+
+  async function verifyBearer(authorization) {
+    const authToken = parseBearer(authorization);
+    if (!authToken) return { error: errorResponse(401, 'UNAUTHORIZED', '로그인이 필요합니다.') };
+    try {
+      const user = await authClient.me({ authToken });
+      return { authToken, user };
+    } catch (error) {
+      return { error: mapAuthError(error) };
+    }
   }
 
   return {
@@ -75,14 +89,28 @@ export function createAuthService({ authClient, tokenSigner } = {}) {
     },
 
     async me({ authorization } = {}) {
-      const authToken = parseBearer(authorization);
-      if (!authToken) return errorResponse(401, 'UNAUTHORIZED', '로그인이 필요합니다.');
-      try {
-        const user = await authClient.me({ authToken });
-        return { status: 200, body: user };
-      } catch (error) {
-        return mapAuthError(error);
+      const verified = await verifyBearer(authorization);
+      if (verified.error) return verified.error;
+      return { status: 200, body: verified.user };
+    },
+
+    async realtimeConfig({ authorization } = {}) {
+      const verified = await verifyBearer(authorization);
+      if (verified.error) return verified.error;
+      if (!realtimeSupabaseUrl || !realtimePublishableKey) {
+        return errorResponse(503, 'REALTIME_CONFIG_UNAVAILABLE', 'Realtime 연결 설정을 사용할 수 없습니다.');
       }
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          supabaseUrl: realtimeSupabaseUrl,
+          publishableKey: realtimePublishableKey,
+          privateChannel: true,
+          topicPattern: 'nova:site:{site}:rooms',
+          sessionSite: text(verified.user?.sessionSite),
+        },
+      };
     },
   };
 }
