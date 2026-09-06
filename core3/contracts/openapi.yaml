@@ -1,11 +1,12 @@
 openapi: 3.1.0
 info:
   title: NOVA Core API
-  version: 3.0.0-alpha.2
+  version: 3.0.0-alpha.3
   description: >-
     Server contract for the first Room State vertical slice. PostgreSQL is the
-    authoritative live-state source. ROOMMAID current-room reads and cleaning
-    mutations are implemented through Cloud Run -> authenticated Supabase RPC.
+    authoritative live-state source. Supabase Realtime is used only as a
+    low-latency change signal; clients must reconcile through authoritative
+    Core API reads after receiving a signal.
 servers:
   - url: https://api.nova.invalid
     description: Placeholder; never used for production deployment.
@@ -28,6 +29,23 @@ paths:
                   ok: { type: boolean, const: true }
                   service: { type: string }
                   revision: { type: string }
+  /v1/realtime/config:
+    get:
+      operationId: getRealtimeConfig
+      description: >-
+        Returns public Supabase bootstrap values only after authenticating the
+        NOVA session. The caller's existing bearer JWT is used for the private
+        Realtime channel. Broadcast payloads are notification hints, never the
+        authoritative Room State response.
+      responses:
+        '200':
+          description: Public configuration required to open the private site Room State channel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RealtimeConfigResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/rooms:
     get:
       operationId: listRooms
@@ -105,6 +123,22 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    RealtimeConfigResponse:
+      type: object
+      required: [ok, supabaseUrl, publishableKey, privateChannel, topicPattern]
+      properties:
+        ok: { type: boolean, const: true }
+        supabaseUrl:
+          type: string
+          format: uri
+          description: Public Supabase project URL; never a privileged credential.
+        publishableKey:
+          type: string
+          minLength: 1
+          description: Public/publishable key only. Service-role and JWT signing secrets are forbidden.
+        privateChannel: { type: boolean, const: true }
+        topicPattern: { type: string, const: 'nova:site:{site}:rooms' }
+        sessionSite: { type: string }
     Room:
       type: object
       required: [businessDate, site, roomNo, roomStatus, cleaningStatus, version]
@@ -166,4 +200,4 @@ components:
     Forbidden:
       description: Authenticated identity is not allowed to perform this operation.
     Unavailable:
-      description: The database service is temporarily unavailable.
+      description: The database or bootstrap service is temporarily unavailable.
