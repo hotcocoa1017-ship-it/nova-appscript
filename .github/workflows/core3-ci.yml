@@ -155,7 +155,7 @@ jobs:
     timeout-minutes: 18
     concurrency:
       group: nova-core3-api-dev-deploy
-      cancel-in-progress: false
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
 
