@@ -209,6 +209,7 @@
     indicatorFullReconcileAt: 0, // ROOM_STATE_SYNC_HARDENING_V1
     roomStatusProtections: new Map(),
     qmDraftDbFirstEnabled: false,
+    shiftZoneDbFirstEnabled: false, // SHIFT_ZONE_DBFIRST_HOUSEMAN_UI_V1
     qmDraftAuthBundle: null
   }; // QM_DRAFT_DB_FIRST_V1
 
@@ -322,6 +323,7 @@
         novaRealtime_.enabled = Boolean(config?.ok && config?.enabled && config?.apiBase);
         novaRealtime_.apiBase = String(config?.apiBase || '').replace(/\/+$/, '');
         novaRealtime_.qmDraftDbFirstEnabled = Boolean(config?.qmDraftDbFirstEnabled); // QM_DRAFT_DB_FIRST_V1
+        novaRealtime_.shiftZoneDbFirstEnabled = Boolean(config?.shiftZoneDbFirstEnabled); // SHIFT_ZONE_DBFIRST_HOUSEMAN_UI_V1
       } catch (error) {
         novaRealtime_.configLoaded = false;
         novaRealtime_.enabled = false;
@@ -2280,7 +2282,7 @@
     if (state.shifts.loading && !options.force) return;
     state.shifts.loading = true;
     try {
-      const result = await callServer('getShiftManagementData', state.token, {
+      const result = await novaShiftZoneDbFirstLoad_({ // SHIFT_ZONE_DBFIRST_HOUSEMAN_UI_V1
         businessDate: state.shifts.businessDate || state.bootstrap.app.businessDate,
         site: state.shifts.site
       });
@@ -2436,7 +2438,7 @@
     button.disabled = true;
     button.textContent = '처리 중…';
     try {
-      const result = await callServer('saveHousemanZoneAssignment', state.token, {
+      const result = await novaHousemanZoneDbFirstSave_({ // SHIFT_ZONE_DBFIRST_HOUSEMAN_UI_V1
         businessDate: state.shifts.businessDate,
         site: state.shifts.site,
         employeeNo,
@@ -2466,7 +2468,7 @@
       ['A', 'B', 'C'].forEach(code => {
         assignments[code] = Array.from(new Set((state.shifts.draft[code] || []).filter(Boolean)));
       });
-      const result = await callServer('saveShiftAssignments', state.token, {
+      const result = await novaShiftAssignmentsDbFirstSave_({ // SHIFT_ZONE_DBFIRST_HOUSEMAN_UI_V1
         businessDate: state.shifts.businessDate,
         site: state.shifts.site,
         assignments
@@ -6072,6 +6074,130 @@
     throw unknown;
   }
 
+  async function novaShiftZoneDbRpc_(rpcName, payload) { // SHIFT_ZONE_DBFIRST_HOUSEMAN_UI_V1
+    if (!novaRealtimeIsEnabled_()) throw new Error('Realtime DB 연결이 준비되지 않았습니다.');
+    const auth = await novaRealtimeGetAuth_();
+    const endpoint = `${String(auth.supabaseUrl || '').replace(/\/+$/, '')}/rest/v1/rpc/${rpcName}`;
+    const send = async () => {
+      const response = await novaRealtimeBoundedFetch_(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': String(auth.publishableKey || ''),
+          'Authorization': `Bearer ${auth.token}`
+        },
+        body: JSON.stringify(payload || {})
+      }, 6500);
+      let data = null;
+      try { data = await response.json(); } catch (_) {}
+      return { response, data };
+    };
+    let { response, data } = await send();
+    if (response.status === 401 && String(data?.code || '').trim().toUpperCase() === 'PGRST303') {
+      await novaRealtimeSleep_(1200);
+      ({ response, data } = await send());
+    }
+    if (!response.ok || !data?.ok) {
+      const error = new Error(data?.message || data?.details || `근무조 DB 처리 오류 (${response.status})`);
+      error.status = response.status;
+      error.code = data?.code || '';
+      throw error;
+    }
+    return data;
+  }
+
+  function novaShiftZoneMirrorLater_(serverFunction, payload) {
+    window.setTimeout(() => {
+      callServer(serverFunction, state.token, payload).catch(error => {
+        console.warn(`[NOVA DB mirror] ${serverFunction} 실패`, error);
+      });
+    }, 0);
+  }
+
+  async function novaShiftZoneSeedFromLegacy_(legacy, payload, dbSnapshot) {
+    const businessDate = String(payload?.businessDate || legacy?.businessDate || '').trim();
+    const site = String(payload?.site || legacy?.site || '').trim();
+    const assignments = legacy?.assignments || { A: [], B: [], C: [] };
+    await novaShiftZoneDbRpc_('nova_houseman_shift_save_v2', {
+      p_business_date: businessDate,
+      p_site: site,
+      p_assignments: assignments,
+      p_request_id: novaRealtimeRequestId_('SHIFT_SEED', site)
+    });
+
+    const zones = legacy?.zoneAssignments || {};
+    for (const [employeeNo, zone] of Object.entries(zones)) {
+      const buildings = Array.isArray(zone?.buildings) ? zone.buildings.filter(Boolean) : [];
+      if (!employeeNo || !buildings.length) continue;
+      const action = dbSnapshot?.zoneAssignments?.[employeeNo] ? 'UPDATE' : 'SAVE';
+      await novaShiftZoneDbRpc_('nova_houseman_zone_save_v1', {
+        p_business_date: businessDate,
+        p_site: site,
+        p_employee_no: employeeNo,
+        p_buildings: buildings,
+        p_action: action,
+        p_request_id: novaRealtimeRequestId_(`ZONE_SEED_${action}`, employeeNo)
+      });
+    }
+  }
+
+  async function novaShiftZoneDbFirstLoad_(payload) {
+    if (!novaRealtime_.shiftZoneDbFirstEnabled || !novaRealtimeIsEnabled_()) {
+      return callServer('getShiftManagementData', state.token, payload);
+    }
+    try {
+      let result = await novaShiftZoneDbRpc_('nova_houseman_shift_zone_get_v2', {
+        p_business_date: String(payload?.businessDate || ''),
+        p_site: String(payload?.site || '')
+      });
+      if (result.initialized) return result;
+
+      // 전환 직후에만 기존 Sheet 값을 1회 읽어 PostgreSQL을 초기화합니다.
+      const legacy = await callServer('getShiftManagementData', state.token, payload);
+      if (!legacy?.ok) throw new Error(legacy?.message || '기존 근무조 정보를 읽지 못했습니다.');
+      await novaShiftZoneSeedFromLegacy_(legacy, payload, result);
+      result = await novaShiftZoneDbRpc_('nova_houseman_shift_zone_get_v2', {
+        p_business_date: String(payload?.businessDate || legacy.businessDate || ''),
+        p_site: String(payload?.site || legacy.site || '')
+      });
+      return result;
+    } catch (error) {
+      console.warn('[NOVA SHIFT DB-first] 조회 실패 · 기존 조회를 임시 사용합니다.', error);
+      return callServer('getShiftManagementData', state.token, payload);
+    }
+  }
+
+  async function novaShiftAssignmentsDbFirstSave_(payload) {
+    if (!novaRealtime_.shiftZoneDbFirstEnabled || !novaRealtimeIsEnabled_()) {
+      return callServer('saveShiftAssignments', state.token, payload);
+    }
+    const result = await novaShiftZoneDbRpc_('nova_houseman_shift_save_v2', {
+      p_business_date: String(payload?.businessDate || ''),
+      p_site: String(payload?.site || ''),
+      p_assignments: payload?.assignments || { A: [], B: [], C: [] },
+      p_request_id: novaRealtimeRequestId_('SHIFT_SAVE', payload?.site || '')
+    });
+    // 사용자 응답은 DB 확정으로 끝내고 Sheet는 후행 미러로만 갱신합니다.
+    novaShiftZoneMirrorLater_('saveShiftAssignments', payload);
+    return result;
+  }
+
+  async function novaHousemanZoneDbFirstSave_(payload) {
+    if (!novaRealtime_.shiftZoneDbFirstEnabled || !novaRealtimeIsEnabled_()) {
+      return callServer('saveHousemanZoneAssignment', state.token, payload);
+    }
+    const result = await novaShiftZoneDbRpc_('nova_houseman_zone_save_v1', {
+      p_business_date: String(payload?.businessDate || ''),
+      p_site: String(payload?.site || ''),
+      p_employee_no: String(payload?.employeeNo || ''),
+      p_buildings: Array.isArray(payload?.buildings) ? payload.buildings : [],
+      p_action: String(payload?.action || 'SAVE'),
+      p_request_id: novaRealtimeRequestId_(`ZONE_${String(payload?.action || 'SAVE').toUpperCase()}`, payload?.employeeNo || '')
+    });
+    novaShiftZoneMirrorLater_('saveHousemanZoneAssignment', payload);
+    return result;
+  }
+
   async function novaRealtimeCreateHousemanOrder_(payload, authRetry = 0) { // (Cloud Run/PostgreSQL 등록 확정)
     // NOVA_I18N_V1 · Realtime 오더 번역: DB에는 한국어 운영값, Sheet JSON에는 원문 메타를 보존합니다.
     let preparedPayload = Object.assign({}, payload || {});
@@ -9265,10 +9391,13 @@
       else if (mine && order.statusCode === 'PROCESSING') actions = `<button class="primary" data-order-action="COMPLETE" data-order-id="${escapeAttr(order.orderId)}">완료</button><button data-order-action="UNABLE" data-order-id="${escapeAttr(order.orderId)}">처리불가</button>`;
     }
     const unableReason = String(order.unableReason || '').trim();
-    return `<article class="mobile-task-card ${order.important ? 'important' : ''}" data-mobile-order-id="${escapeAttr(order.orderId)}">
+    const registeredAtText = String(order.registeredAt || '').trim();
+    const updatedAtText = String(order.updatedAt || '').trim();
+    return `<article class="mobile-task-card houseman-card-v2 ${order.important ? 'important' : ''} ${mine ? 'mine' : 'shared'}" data-houseman-status="${escapeAttr(order.statusCode || '')}" data-mobile-order-id="${escapeAttr(order.orderId)}">
       <div class="mobile-card-top"><strong>${escapeHtml(order.roomNo || '공용')}</strong><span class="status-chip status-${escapeAttr(order.statusCode)}">${escapeHtml(order.statusLabel)}</span></div>
       <div class="mobile-task-title">${escapeHtml(order.itemSummary || '-')}</div>
       <div class="mobile-task-meta"><span>${escapeHtml(order.part || '-')}</span><span>${escapeHtml(assigneeDisplay)}</span></div>
+      <div class="houseman-card-time"><span>등록 ${escapeHtml(registeredAtText.slice(5, 16) || '-')}</span>${updatedAtText && updatedAtText !== registeredAtText ? `<span>변경 ${escapeHtml(updatedAtText.slice(5, 16))}</span>` : ''}</div>
       ${order.note ? `<p>${escapeHtml(order.note)}</p>` : ''}
       ${order.statusCode === 'UNABLE' && unableReason ? `<div class="mobile-unable-reason"><strong>처리불가 사유</strong><span>${escapeHtml(unableReason)}</span></div>` : ''}
       <div class="mobile-badges">${sharedRoute ? `<span>공동접수 ${order.routeCandidateNames.length}명</span>` : ''}${order.important ? '<span>중요</span>' : ''}${order.handover ? `<span>인수인계 ${escapeHtml(order.handoverTargetShift || '')}조</span>` : ''}</div>

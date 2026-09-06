@@ -19,6 +19,7 @@ function getNovaRealtimeClientConfig(token) { // QM_DRAFT_DB_FIRST_V1 · QM_DRAF
     .toUpperCase() === 'Y';
 
   let qmDraftDbFirstEnabled = false;
+  const shiftZoneDbFirstEnabled = String(props.getProperty('NOVA_SHIFT_ZONE_DB_FIRST_ENABLED') || 'Y').trim().toUpperCase() !== 'N'; // SHIFT_ZONE_DBFIRST_HOUSEMAN_UI_V1
   const qmDraftMode = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED') || 'Y').trim().toUpperCase();
   const qmDraftMasterEnabled = qmDraftMode === 'CANARY' || qmDraftMode === 'Y';
   if (qmDraftMasterEnabled && token) {
@@ -35,7 +36,8 @@ function getNovaRealtimeClientConfig(token) { // QM_DRAFT_DB_FIRST_V1 · QM_DRAF
     enabled: Boolean(enabled && apiBase),
     apiBase: apiBase,
     mode: enabled && apiBase ? 'REALTIME' : 'LEGACY',
-    qmDraftDbFirstEnabled // QM_DRAFT_DB_FIRST_V1
+    qmDraftDbFirstEnabled, // QM_DRAFT_DB_FIRST_V1
+    shiftZoneDbFirstEnabled // SHIFT_ZONE_DBFIRST_HOUSEMAN_UI_V1
   };
 }
 
@@ -55,6 +57,9 @@ function setupNovaRealtimeClientConfig() {
   }
   if (!props.getProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES')) {
     props.setProperty('NOVA_QM_DRAFT_DB_FIRST_EMPLOYEES', '');
+  }
+  if (!props.getProperty('NOVA_SHIFT_ZONE_DB_FIRST_ENABLED')) {
+    props.setProperty('NOVA_SHIFT_ZONE_DB_FIRST_ENABLED', 'Y');
   }
   return {
     ok: true,

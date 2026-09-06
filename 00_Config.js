@@ -127,8 +127,11 @@ function nowText_() { // (현재 시각 문자열)
   return Utilities.formatDate(new Date(), NOVA.TIMEZONE, NOVA.DATETIME_FORMAT);
 }
 
-function businessDateText_() { // (기본 업무일자 문자열)
-  return Utilities.formatDate(new Date(), NOVA.TIMEZONE, NOVA.DATE_FORMAT);
+function businessDateText_() { // (공통 업무일자 · 09:00 이전 전일 · NOVA_BUSINESS_DATE_0900_V1)
+  const now = new Date();
+  const localHour = Number(Utilities.formatDate(now, NOVA.TIMEZONE, 'H'));
+  const businessAt = localHour < 9 ? new Date(now.getTime() - 24 * 60 * 60 * 1000) : now;
+  return Utilities.formatDate(businessAt, NOVA.TIMEZONE, NOVA.DATE_FORMAT);
 }
 
 function normalizeBusinessDate_(value) { // (업무일자 형식 정리)
