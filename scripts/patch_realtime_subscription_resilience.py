@@ -2,6 +2,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+# Keep Push permission controls in every generated NOVA production build.  # NOVA_PUSH_PERMISSION_DEPLOY_V1
 for step_script, label in [
     ('scripts/patch_archive_prune_admin_ui.py', 'Archive prune admin UI'),
     ('scripts/patch_archive_prune_realtime_refresh.py', 'Archive prune realtime refresh'),
