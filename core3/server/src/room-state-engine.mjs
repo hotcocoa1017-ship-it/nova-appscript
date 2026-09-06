@@ -57,41 +57,34 @@ function requireRoom(room) {
   };
 }
 
+function assertExpectedVersion(room, expectedVersion) {
+  if (expectedVersion > 0 && expectedVersion !== room.version) {
+    throw new RoomStateConflict(
+      'VERSION_CONFLICT',
+      `${room.roomNo}호의 최신 상태가 변경되었습니다. 서버 상태로 다시 동기화합니다.`,
+      room,
+    );
+  }
+}
+
 /**
  * Pure NOVA Core room-state decision function.
  *
- * This function does not perform authentication, DB locking, idempotency-key
- * claiming, event insertion or persistence. Those are transaction boundary
- * responsibilities. It only decides the permitted state transition after the
- * authoritative row has been locked and loaded.
+ * Authentication, row locking, idempotency claims, event/outbox insertion and
+ * persistence belong to the transaction boundary. This function only decides
+ * the transition after the authoritative row has been locked and loaded.
+ *
+ * Important: identical intent convergence is evaluated before expectedVersion.
+ * If another valid request has already achieved START or COMPLETE, a stale
+ * caller should converge to success instead of showing a false concurrency
+ * error. Real conflicting intent still requires a matching latest version.
  */
 export function decideRoomCleaningAction(roomInput, actionInput, options = {}) {
   const room = requireRoom(roomInput);
   const action = normalize(actionInput);
   const expectedVersion = Number(options.expectedVersion ?? 0);
 
-  if (expectedVersion > 0 && expectedVersion !== room.version) {
-    throw new RoomStateConflict(
-      'VERSION_CONFLICT',
-      `${room.roomNo}호의 최신 상태가 변경되었습니다. 최신 상태로 다시 확인합니다.`,
-      room,
-    );
-  }
-
   if (action === RoomAction.CLEANING_START) {
-    // Preserve the current NOVA rule: a DUE_OUT room must not start cleaning
-    // until the authoritative room status has changed to a startable state.
-    if (room.roomStatus === 'DUE_OUT') {
-      throw new RoomStateConflict(
-        'DUE_OUT_BLOCKED',
-        `${room.roomNo}호는 아직 퇴실 전 상태입니다.`,
-        room,
-      );
-    }
-
-    // A different request ID arriving while already CLEANING is treated as an
-    // achieved identical intent. Exact request replays are handled earlier by
-    // the DB idempotency record and return the original committed response.
     if (room.cleaningStatus === CleaningStatus.CLEANING) {
       return {
         changed: false,
@@ -99,6 +92,17 @@ export function decideRoomCleaningAction(roomInput, actionInput, options = {}) {
         beforeStatus: room.cleaningStatus,
         afterStatus: room.cleaningStatus,
       };
+    }
+
+    assertExpectedVersion(room, expectedVersion);
+
+    // Preserve the existing NOVA rule: DUE_OUT cannot newly enter CLEANING.
+    if (room.roomStatus === 'DUE_OUT') {
+      throw new RoomStateConflict(
+        'DUE_OUT_BLOCKED',
+        `${room.roomNo}호는 아직 퇴실 전 상태입니다.`,
+        room,
+      );
     }
 
     if (!STARTABLE.has(room.cleaningStatus)) {
@@ -126,6 +130,8 @@ export function decideRoomCleaningAction(roomInput, actionInput, options = {}) {
         afterStatus: room.cleaningStatus,
       };
     }
+
+    assertExpectedVersion(room, expectedVersion);
 
     if (room.cleaningStatus !== CleaningStatus.CLEANING) {
       throw new RoomStateConflict(
