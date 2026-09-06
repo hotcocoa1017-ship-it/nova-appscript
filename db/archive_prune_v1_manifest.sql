@@ -1,0 +1,50 @@
+-- NOVA Archive prune v1 production manifest
+-- Applied to Supabase project nova-realtime on 2026-09-06.
+-- This file records the deployed prune contract and schedule without secret values.
+
+-- Retention semantics:
+--   "older than 30 days" is STRICT, so age exactly 30 days is retained.
+--   Candidate predicate: period_end < current_date - retention_days
+--   Candidate batches must be status='VERIFIED' and retired_at is null.
+
+-- Production DB components created/updated by migrations:
+--   fix_archive_retention_strict_older_than
+--   create_archive_prune_secret
+--   add_archive_prune_guard_v1
+--   make_archive_integrity_retention_aware
+--   add_archive_prune_dispatch_v1
+--   make_archive_prune_deep_verify_scalable
+--   schedule_archive_prune_hourly_v2
+--
+-- Objects:
+--   public.nova_archive_prune_runs
+--   public.nova_archive_prune_commit_service(uuid,jsonb,integer,boolean)
+--   public.nova_archive_prune_dispatch_service(text,text,integer,text)
+--   public.nova_archive_retention_candidates_service(text,integer,integer)
+--   public.nova_archive_integrity_service()
+--
+-- Security model:
+--   prune RPC execution is revoked from PUBLIC / anon / authenticated.
+--   service_role executes the guarded prune RPC.
+--   Edge Function uses a dedicated prune token stored in Vault; only its SHA-256 is embedded in Edge source.
+--   Storage archive objects are NEVER deleted by prune.
+--
+-- Commit preconditions enforced by DB/Edge:
+--   1. batch status VERIFIED and retired_at is null
+--   2. retention age strictly greater than 30 days
+--   3. prior deep_verify_status VERIFIED
+--   4. archive object is downloaded immediately before prune
+--   5. compressed/uncompressed sizes, SHA-256 and row count match manifest
+--   6. WORK_HISTORY archive index row count matches archive row count
+--   7. every hot row exactly matches the archived row identity/state under row locks
+--   8. delete count equals archive row count
+--   9. remaining hot rows for the partition are zero
+--  10. only then retired_at is recorded; archive object and archive index remain
+
+-- Current cron contract (UTC):
+--   nova-archive-deep-verify-hourly : 20 * * * * -> nova_archive_deep_verify_dispatch(5)
+--   nova-archive-integrity-hourly   : 30 * * * * -> existing integrity snapshot
+--   nova-archive-prune-hourly       : 40 * * * * -> one guarded commit candidate
+--
+-- Canonical Edge source:
+--   supabase/functions/nova-archive-prune-v1/index.ts
