@@ -67,7 +67,6 @@ function buildBootstrapPayload_(user, clientType) { // (권한별 초기 화면 
   };
 }
 
-
 function getDefaultMenuForRole_(role, clientType) { // (권한·기기별 첫 화면)
   const normalized = String(role || '').toUpperCase();
   const map = {
@@ -76,12 +75,12 @@ function getDefaultMenuForRole_(role, clientType) { // (권한·기기별 첫 �
   };
   return map[normalized] || 'home';
 }
-function getMenuForRole_(role) { // (권한별 최소 메뉴 구성)
+
+function getMenuForRole_(role) { // (권한별 최소 메뉴 구성 · 개인 설정은 전 역할 제공)
   const common = [{ id: 'home', label: '홈' }];
   const menus = {
     ADMIN: [
       { id: 'indicator', label: '통합 인디케이터' },
-      { id: 'archive', label: 'Archive 이력' },
       { id: 'departure', label: '퇴실지연' },
       { id: 'monthly', label: '월별조회' },
       { id: 'roommaidStats', label: '룸메이드 실적' },
@@ -98,12 +97,17 @@ function getMenuForRole_(role) { // (권한별 최소 메뉴 구성)
       { id: 'roommaidStats', label: '룸메이드 실적' },
       { id: 'roommaidClose', label: '룸메이드 마감일지' },
       { id: 'shifts', label: '근무조 관리' },
-      { id: 'qmChecklist', label: 'QM 체크리스트' }
+      { id: 'qmChecklist', label: 'QM 체크리스트' },
+      { id: 'settings', label: '설정' }
     ],
-    QM: [{ id: 'qm', label: 'QM 점검' }],
-    HOUSEMAN: [{ id: 'houseman', label: '하우스맨 오더' }],
-    ROOMMAID: [{ id: 'cleaning', label: '오늘의 정비' }, { id: 'roommaidStats', label: '내 정비실적' }],
-    PUBLIC: [{ id: 'public', label: '퇴실 여부 조회' }]
+    QM: [{ id: 'qm', label: 'QM 점검' }, { id: 'settings', label: '설정' }],
+    HOUSEMAN: [{ id: 'houseman', label: '하우스맨 오더' }, { id: 'settings', label: '설정' }],
+    ROOMMAID: [
+      { id: 'cleaning', label: '오늘의 정비' },
+      { id: 'roommaidStats', label: '내 정비실적' },
+      { id: 'settings', label: '설정' }
+    ],
+    PUBLIC: [{ id: 'public', label: '퇴실 여부 조회' }, { id: 'settings', label: '설정' }]
   };
   return common.concat(menus[String(role || '').toUpperCase()] || []);
 }
