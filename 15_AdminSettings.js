@@ -65,15 +65,43 @@ function getAdminSettingsData(token) { // (관리자 설정 전체 조회)
   });
 }
 
-function saveAdminOperationSettings(token, payload) { // (운영 기준 일괄 저장)
+function saveAdminOperationSettings(token, payload) { // (운영 기준 일괄 저장 · OPERATION_SETTINGS_DB_FIRST_V1)
   return measureResponse_('saveAdminOperationSettings', () => {
     const user = requireRole_(token, ['ADMIN']);
-    const input = payload && payload.values ? payload.values : payload || {};
+    const safePayload = payload || {};
+    const input = safePayload && safePayload.values ? safePayload.values : safePayload;
     const normalized = {};
+
+    // 먼저 전체 입력값을 검증합니다. 하나라도 잘못되면 DB·Sheet 모두 변경하지 않습니다.
     NOVA_ADMIN_SETTINGS.OPERATION_DEFINITIONS.forEach(def => {
-      const raw = Object.prototype.hasOwnProperty.call(input, def.code) ? input[def.code] : getOperationSetting_(def.code, def.defaultValue);
+      const raw = Object.prototype.hasOwnProperty.call(input, def.code)
+        ? input[def.code]
+        : getOperationSetting_(def.code, def.defaultValue);
       normalized[def.code] = validateOperationSettingValue_(def, raw);
-      upsertCodeRow_(NOVA_ADMIN_SETTINGS.OPERATION_GROUP, def.code, normalized[def.code], def.order || ((NOVA_ADMIN_SETTINGS.OPERATION_DEFINITIONS.indexOf(def) + 1) * 10), 'Y', def.note);
+    });
+
+    let dbResult = null;
+    let dbRequestId = '';
+    if (typeof novaOperationSettingsDbFirstEnabled_ === 'function'
+        && novaOperationSettingsDbFirstEnabled_()
+        && typeof novaOperationSettingsDbSave_ === 'function') {
+      const requestedId = String(safePayload.requestId || safePayload.request_id || '').trim();
+      dbRequestId = /^[A-Za-z0-9._:-]{8,180}$/.test(requestedId)
+        ? requestedId
+        : `OPSET_V1:${Utilities.getUuid()}`;
+      dbResult = novaOperationSettingsDbSave_(token, normalized, dbRequestId);
+    }
+
+    // DB-first가 켜져 있으면 여기까지 DB 저장이 성공한 뒤에만 기존 Sheet를 mirror로 갱신합니다.
+    NOVA_ADMIN_SETTINGS.OPERATION_DEFINITIONS.forEach(def => {
+      upsertCodeRow_(
+        NOVA_ADMIN_SETTINGS.OPERATION_GROUP,
+        def.code,
+        normalized[def.code],
+        def.order || ((NOVA_ADMIN_SETTINGS.OPERATION_DEFINITIONS.indexOf(def) + 1) * 10),
+        'Y',
+        def.note
+      );
     });
     clearNovaCaches_();
     bumpDataVersion_({ domains: ['CONFIG'] });
@@ -84,12 +112,19 @@ function saveAdminOperationSettings(token, payload) { // (운영 기준 일괄 �
       businessDate: businessDateText_(),
       status: 'UPDATED',
       registeredBy: user.employeeNo,
-      detail: { category: 'OPERATION', values: normalized }
+      detail: {
+        category: 'OPERATION',
+        values: normalized,
+        dbFirst: Boolean(dbResult && dbResult.dbFirst),
+        dbRequestId
+      }
     });
     return {
       ok: true,
       values: normalized,
       triggers: getAdminTriggerStatus_(),
+      dbFirst: Boolean(dbResult && dbResult.dbFirst),
+      dbRequestId,
       message: '운영 기준과 자동 실행 트리거를 저장했습니다.'
     };
   });
@@ -151,30 +186,99 @@ function disableAdminCodeRow(token, payload) { // (관리 코드 사용중지)
   });
 }
 
-function cancelDailyCloseSnapshot(token, payload) { // (저장된 일일 마감 취소·동시 마감과 충돌 방지)
+function cancelDailyCloseSnapshot(token, payload) { // (저장된 일일 마감 취소·DB-first/Sheet mirror)
   return measureResponse_('cancelDailyCloseSnapshot', () => {
     const user = requireRole_(token, ['ADMIN']);
     const safe = payload || {};
     const businessDate = normalizeBusinessDate_(safe.businessDate || safe.date);
     const requestedSite = String(safe.site || '').trim();
+    const reason = String(safe.reason || '').trim();
     const writeLock = acquireWriteLock_(10000);
     try {
       const active = readDailyCloseSummaries_(businessDate, requestedSite);
-      const sites = requestedSite ? [requestedSite] : Array.from(new Set(active.map(item => item.site).filter(Boolean)));
+      const sites = requestedSite
+        ? [requestedSite]
+        : Array.from(new Set(active.map(item => item.site).filter(Boolean)));
       if (!sites.length) throw new Error('취소할 마감자료가 없습니다.');
+
+      let dbResult = null;
+      let dbRequestId = '';
+      let dbSites = [];
+      if (typeof novaDailyCloseDbFirstEnabled_ === 'function'
+          && novaDailyCloseDbFirstEnabled_()
+          && typeof novaDailyCloseDbRead_ === 'function'
+          && typeof novaDailyCloseDbCancelMany_ === 'function') {
+        const dbRead = novaDailyCloseDbRead_(token, {
+          startDate: businessDate,
+          endDate: businessDate,
+          site: requestedSite
+        });
+        const requestedSet = new Set(sites);
+        dbSites = Array.from(new Set(
+          (Array.isArray(dbRead && dbRead.items) ? dbRead.items : [])
+            .filter(item => String(item && item.businessDate || '').trim() === businessDate)
+            .map(item => String(item && item.site || '').trim())
+            .filter(site => site && requestedSet.has(site))
+        ));
+
+        if (dbSites.length && dbSites.length !== sites.length) {
+          throw new Error('일부 사업장만 DB 마감으로 전환된 상태입니다. 사업장을 하나씩 선택해 취소해 주세요.');
+        }
+        if (dbSites.length === sites.length) {
+          const requestedId = String(safe.requestId || safe.request_id || '').trim();
+          dbRequestId = /^[A-Za-z0-9._:-]{8,180}$/.test(requestedId)
+            ? requestedId
+            : `DCANCEL_V1:${Utilities.getUuid()}`;
+          dbResult = novaDailyCloseDbCancelMany_(token, {
+            businessDate,
+            sites,
+            reason,
+            requestId: dbRequestId
+          });
+        }
+      }
+
+      // DB-native 마감은 DB 취소가 성공한 뒤에만 Sheet 이력을 mirror로 소프트삭제합니다.
+      // DB에 없는 과거 Sheet-only 마감은 기존 취소 방식을 유지합니다.
       const version = reserveDataVersion_({ lockHeld: true });
       const historySheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
       const updatedAt = nowText_();
       let cancelledRows = 0;
-      sites.forEach(site => { cancelledRows += markExistingDailyCloseDeleted_(historySheet, businessDate, site, updatedAt); });
+      sites.forEach(site => {
+        cancelledRows += markExistingDailyCloseDeleted_(historySheet, businessDate, site, updatedAt);
+      });
       appendUnifiedHistory_({
         recordType: NOVA.RECORD_TYPES.DAILY_CLOSE,
-        businessDate, site: requestedSite, status: 'CANCEL_AUDIT',
-        registeredBy: user.employeeNo, version,
-        detail: { sites, cancelledRows, reason: String(safe.reason || '').trim() }
+        businessDate,
+        site: requestedSite,
+        status: 'CANCEL_AUDIT',
+        registeredBy: user.employeeNo,
+        version,
+        detail: {
+          sites,
+          cancelledRows,
+          reason,
+          dbFirst: Boolean(dbResult && dbResult.dbFirst),
+          dbRequestId
+        }
       });
-      sites.forEach(site => publishDataVersion_(version, { domains: ['REPORT'], businessDate, site, lockHeld: true }));
-      return { ok: true, businessDate, sites, cancelledRows, version, message: `${businessDate} ${sites.length}개 사업장의 마감을 취소했습니다.` };
+      sites.forEach(site => publishDataVersion_(version, {
+        domains: ['REPORT'],
+        businessDate,
+        site,
+        lockHeld: true
+      }));
+      return {
+        ok: true,
+        businessDate,
+        sites,
+        cancelledRows,
+        version,
+        dbFirst: Boolean(dbResult && dbResult.dbFirst),
+        dbRequestId,
+        dbCancelledCount: Number(dbResult && dbResult.cancelledCount || 0),
+        message: `${businessDate} ${sites.length}개 사업장의 마감을 취소했습니다.`
+      };
     } finally {
       writeLock.releaseLock();
     }
