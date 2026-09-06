@@ -452,11 +452,9 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
     // 아직 미러 전이면 기존과 동일하게 Sheet도 즉시 최종상태로 맞춘다.
     let version = Number(rowInfo.data['마지막변경버전'] || 0);
     if (sheetCleaningStatus !== targetCleaningStatus) {
+      // DB 품질결과와 Sheet 최종상태가 동일 변경버전을 공유하도록 먼저 예약만 합니다.
       version = reserveDataVersion_({ lockHeld: true });
       updates['마지막변경버전'] = version;
-      updateRowByHeaders_(sheet, rowInfo.rowNumber, updates);
-      SpreadsheetApp.flush();
-      publishDataVersion_(version, { domains: ['ROOM'], businessDate, site: String(rowInfo.data['사업장'] || site).trim(), lockHeld: true });
     }
 
     const failSummary = defects.map(item => `${item.placeLabel || '기타'} · ${item.itemLabel || '하자'}${item.note ? `: ${item.note}` : ''}`).join(' / ');
@@ -484,6 +482,46 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
       realtimeVersion: Number(safe.realtimeVersion || 0)
     });
     let checklistRecordId = String(draftInfo.data['기록ID'] || '').trim();
+    if (!checklistRecordId) {
+      checklistRecordId = `QMCL-${businessDate.replace(/-/g, '')}-${Utilities.getUuid().slice(0, 8).toUpperCase()}`;
+    }
+
+    let dbInspectionCommit = null; // QM_INSPECTION_FINALIZE_DB_FIRST_V1
+    const dbInspectionFirst = typeof novaQmInspectionDbFirstEnabled_ === 'function' && novaQmInspectionDbFirstEnabled_();
+    if (dbInspectionFirst) {
+      const dbRequestId = `QM_INSPECTION_V1:${checklistRecordId}`;
+      dbInspectionCommit = novaQmInspectionDbFinalize_(token, {
+        requestId: dbRequestId,
+        inspection: {
+          inspectionId: checklistRecordId,
+          businessDate,
+          site: String(rowInfo.data['사업장'] || site).trim(),
+          roomNo,
+          resultStatus: passed ? 'PASS' : 'FAIL',
+          roommaidEmployeeNo: roommaidNo,
+          secondaryRoommaidEmployeeNo: secondaryRoommaidNo,
+          qmEmployeeNo: user.employeeNo,
+          checklistRevision: checklist.revision,
+          answers: normalizedAnswers,
+          defects,
+          startedAt,
+          completedAt,
+          durationMinutes,
+          sourceVersion: version
+        }
+      });
+      if (!dbInspectionCommit || dbInspectionCommit.ok === false) {
+        throw new Error('QM 최종점검을 DB에 확정하지 못했습니다.');
+      }
+    }
+
+    // PostgreSQL 확정이 끝난 뒤 기존 Sheet 상태/이력을 후행 미러합니다.
+    if (sheetCleaningStatus !== targetCleaningStatus) {
+      updateRowByHeaders_(sheet, rowInfo.rowNumber, updates);
+      SpreadsheetApp.flush();
+      publishDataVersion_(version, { domains: ['ROOM'], businessDate, site: String(rowInfo.data['사업장'] || site).trim(), lockHeld: true });
+    }
+
     if (draftInfo.rowNumber) {
       updateRowByHeaders_(getRequiredSheet_(NOVA.SHEETS.HISTORY), draftInfo.rowNumber, {
         '처리상태': passed ? 'PASS' : 'FAIL',
@@ -494,7 +532,6 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
         '변경버전': version
       });
     } else {
-      checklistRecordId = `QMCL-${businessDate.replace(/-/g, '')}-${Utilities.getUuid().slice(0, 8).toUpperCase()}`;
       appendUnifiedHistory_({
         recordId: checklistRecordId,
         recordType: NOVA.RECORD_TYPES.QM_CHECKLIST,
@@ -545,6 +582,12 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
       checklistRecordId,
       durationMinutes,
       version,
+      dbFirst: Boolean(dbInspectionFirst),
+      dbInspection: dbInspectionCommit ? {
+        inspectionId: String(dbInspectionCommit.inspectionId || checklistRecordId),
+        requestId: String(dbInspectionCommit.requestId || ''),
+        idempotent: Boolean(dbInspectionCommit.idempotent)
+      } : null,
       room: {
         businessDate,
         site: String(rowInfo.data['사업장'] || site).trim(),
