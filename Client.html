@@ -195,6 +195,7 @@
     indicatorDbBusy: false,
     indicatorEventCursorTime: '',
     indicatorEventCursorRequestId: '',
+    indicatorFullReconcileAt: 0, // ROOM_STATE_SYNC_HARDENING_V1
     roomStatusProtections: new Map(),
     qmDraftDbFirstEnabled: false,
     qmDraftAuthBundle: null
@@ -220,15 +221,23 @@
     return `NOVA-${Date.now()}-${String(action || '')}-${String(roomNo || '')}-${Math.random().toString(36).slice(2)}`;
   }
 
+  function novaRealtimeBoundedFetch_(url, options = {}, timeoutMs = 7000) { // ROOM_STATE_SYNC_HARDENING_V1
+    if (typeof AbortController !== 'function') return fetch(url, options);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || 7000)));
+    const requestOptions = Object.assign({}, options, { signal: controller.signal });
+    return fetch(url, requestOptions).finally(() => window.clearTimeout(timeout));
+  }
+
   async function novaRealtimeFetch_(path, options = {}, attempt = 0) {
-    const response = await fetch(`${novaRealtime_.apiBase}${path}`, {
+    const response = await novaRealtimeBoundedFetch_(`${novaRealtime_.apiBase}${path}`, {
       method: options.method || 'GET',
       headers: Object.assign({
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${state.token}`
       }, options.headers || {}),
       body: options.body
-    }).catch(error => {
+    }, Number(options.timeoutMs || 7000)).catch(error => {
       if (attempt < 2) return null;
       throw error;
     });
@@ -263,10 +272,10 @@
     });
     form.set('token', String(state.token || ''));
 
-    const response = await fetch(`${novaRealtime_.apiBase}/v1/room-changes`, {
+    const response = await novaRealtimeBoundedFetch_(`${novaRealtime_.apiBase}/v1/room-changes`, {
       method: 'POST',
       body: form
-    }).catch(error => {
+    }, 6500).catch(error => {
       if (attempt < 2) return null;
       throw error;
     });
@@ -410,6 +419,25 @@
       if (Object.prototype.hasOwnProperty.call(realtimeRoom, key)) merged[key] = realtimeRoom[key];
     });
     if (realtimeRoom.building) merged.building = realtimeRoom.building;
+
+    // ROOM_STATE_SYNC_HARDENING_V1 · 청소시작/완료 optimistic 상태는 DB가 확정하거나 더 앞선 상태로 진행할 때까지 보호합니다.
+    const pendingCleaningAction = String(legacyRoom?.__pendingAction || '').trim().toUpperCase();
+    if (['CLEANING_START', 'CLEANING_COMPLETE'].includes(pendingCleaningAction)
+        && Object.prototype.hasOwnProperty.call(realtimeRoom, 'cleaningStatus')) {
+      const dbCleaningStatus = String(realtimeRoom.cleaningStatus || '').trim().toUpperCase();
+      const startConfirmed = pendingCleaningAction === 'CLEANING_START'
+        && ['CLEANING', 'COMPLETED', 'QM_WAITING', 'QM_CHECKING', 'QM_COMPLETED'].includes(dbCleaningStatus);
+      const completeConfirmed = pendingCleaningAction === 'CLEANING_COMPLETE'
+        && ['COMPLETED', 'QM_WAITING', 'QM_CHECKING', 'QM_COMPLETED'].includes(dbCleaningStatus);
+      if (startConfirmed || completeConfirmed) {
+        delete merged.__pending;
+        delete merged.__pendingAction;
+      } else {
+        merged.cleaningStatus = String(legacyRoom.cleaningStatus || merged.cleaningStatus || '');
+        if (legacyRoom.__pending === true) merged.__pending = true;
+        merged.__pendingAction = pendingCleaningAction;
+      }
+    }
 
     // QM을 Realtime으로 전환하기 전 생성된 과거행은 Sheet의 완료/재정비가 DB의
     // QM대기/점검중보다 최신일 수 있다. 이 경우에만 최신 Sheet 상태를 보존한다.
@@ -866,6 +894,42 @@
     return JSON.stringify(NOVA_REALTIME_ROOM_FIELDS_.map(key => room[key] ?? ''));
   }
 
+  async function novaRealtimeReconcileIndicatorRooms_() { // ROOM_STATE_SYNC_HARDENING_V1 · Broadcast/event 누락 최종복구
+    if (!novaRealtimeIsEnabled_() || document.hidden || state.activeMenu !== 'indicator' || !state.indicator.loaded || !state.indicator.data) return 0;
+    const role = String(state.bootstrap?.user?.role || '').trim().toUpperCase();
+    if (!['ADMIN', 'ORDER'].includes(role)) return 0;
+    const businessDate = String(state.indicator.businessDate || state.bootstrap?.app?.businessDate || '').trim();
+    const sites = novaRealtimeRelevantSites_();
+    if (!businessDate || !sites.length) return 0;
+
+    const lists = await Promise.all(sites.map(site =>
+      novaRealtimeLoadRoomsForSite_(businessDate, site)
+        .catch(error => { console.warn('[NOVA Realtime] 인디게이터 전체상태 보정 실패', site, error); return []; })
+    ));
+    const dbMap = new Map();
+    lists.flat().forEach(raw => {
+      const mapped = novaRealtimeMapPartialRoom_(raw);
+      if (mapped?.roomNo && mapped?.site) dbMap.set(`${mapped.site}|${mapped.roomNo}`, mapped);
+    });
+
+    const rooms = state.indicator.data.rooms || [];
+    const touched = [];
+    rooms.forEach((current, index) => {
+      const dbRoom = dbMap.get(`${current.site}|${current.roomNo}`);
+      if (!dbRoom) return;
+      const before = novaRealtimeRoomSignature_(current);
+      const merged = novaRealtimeMergeRoom_(current, dbRoom);
+      if (before === novaRealtimeRoomSignature_(merged)) return;
+      rooms[index] = merged;
+      touched.push({ roomNo: merged.roomNo, site: merged.site });
+    });
+
+    touched.forEach(item => renderIndicatorRoomLocal_(item.roomNo, item.site));
+    if (touched.length) renderIndicatorSummary();
+    novaRealtime_.indicatorFullReconcileAt = Date.now();
+    return touched.length;
+  }
+
   async function novaRealtimeHydrateIndicatorHousemanOrders_() { // (ADMIN/ORDER 하우스맨 DB 상태 직접 보정)
     if (!novaRealtimeIsEnabled_() || document.hidden || state.activeMenu !== 'indicator' || !state.indicator.data) return 0;
     const role = String(state.bootstrap?.user?.role || '').trim().toUpperCase();
@@ -998,20 +1062,30 @@
     if (!novaRealtimeIsEnabled_() || document.hidden || state.activeMenu !== 'indicator' || !state.indicator.loaded) return;
     const role = String(state.bootstrap?.user?.role || '').toUpperCase();
     if (!['ADMIN', 'ORDER'].includes(role)) return;
-    // 화면/업무일/사업장 전환 시 새 서버커서로 시작한다. 첫 호출은 서버가 최근 15초 이벤트를 보정한다.
+    // ROOM_STATE_SYNC_HARDENING_V1 · 이벤트 커서만 믿지 않습니다.
+    // 시작/복귀 즉시 현재 DB 전체상태를 1회 맞추고, 이후 Broadcast + 2.5초 이벤트 + 15초 전체보정을 병행합니다.
     novaRealtime_.indicatorEventCursorTime = '';
     novaRealtime_.indicatorEventCursorRequestId = '';
+    novaRealtime_.indicatorFullReconcileAt = 0;
     const run = async () => {
       if (!novaRealtimeIsEnabled_() || document.hidden || state.activeMenu !== 'indicator' || !state.indicator.loaded) {
         novaRealtime_.indicatorDbTimer = null;
         return;
       }
-      try { await novaRealtimeHydrateIndicatorFallback_(); } catch (error) {
+      try {
+        const fullDue = !novaRealtime_.indicatorFullReconcileAt
+          || Date.now() - Number(novaRealtime_.indicatorFullReconcileAt || 0) >= 15000;
+        if (fullDue) {
+          const fullChanged = await novaRealtimeReconcileIndicatorRooms_();
+          if (fullChanged) setSyncStatus(`DB 전체확인 · ${fullChanged}실 보정`);
+        }
+        await novaRealtimeHydrateIndicatorFallback_();
+      } catch (error) {
         console.warn('[NOVA Realtime] 관리자 DB 변경보조동기화 오류', error);
       }
       novaRealtime_.indicatorDbTimer = window.setTimeout(run, 2500);
     };
-    novaRealtime_.indicatorDbTimer = window.setTimeout(run, 800);
+    novaRealtime_.indicatorDbTimer = window.setTimeout(run, 80);
   }
 
   async function novaRealtimeDisconnect_() {
@@ -1291,6 +1365,7 @@
       method: 'POST',
       headers: { 'X-Request-Id': safe.requestId },
       noRetry: mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' && !String(safe.operationalStatus || '').trim(),
+      timeoutMs: ['CLEANING_START', 'CLEANING_COMPLETE'].includes(mappedAction) ? 5000 : 7000, // ROOM_STATE_SYNC_HARDENING_V1
       body: JSON.stringify(safe)
     });
 
@@ -9493,7 +9568,7 @@
     }
 
     const previousY = window.scrollY;
-    const role = state.mobile.data?.role;
+    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase(); // ROOM_STATE_SYNC_HARDENING_V1
     const action = String(safePayload.action || '').trim().toUpperCase();
     const housemanFastPath = method === 'updateHousemanOrder' && role === 'HOUSEMAN'
       && ['ACCEPT', 'ACCEPT_START', 'START', 'COMPLETE', 'UNABLE'].includes(action);
@@ -9549,6 +9624,11 @@
         button.disabled = false;
         button.removeAttribute('aria-busy');
         if (button.dataset.originalText) button.textContent = button.dataset.originalText;
+      }
+      // ROOM_STATE_SYNC_HARDENING_V1 · 응답 유실/타임아웃으로 로컬을 복원했더라도 실제 DB가 성공했을 수 있습니다.
+      // actionInFlight를 먼저 해제한 뒤 본인 배정목록을 즉시 재조회해 최종 DB 상태로 수렴시킵니다.
+      if (roommaidFastPath && !document.hidden) {
+        window.setTimeout(() => { void syncMobileDelta(); }, 80);
       }
     }
   }
@@ -9651,7 +9731,7 @@
     if (index < 0) return null;
     const before = Object.assign({}, rooms[index]);
     const action = String(payload.action || '').trim().toUpperCase();
-    const patch = { __pending: true };
+    const patch = { __pending: true, __pendingAction: action === 'START' ? 'CLEANING_START' : action === 'COMPLETE' ? 'CLEANING_COMPLETE' : '' }; // ROOM_STATE_SYNC_HARDENING_V1
     if (action === 'START') {
       patch.cleaningStatus = 'CLEANING';
     } else if (action === 'COMPLETE') {
@@ -9685,6 +9765,7 @@
     const index = rooms.findIndex(item => item.roomNo === room.roomNo);
     const confirmed = Object.assign({}, room);
     delete confirmed.__pending;
+    delete confirmed.__pendingAction; // ROOM_STATE_SYNC_HARDENING_V1
     if (index >= 0) rooms[index] = confirmed;
     else rooms.push(confirmed);
   }
@@ -9953,12 +10034,19 @@
   function startMobileSync() { // (지터 기반 모바일 동기화 시작)
     stopMobileSync();
     if (!['qm', 'houseman', 'cleaning', 'public'].includes(state.activeMenu)) return;
-    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').toUpperCase();
-    if (novaRealtimeIsEnabled_() && role === 'HOUSEMAN' && state.activeMenu === 'houseman') {
-      // HOUSEMAN_REALTIME_PUSH_V1 · 신규/재배정 오더는 Push 우선, 3~3.7초 DB 조회는 fallback 유지
+    const role = String(state.mobile.data?.role || state.bootstrap?.user?.role || '').trim().toUpperCase();
+    const realtimeMobileRole = novaRealtimeIsEnabled_() && (
+      (role === 'ROOMMAID' && state.activeMenu === 'cleaning')
+      || (role === 'QM' && state.activeMenu === 'qm')
+      || (role === 'HOUSEMAN' && state.activeMenu === 'houseman')
+    );
+    if (realtimeMobileRole) {
+      // ROOM_STATE_SYNC_HARDENING_V1 · Push 우선 + 3~3.7초 DB polling 이중화.
       void novaRealtimeEnsureSubscriptions_().catch(error => {
-        console.warn('[NOVA Realtime] 하우스맨 Push 구독 실패 · DB 주기조회로 계속 동작합니다.', error);
+        console.warn(`[NOVA Realtime] ${role} Push 구독 실패 · DB 주기조회로 계속 동작합니다.`, error);
       });
+      // 화면 진입/백그라운드 복귀 시 첫 3초를 기다리지 않고 현재 DB를 즉시 맞춥니다.
+      window.setTimeout(() => { void syncMobileDelta(); }, 0);
     }
     scheduleMobileSync_();
   }
