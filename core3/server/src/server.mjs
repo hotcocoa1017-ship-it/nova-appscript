@@ -47,8 +47,10 @@ async function readJsonBody(req) {
 }
 
 export function createNovaCoreServer({ roomActionService, revision = 'dev' } = {}) {
-  if (!roomActionService || typeof roomActionService.mutateRoom !== 'function') {
-    throw new Error('roomActionService.mutateRoom is required');
+  if (!roomActionService
+      || typeof roomActionService.mutateRoom !== 'function'
+      || typeof roomActionService.listRooms !== 'function') {
+    throw new Error('roomActionService.listRooms and mutateRoom are required');
   }
 
   return http.createServer(async (req, res) => {
@@ -61,6 +63,16 @@ export function createNovaCoreServer({ roomActionService, revision = 'dev' } = {
           service: 'nova-core3',
           revision,
         });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/rooms') {
+        const result = await roomActionService.listRooms({
+          authorization: req.headers.authorization,
+          businessDate: url.searchParams.get('businessDate'),
+          site: url.searchParams.get('site'),
+        });
+        sendJson(res, result.status, result.body);
         return;
       }
 
@@ -77,7 +89,7 @@ export function createNovaCoreServer({ roomActionService, revision = 'dev' } = {
         return;
       }
 
-      if (match) {
+      if (match || url.pathname === '/v1/rooms') {
         sendJson(res, 405, {
           ok: false,
           code: 'METHOD_NOT_ALLOWED',
