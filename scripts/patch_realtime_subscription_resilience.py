@@ -8,6 +8,7 @@ for step_script, label in [
     ('scripts/patch_pwa_web_push_v2.py', 'NOVA PWA Web Push V2 bridge'),
     ('scripts/patch_pwa_bridge_login_resilience.py', 'NOVA PWA login bridge resilience'),
     ('scripts/patch_notification_preferences_archive_settings_v2.py', 'NOVA personal notification settings + Archive settings'),
+    ('scripts/validate_notification_preferences_archive_settings_v2.py', 'NOVA notification preferences + Archive settings validation'),
     ('scripts/validate_notification_center_v1.py', 'NOVA notification center V1 validation'),
 ]:
     step = subprocess.run([sys.executable, step_script], check=False)
