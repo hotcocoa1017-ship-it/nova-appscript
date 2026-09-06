@@ -2,7 +2,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-# Keep Push permission controls in every generated NOVA production build.  # NOVA_PUSH_PERMISSION_DEPLOY_V1
 for step_script, label in [
     ('scripts/patch_archive_prune_admin_ui.py', 'Archive prune admin UI'),
     ('scripts/patch_archive_prune_realtime_refresh.py', 'Archive prune realtime refresh'),
@@ -11,7 +10,6 @@ for step_script, label in [
     ('scripts/patch_notification_preferences_archive_settings_v2.py', 'NOVA personal notification settings + Archive settings'),
     ('scripts/patch_notification_preview_audio_unlock_v1.py', 'NOVA notification preview audio unlock V1'),
     ('scripts/patch_notification_preview_client_fallback_v2.py', 'NOVA notification preview client fallback V2'),
-    ('scripts/patch_push_permission_settings_v1.py', 'NOVA Push permission settings V1'),
     ('scripts/patch_personal_settings_role_access_v3.py', 'NOVA personal settings role access V3'),
     ('scripts/validate_notification_preferences_archive_settings_v2.py', 'NOVA notification preferences + Archive settings validation'),
     ('scripts/validate_notification_center_v1.py', 'NOVA notification center V1 validation'),

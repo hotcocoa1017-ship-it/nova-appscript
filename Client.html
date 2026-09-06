@@ -181,7 +181,6 @@
   .notification-pref-toggle{display:flex;align-items:center;gap:9px;font-weight:800}.notification-pref-toggle input{width:18px;height:18px}
   .notification-pref-volume{display:grid;grid-template-columns:minmax(0,1fr) 52px;gap:10px;align-items:center}.notification-pref-volume input{width:100%}.notification-pref-volume output{text-align:right;font-weight:900}
   .notification-pref-actions{display:flex;justify-content:flex-end;gap:8px}.notification-pref-actions button{min-height:40px;padding:0 14px;border:1px solid #d1d5db;border-radius:9px;background:#fff;font-weight:800}.notification-pref-actions .primary{background:#111827;color:#fff;border-color:#111827}
-  .notification-push-card{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 14px;border:1px solid #dbeafe;border-radius:11px;background:#f8fbff}.notification-push-card>div{display:grid;gap:3px;min-width:0}.notification-push-card strong{font-size:13px;color:#111827}.notification-push-card small{color:#64748b;font-size:11px;line-height:1.4}.notification-push-card button{flex:0 0 auto;min-height:38px;padding:0 12px;border:1px solid #bfdbfe;border-radius:9px;background:#fff;color:#1d4ed8;font-weight:900}.notification-push-card button:disabled{opacity:.6}
   .settings-archive-host{min-width:0}.settings-archive-host .nova-archive-head h1{font-size:20px}
   @media(max-width:760px){.notification-pref-row{grid-template-columns:1fr;gap:7px}.notification-pref-actions{display:grid;grid-template-columns:1fr 1fr}.notification-pref-actions button{width:100%;min-height:44px}}
 </style>
@@ -2525,51 +2524,12 @@
     }
   }
 
-  const NOVA_PWA_PUSH_PERMISSION_ORIGIN_ = 'https://nova-pwa-hotcocoa1017-3826.vercel.app'; // NOVA_PUSH_PERMISSION_SETTINGS_V1
-
-  function applyNovaPushPermissionState_(detail = {}) {
-    const status = $('novaPushPermissionStatus');
-    const button = $('novaPushPermissionButton');
-    if (!status || !button) return;
-    const permission = String(detail.permission || 'unknown').toLowerCase();
-    const subscribed = Boolean(detail.subscribed);
-    if (permission === 'granted' && subscribed) { status.textContent = '허용됨 · 이 기기 Push 연결 완료'; button.textContent = 'Push 연결 확인'; button.disabled = false; return; }
-    if (permission === 'granted') { status.textContent = '알림 권한 허용됨 · Push 기기 등록 확인 필요'; button.textContent = 'Push 다시 연결'; button.disabled = false; return; }
-    if (permission === 'denied') { status.textContent = '알림 권한이 차단되어 있습니다.'; button.textContent = '권한 설정 안내'; button.disabled = false; return; }
-    if (permission === 'unsupported') { status.textContent = '이 실행환경에서는 Web Push 알림을 사용할 수 없습니다.'; button.textContent = '지원 안 됨'; button.disabled = true; return; }
-    if (permission === 'standalone-required') { status.textContent = 'iPhone은 홈 화면에 설치한 NOVA에서 알림을 켜야 합니다.'; button.textContent = '설치 후 사용'; button.disabled = false; return; }
-    status.textContent = window.top === window ? '설치된 NOVA PWA에서 Push 알림을 설정할 수 있습니다.' : '알림 권한이 아직 설정되지 않았습니다.';
-    button.textContent = 'Push 알림 켜기';
-    button.disabled = window.top === window;
-  }
-
-  function requestNovaPushPermissionUi_(action = 'STATUS') {
-    if (window.top === window) { applyNovaPushPermissionState_({ permission: 'unsupported' }); return; }
-    try {
-      window.top.postMessage({ type: 'NOVA_PUSH_PERMISSION_UI_V1', action: String(action || 'STATUS').toUpperCase() }, NOVA_PWA_PUSH_PERMISSION_ORIGIN_);
-    } catch (error) {
-      console.warn('[NOVA Push Permission] bridge', error);
-      applyNovaPushPermissionState_({ permission: 'unknown' });
-    }
-  }
-
-  if (!window.__NOVA_PUSH_PERMISSION_SETTINGS_V1__) {
-    window.__NOVA_PUSH_PERMISSION_SETTINGS_V1__ = true;
-    window.addEventListener('message', event => {
-      if (event.origin !== NOVA_PWA_PUSH_PERMISSION_ORIGIN_) return;
-      const detail = event.data || {};
-      if (detail.type !== 'NOVA_PUSH_PERMISSION_STATE_V1') return;
-      applyNovaPushPermissionState_(detail);
-    });
-  }
-
   function renderNotificationPreferencesPanel_() { // NOVA_PERSONAL_NOTIFICATION_SETTINGS_V2
     const panel = $('settingsPanel');
     if (!panel) return;
     panel.innerHTML = `
       <div class="notification-pref-card">
         <div><h2>개인 알림 설정</h2><p>이 설정은 사번 기준으로 저장됩니다. 효과음과 음량은 NOVA가 실행 중일 때의 자체 알림음에 적용되며, 앱을 닫은 상태의 Web Push 소리는 휴대폰·PC 운영체제의 알림 설정을 따릅니다.</p></div>
-        <div class="notification-push-card"><div><strong>백그라운드 Push 알림</strong><small id="novaPushPermissionStatus">기기 알림 상태를 확인하고 있습니다.</small></div><button id="novaPushPermissionButton" type="button">Push 알림 켜기</button></div>
         <div class="notification-pref-row"><span>알림음</span><label class="notification-pref-toggle"><input id="novaPrefSoundEnabled" type="checkbox"><span>앱 실행 중 알림음 사용</span></label></div>
         <div class="notification-pref-row"><span>효과음</span><select id="novaPrefSoundType"><option value="CHIME">차임 · 부드러운 3단음</option><option value="BELL">벨 · 또렷한 종소리</option><option value="DOUBLE">더블 · 짧은 2단음</option><option value="ALERT">알림 · 강한 3회음</option></select></div>
         <div class="notification-pref-row"><span>알림 음량</span><div class="notification-pref-volume"><input id="novaPrefVolume" type="range" min="0" max="100" step="5" value="70"><output id="novaPrefVolumeValue">70%</output></div></div>
@@ -2578,8 +2538,6 @@
     const volume = $('novaPrefVolume');
     const output = $('novaPrefVolumeValue');
     volume?.addEventListener('input', () => { if (output) output.textContent = `${Number(volume.value || 0)}%`; });
-    $('novaPushPermissionButton')?.addEventListener('click', () => requestNovaPushPermissionUi_('SHOW'));
-    window.setTimeout(() => requestNovaPushPermissionUi_('STATUS'), 0);
     $('novaPrefPreview')?.addEventListener('click', async () => {
       const button = $('novaPrefPreview');
       const prefs = readNotificationPreferencesPanel_();
