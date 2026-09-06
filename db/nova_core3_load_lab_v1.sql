@@ -109,8 +109,12 @@ insert into public.nova_rooms_current(
   version, cleaning_started_at, cleaning_completed_at, updated_by, updated_at
 )
 values
-  (date '2099-01-01','쏘라노','DUP0001','LOAD','STAY','WAITING','NORMAL','SOLO','LOADDUP',null,null,'',1,null,null,'CORE3_LOAD_SEED',now()),
-  (date '2099-01-01','쏘라노','CONT0001','LOAD','STAY','WAITING','NORMAL','SOLO','LOADCONT',null,null,'',1,null,null,'CORE3_LOAD_SEED',now()),
+  (date '2099-01-01','쏘라노','DUP2000001','LOAD','STAY','WAITING','NORMAL','SOLO','LOADDUP',null,null,'',1,null,null,'CORE3_LOAD_SEED',now()),
+  (date '2099-01-01','쏘라노','DUP5000001','LOAD','STAY','WAITING','NORMAL','SOLO','LOADDUP',null,null,'',1,null,null,'CORE3_LOAD_SEED',now()),
+  (date '2099-01-01','쏘라노','DUP10000001','LOAD','STAY','WAITING','NORMAL','SOLO','LOADDUP',null,null,'',1,null,null,'CORE3_LOAD_SEED',now()),
+  (date '2099-01-01','쏘라노','CONT2000001','LOAD','STAY','WAITING','NORMAL','SOLO','LOADCONT',null,null,'',1,null,null,'CORE3_LOAD_SEED',now()),
+  (date '2099-01-01','쏘라노','CONT5000001','LOAD','STAY','WAITING','NORMAL','SOLO','LOADCONT',null,null,'',1,null,null,'CORE3_LOAD_SEED',now()),
+  (date '2099-01-01','쏘라노','CONT10000001','LOAD','STAY','WAITING','NORMAL','SOLO','LOADCONT',null,null,'',1,null,null,'CORE3_LOAD_SEED',now()),
   (date '2099-01-01','쏘라노','FAIL0001','LOAD','STAY','WAITING','NORMAL','SOLO','LOADFAIL',null,null,'',1,null,null,'CORE3_LOAD_SEED',now()),
   (date '2099-01-01','쏘라노','TIME0001','LOAD','STAY','WAITING','NORMAL','SOLO','LOADTIME',null,null,'',1,null,null,'CORE3_LOAD_SEED',now()),
   (date '2099-01-01','쏘라노','MISS0001','LOAD','STAY','WAITING','NORMAL','SOLO','LOADMISS',null,null,'',1,null,null,'CORE3_LOAD_SEED',now());
@@ -127,7 +131,7 @@ begin
   if v_users <> 8 then
     raise exception 'Core3 load lab user count mismatch: %', v_users;
   end if;
-  if v_rooms <> 3405 then
+  if v_rooms <> 3409 then
     raise exception 'Core3 load lab room count mismatch: %', v_rooms;
   end if;
   if exists (
