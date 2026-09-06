@@ -1,0 +1,64 @@
+name: NOVA Core 3 Testing Safety CI
+
+on:
+  push:
+    branches:
+      - 'nova-core3-*'
+    paths:
+      - 'core3/testing/**'
+      - 'db/nova_core3_load_lab_v1.sql'
+      - '.github/workflows/core3-testing-ci.yml'
+      - '.github/workflows/core3-load-gates.yml'
+  pull_request:
+    paths:
+      - 'core3/testing/**'
+      - 'db/nova_core3_load_lab_v1.sql'
+      - '.github/workflows/core3-testing-ci.yml'
+      - '.github/workflows/core3-load-gates.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-isolated-load-tooling:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check load harness JavaScript syntax
+        run: node --check core3/testing/room-state-load.mjs
+
+      - name: Require dormant load trigger in source control
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, sys
+          cfg=json.load(open('core3/testing/load-gate-trigger.json'))
+          if cfg.get('enabled') is not False or str(cfg.get('stage') or '') != 'none':
+              print('::error::Core3 load trigger must remain dormant in normal source control.', file=sys.stderr)
+              sys.exit(10)
+          print('LOAD_TRIGGER_DORMANT=OK')
+          PY
+
+      - name: Verify production refusal guard exists in load lab seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq "target database is not an empty isolated branch" db/nova_core3_load_lab_v1.sql
+          grep -Fq "ISOLATED_BRANCH_ONLY" db/nova_core3_load_lab_v1.sql
+          grep -Fq "business_date <> date '2099-01-01'" db/nova_core3_load_lab_v1.sql
+          echo 'LOAD_LAB_PRODUCTION_REFUSAL_GUARD=OK'
+
+      - name: Verify load workflow cannot target production services
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'CORE3_LOAD_SERVICE: nova-core3-api-load' .github/workflows/core3-load-gates.yml
+          grep -Fq 'if prod_url == load_url' .github/workflows/core3-load-gates.yml
+          grep -Fq "marker != 'ISOLATED_BRANCH_ONLY'" .github/workflows/core3-load-gates.yml
+          echo 'LOAD_WORKFLOW_ISOLATION_GUARDS=OK'
