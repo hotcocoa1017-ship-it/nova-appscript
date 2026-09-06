@@ -6,6 +6,7 @@ for step_script, label in [
     ('scripts/patch_archive_prune_admin_ui.py', 'Archive prune admin UI'),
     ('scripts/patch_archive_prune_realtime_refresh.py', 'Archive prune realtime refresh'),
     ('scripts/patch_pwa_web_push_v2.py', 'NOVA PWA Web Push V2 bridge'),
+    ('scripts/patch_pwa_bridge_login_resilience.py', 'NOVA PWA login bridge resilience'),
     ('scripts/validate_notification_center_v1.py', 'NOVA notification center V1 validation'),
 ]:
     step = subprocess.run([sys.executable, step_script], check=False)
