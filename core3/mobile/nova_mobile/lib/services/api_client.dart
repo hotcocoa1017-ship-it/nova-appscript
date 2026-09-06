@@ -27,6 +27,48 @@ class NovaApiException implements Exception {
   String toString() => 'NovaApiException($status, $code, $message)';
 }
 
+class NovaRealtimeConfig {
+  const NovaRealtimeConfig({
+    required this.supabaseUrl,
+    required this.publishableKey,
+    required this.privateChannel,
+    required this.topicPattern,
+    required this.sessionSite,
+  });
+
+  final String supabaseUrl;
+  final String publishableKey;
+  final bool privateChannel;
+  final String topicPattern;
+  final String sessionSite;
+
+  factory NovaRealtimeConfig.fromJson(Map<String, dynamic> json) {
+    final supabaseUrl = '${json['supabaseUrl'] ?? ''}'.trim();
+    final publishableKey = '${json['publishableKey'] ?? ''}'.trim();
+    final topicPattern = '${json['topicPattern'] ?? ''}'.trim();
+    if (json['ok'] != true ||
+        supabaseUrl.isEmpty ||
+        publishableKey.isEmpty ||
+        json['privateChannel'] != true ||
+        topicPattern != 'nova:site:{site}:rooms') {
+      throw const NovaApiException(
+        status: 200,
+        code: 'INVALID_REALTIME_CONFIG',
+        message: 'Realtime 연결 설정을 확인할 수 없습니다.',
+      );
+    }
+    return NovaRealtimeConfig(
+      supabaseUrl: supabaseUrl,
+      publishableKey: publishableKey,
+      privateChannel: true,
+      topicPattern: topicPattern,
+      sessionSite: '${json['sessionSite'] ?? ''}'.trim(),
+    );
+  }
+
+  String topicForSite(String site) => topicPattern.replaceFirst('{site}', site.trim());
+}
+
 class NovaRoomMutationResult {
   const NovaRoomMutationResult({
     required this.room,
@@ -160,6 +202,15 @@ class NovaApiClient {
       accessToken: accessToken,
     );
     return NovaUser.fromJson(json);
+  }
+
+  Future<NovaRealtimeConfig> realtimeConfig(String accessToken) async {
+    final json = await _jsonRequest(
+      'GET',
+      _uri('/v1/realtime/config'),
+      accessToken: accessToken,
+    );
+    return NovaRealtimeConfig.fromJson(json);
   }
 
   Future<List<NovaRoom>> listRooms({
