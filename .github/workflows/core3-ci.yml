@@ -20,6 +20,7 @@ permissions:
 
 env:
   GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_PROJECT_NUMBER: '479836905263'
   GCP_REGION: asia-southeast1
   CORE3_SOURCE_SERVICE: nova-realtime-api
   CORE3_TARGET_SERVICE: nova-core3-api-dev
@@ -71,6 +72,42 @@ jobs:
           service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
+      - name: Diagnose effective source-deploy permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACCESS_TOKEN="$(gcloud auth print-access-token)"
+          PROJECT_PERMISSIONS='["run.services.create","run.services.get","run.services.update","cloudbuild.builds.create","artifactregistry.repositories.create","artifactregistry.repositories.get","artifactregistry.repositories.list","artifactregistry.repositories.uploadArtifacts","serviceusage.services.use"]'
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "https://cloudresourcemanager.googleapis.com/v1/projects/$GCP_PROJECT_ID:testIamPermissions" \
+            -d "{\"permissions\":$PROJECT_PERMISSIONS}" > /tmp/project-permissions.json
+          RUNTIME_SA="${GCP_PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "https://iam.googleapis.com/v1/projects/-/serviceAccounts/$RUNTIME_SA:testIamPermissions" \
+            -d '{"permissions":["iam.serviceAccounts.actAs"]}' > /tmp/service-account-permissions.json
+          python3 - <<'PY'
+          import json
+          requested_project = [
+              'run.services.create','run.services.get','run.services.update',
+              'cloudbuild.builds.create',
+              'artifactregistry.repositories.create','artifactregistry.repositories.get',
+              'artifactregistry.repositories.list','artifactregistry.repositories.uploadArtifacts',
+              'serviceusage.services.use'
+          ]
+          project = set((json.load(open('/tmp/project-permissions.json')) or {}).get('permissions') or [])
+          sa = set((json.load(open('/tmp/service-account-permissions.json')) or {}).get('permissions') or [])
+          for permission in requested_project:
+              print(permission + '=' + ('GRANTED' if permission in project else 'MISSING'))
+          print('iam.serviceAccounts.actAs=' + ('GRANTED' if 'iam.serviceAccounts.actAs' in sa else 'MISSING'))
+          missing = [p for p in requested_project if p not in project]
+          if 'iam.serviceAccounts.actAs' not in sa:
+              missing.append('iam.serviceAccounts.actAs')
+          print('CORE3_PERMISSION_MISSING=' + (','.join(missing) if missing else 'NONE'))
+          PY
       - name: Inspect production source environment without printing values
         shell: bash
         run: |
