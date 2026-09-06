@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 MARKER = 'NOVA_PWA_WEB_PUSH_V2'
-PWA_ORIGIN = 'https://evoetxfjmkkjptucwxsv.supabase.co'
+PWA_ORIGIN = 'https://nova-pwa-hotcocoa1017-3826.vercel.app'
 
 
 def fail(message, code=120):
@@ -70,7 +70,7 @@ if MARKER not in center:
     center = replace_once(
         center,
         "const U={auth:null,client:null,channel:null,employee:'',token:'',items:[],known:new Set(),unread:0,legacy:0,writing:false,badgeObs:null,badge:null,audio:null,audioReady:false,sound:localStorage.getItem('novaNotificationSound')!=='0',busy:false,authBusy:false,authTimer:null,pollTimer:null,toastTimer:null};",
-        "const U={auth:null,client:null,channel:null,employee:'',token:'',items:[],known:new Set(),unread:0,legacy:0,writing:false,badgeObs:null,badge:null,audio:null,audioReady:false,sound:localStorage.getItem('novaNotificationSound')!=='0',busy:false,authBusy:false,authTimer:null,pollTimer:null,toastTimer:null,pwaRouteDone:false};\nconst PWA_ORIGIN='https://evoetxfjmkkjptucwxsv.supabase.co'; // NOVA_PWA_WEB_PUSH_V2",
+        "const U={auth:null,client:null,channel:null,employee:'',token:'',items:[],known:new Set(),unread:0,legacy:0,writing:false,badgeObs:null,badge:null,audio:null,audioReady:false,sound:localStorage.getItem('novaNotificationSound')!=='0',busy:false,authBusy:false,authTimer:null,pollTimer:null,toastTimer:null,pwaRouteDone:false};\nconst PWA_ORIGIN='https://nova-pwa-hotcocoa1017-3826.vercel.app'; // NOVA_PWA_WEB_PUSH_V2",
         'notification state/PWA origin',
         124,
     )
@@ -128,7 +128,7 @@ requirements = [
     (api, MARKER, 'API marker'),
     (api, "allowedRoutes = ['cleaning', 'qm', 'houseman', 'archive']", 'route allowlist'),
     (index, 'window.__NOVA_PWA_ROUTE_V2__', 'Index route bootstrap'),
-    (center, "const PWA_ORIGIN='https://evoetxfjmkkjptucwxsv.supabase.co'", 'exact PWA origin'),
+    (center, "const PWA_ORIGIN='https://nova-pwa-hotcocoa1017-3826.vercel.app'", 'exact PWA origin'),
     (center, "type:'NOVA_PUSH_BRIDGE_V2'", 'push bridge message'),
     (center, "window.top.postMessage", 'top-level bridge for Apps Script sandbox'),
     (center, 'applyPwaRoute()', 'PWA deep-link apply'),
