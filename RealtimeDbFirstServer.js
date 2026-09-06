@@ -112,3 +112,12 @@ function novaDailyCloseDbSave_(token, payload) { // DAILY_CLOSE_SAVE_DB_FIRST_V1
     p_request_id: String(safe.requestId || '').trim()
   });
 }
+
+function novaDailyCloseDbRead_(token, payload) { // DAILY_CLOSE_READ_DB_FIRST_V1
+  const safe = payload || {};
+  return novaRealtimeUserRpc_(token, 'nova_daily_close_read_v1', {
+    p_start_date: String(safe.startDate || '').trim(),
+    p_end_date: String(safe.endDate || safe.startDate || '').trim(),
+    p_site: String(safe.site || '').trim()
+  });
+}
