@@ -27,11 +27,35 @@ function parseBearer(authorization) {
   return match ? text(match[1]) : '';
 }
 
-function validateRequest({ authorization, idempotencyKey, roomNo, body }) {
+function validateCommonRead({ authorization, businessDate, site }) {
   const authToken = parseBearer(authorization);
   if (!authToken) {
     return errorResponse(401, 'UNAUTHORIZED', '로그인이 필요합니다.');
   }
+
+  const safeBusinessDate = text(businessDate);
+  const safeSite = text(site);
+  if (!DATE_RE.test(safeBusinessDate)) {
+    return errorResponse(400, 'INVALID_BUSINESS_DATE', '업무일자를 확인하세요.');
+  }
+  if (!safeSite) {
+    return errorResponse(400, 'INVALID_SITE', '사업장을 확인하세요.');
+  }
+
+  return {
+    authToken,
+    businessDate: safeBusinessDate,
+    site: safeSite,
+  };
+}
+
+function validateMutation({ authorization, idempotencyKey, roomNo, body }) {
+  const common = validateCommonRead({
+    authorization,
+    businessDate: body?.businessDate,
+    site: body?.site,
+  });
+  if (common.status) return common;
 
   const requestId = text(idempotencyKey);
   if (requestId.length < 8 || requestId.length > 160) {
@@ -42,17 +66,12 @@ function validateRequest({ authorization, idempotencyKey, roomNo, body }) {
     return errorResponse(400, 'INVALID_BODY', '요청 본문을 확인하세요.');
   }
 
-  const businessDate = text(body.businessDate);
-  const site = text(body.site);
   const safeRoomNo = text(roomNo);
   const action = text(body.action).toUpperCase();
   const expectedVersion = Number(body.expectedVersion ?? 0);
 
-  if (!DATE_RE.test(businessDate)) {
-    return errorResponse(400, 'INVALID_BUSINESS_DATE', '업무일자를 확인하세요.');
-  }
-  if (!site || !safeRoomNo) {
-    return errorResponse(400, 'INVALID_ROOM', '사업장과 객실번호를 확인하세요.');
+  if (!safeRoomNo) {
+    return errorResponse(400, 'INVALID_ROOM', '객실번호를 확인하세요.');
   }
   if (!ALLOWED_ACTIONS.has(action)) {
     return errorResponse(400, 'UNSUPPORTED_ACTION', '현재 Core 3.0 단계에서 지원하지 않는 객실 작업입니다.');
@@ -62,17 +81,15 @@ function validateRequest({ authorization, idempotencyKey, roomNo, body }) {
   }
 
   return {
-    authToken,
+    ...common,
     requestId,
-    businessDate,
-    site,
     roomNo: safeRoomNo,
     action,
     expectedVersion,
   };
 }
 
-function mapRpcError(error) {
+function mapRpcError(error, { mutation = false } = {}) {
   if (error instanceof SupabaseResultUnknownError) {
     return errorResponse(
       503,
@@ -113,7 +130,7 @@ function mapRpcError(error) {
   if (error.status === 408 || error.status === 429 || error.status >= 500) {
     return errorResponse(503, 'UPSTREAM_UNAVAILABLE', 'DB 서비스가 일시적으로 응답하지 않습니다.', {
       retryable: true,
-      reuseIdempotencyKey: true,
+      ...(mutation ? { reuseIdempotencyKey: true } : {}),
     });
   }
 
@@ -121,23 +138,32 @@ function mapRpcError(error) {
 }
 
 export function createRoomActionService({ rpcClient } = {}) {
-  if (!rpcClient || typeof rpcClient.executeRoommaidAction !== 'function') {
-    throw new Error('rpcClient.executeRoommaidAction is required');
+  if (!rpcClient || typeof rpcClient.executeRoommaidAction !== 'function' || typeof rpcClient.listRoommaidRooms !== 'function') {
+    throw new Error('rpcClient.executeRoommaidAction and rpcClient.listRoommaidRooms are required');
   }
 
   return {
+    async listRooms(request) {
+      const validated = validateCommonRead(request);
+      if (validated.status) return validated;
+
+      try {
+        const result = await rpcClient.listRoommaidRooms(validated);
+        return { status: 200, body: result };
+      } catch (error) {
+        return mapRpcError(error, { mutation: false });
+      }
+    },
+
     async mutateRoom(request) {
-      const validated = validateRequest(request);
+      const validated = validateMutation(request);
       if (validated.status) return validated;
 
       try {
         const result = await rpcClient.executeRoommaidAction(validated);
-        return {
-          status: 200,
-          body: result,
-        };
+        return { status: 200, body: result };
       } catch (error) {
-        return mapRpcError(error);
+        return mapRpcError(error, { mutation: true });
       }
     },
   };
