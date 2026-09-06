@@ -153,6 +153,32 @@ void main() {
     expect(controller.rooms.single.cleaningStatus, 'CLEANING');
   });
 
+  test('bootstrap after app kill recovers committed DB state before relying on Realtime', () async {
+    final persisted = _roommaidSession();
+    final committedRoom = _room(cleaningStatus: 'CLEANING', version: 2);
+    final api = _FakeApiClient(
+      verifiedUser: persisted.user,
+      roomSnapshots: [
+        [committedRoom],
+      ],
+    );
+    final realtime = _FakeRealtimeGateway();
+    final controller = AppController(
+      apiClient: api,
+      sessionStore: _FakeSessionStore(initialSession: persisted),
+      realtimeGateway: realtime,
+    );
+    addTearDown(controller.dispose);
+
+    await controller.bootstrap();
+
+    expect(controller.isAuthenticated, isTrue);
+    expect(api.listRoomsCalls, 1);
+    expect(controller.rooms.single.cleaningStatus, 'CLEANING');
+    expect(controller.rooms.single.version, 2);
+    expect(realtime.starts, 1);
+  });
+
   test('bootstrap rejects a persisted session when server role is not ROOMMAID', () async {
     final persisted = _roommaidSession();
     final api = _FakeApiClient(
