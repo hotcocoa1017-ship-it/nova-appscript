@@ -57,8 +57,9 @@ export function createNovaCoreServer({ roomActionService, authService, revision 
   }
   if (!authService
       || typeof authService.login !== 'function'
-      || typeof authService.me !== 'function') {
-    throw new Error('authService.login and authService.me are required');
+      || typeof authService.me !== 'function'
+      || typeof authService.realtimeConfig !== 'function') {
+    throw new Error('authService.login, me and realtimeConfig are required');
   }
 
   return http.createServer(async (req, res) => {
@@ -83,6 +84,12 @@ export function createNovaCoreServer({ roomActionService, authService, revision 
 
       if (req.method === 'GET' && url.pathname === '/v1/session/me') {
         const result = await authService.me({ authorization: req.headers.authorization });
+        sendJson(res, result.status, result.body);
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/realtime/config') {
+        const result = await authService.realtimeConfig({ authorization: req.headers.authorization });
         sendJson(res, result.status, result.body);
         return;
       }
@@ -113,7 +120,8 @@ export function createNovaCoreServer({ roomActionService, authService, revision 
       if (match
           || url.pathname === '/v1/rooms'
           || url.pathname === '/v1/session/login'
-          || url.pathname === '/v1/session/me') {
+          || url.pathname === '/v1/session/me'
+          || url.pathname === '/v1/realtime/config') {
         sendJson(res, 405, {
           ok: false,
           code: 'METHOD_NOT_ALLOWED',
@@ -180,7 +188,14 @@ export function createServerFromEnvironment(env = process.env) {
     secret: jwtSecret,
     ttlSeconds: accessTokenSeconds,
   });
-  const authService = createAuthService({ authClient, tokenSigner });
+  const authService = createAuthService({
+    authClient,
+    tokenSigner,
+    realtimeConfig: {
+      supabaseUrl,
+      publishableKey: apiKey,
+    },
+  });
 
   return createNovaCoreServer({
     roomActionService,
