@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../config/app_config.dart';
@@ -22,6 +24,9 @@ class AppController extends ChangeNotifier {
   String? globalError;
   final Set<String> pendingRoomNos = <String>{};
 
+  Timer? _reconcileTimer;
+  bool _reconcileInFlight = false;
+
   bool get isAuthenticated => session != null;
   NovaUser? get user => session?.user;
   String get businessDate => AppConfig.businessDate();
@@ -38,11 +43,19 @@ class AppController extends ChangeNotifier {
         return;
       }
       final verifiedUser = await api.me(saved.accessToken);
+      if (verifiedUser.role != 'ROOMMAID') {
+        await store.clear();
+        session = null;
+        rooms = const [];
+        globalError = '현재 모바일 알파는 룸메이드 계정만 지원합니다.';
+        return;
+      }
       session = saved.withVerifiedUser(verifiedUser);
       await store.save(session!);
-      if (verifiedUser.role == 'ROOMMAID' && verifiedUser.sessionSite.isNotEmpty) {
+      if (verifiedUser.sessionSite.isNotEmpty) {
         await refreshRooms(silent: true);
       }
+      _startReconcileLoop();
     } on NovaApiException catch (error) {
       if (error.status == 401 || error.status == 403) {
         await store.clear();
@@ -70,6 +83,7 @@ class AppController extends ChangeNotifier {
       session = next;
       await store.save(next);
       await refreshRooms(silent: true);
+      _startReconcileLoop();
       return true;
     } on NovaApiException catch (error) {
       globalError = error.message;
@@ -81,6 +95,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    _stopReconcileLoop();
     await store.clear();
     session = null;
     rooms = const [];
@@ -98,11 +113,12 @@ class AppController extends ChangeNotifier {
       notifyListeners();
     }
     try {
-      rooms = await api.listRooms(
+      final latest = await api.listRooms(
         accessToken: active.accessToken,
         businessDate: businessDate,
         site: active.user.sessionSite,
       );
+      _applyRoomSnapshot(latest, preservePending: true);
       globalError = null;
     } on NovaApiException catch (error) {
       if (error.status == 401) {
@@ -183,7 +199,7 @@ class AppController extends ChangeNotifier {
         businessDate: businessDate,
         site: active.user.sessionSite,
       );
-      rooms = latest;
+      _applyRoomSnapshot(latest, preservePending: false);
       NovaRoom? matched;
       for (final item in latest) {
         if (item.roomNo == roomNo) {
@@ -195,6 +211,60 @@ class AppController extends ChangeNotifier {
     } catch (_) {
       return false;
     }
+  }
+
+  void _applyRoomSnapshot(List<NovaRoom> latest, {required bool preservePending}) {
+    if (!preservePending || pendingRoomNos.isEmpty) {
+      rooms = latest;
+      return;
+    }
+
+    final currentByRoomNo = <String, NovaRoom>{
+      for (final room in rooms) room.roomNo: room,
+    };
+    final latestRoomNos = <String>{};
+    final merged = <NovaRoom>[];
+
+    for (final room in latest) {
+      latestRoomNos.add(room.roomNo);
+      if (pendingRoomNos.contains(room.roomNo)) {
+        merged.add(currentByRoomNo[room.roomNo] ?? room);
+      } else {
+        merged.add(room);
+      }
+    }
+
+    for (final roomNo in pendingRoomNos) {
+      if (latestRoomNos.contains(roomNo)) continue;
+      final current = currentByRoomNo[roomNo];
+      if (current != null) merged.add(current);
+    }
+
+    rooms = merged;
+  }
+
+  void _startReconcileLoop() {
+    _reconcileTimer?.cancel();
+    _reconcileTimer = Timer.periodic(
+      AppConfig.roomReconcileInterval,
+      (_) => _runScheduledReconcile(),
+    );
+  }
+
+  Future<void> _runScheduledReconcile() async {
+    if (!isAuthenticated || _reconcileInFlight || signingIn || loadingRooms) return;
+    _reconcileInFlight = true;
+    try {
+      await refreshRooms(silent: true);
+    } finally {
+      _reconcileInFlight = false;
+    }
+  }
+
+  void _stopReconcileLoop() {
+    _reconcileTimer?.cancel();
+    _reconcileTimer = null;
+    _reconcileInFlight = false;
   }
 
   void _replaceRoom(NovaRoom updated) {
@@ -210,6 +280,7 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _stopReconcileLoop();
     api.close();
     super.dispose();
   }
