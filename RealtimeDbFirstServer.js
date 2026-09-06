@@ -121,3 +121,26 @@ function novaDailyCloseDbRead_(token, payload) { // DAILY_CLOSE_READ_DB_FIRST_V1
     p_site: String(safe.site || '').trim()
   });
 }
+
+function novaOperationSettingsDbFirstEnabled_() { // OPERATION_SETTINGS_DB_FIRST_V1
+  const props = PropertiesService.getScriptProperties();
+  if (String(props.getProperty('NOVA_REALTIME_ENABLED') || 'N').trim().toUpperCase() !== 'Y') return false;
+  return String(props.getProperty('NOVA_OPERATION_SETTINGS_DB_FIRST_ENABLED') || 'Y').trim().toUpperCase() !== 'N';
+}
+
+function novaOperationSettingsDbSave_(token, values, requestId) { // OPERATION_SETTINGS_DB_FIRST_V1
+  return novaRealtimeUserRpc_(token, 'nova_operation_settings_save_v1', {
+    p_values: values && typeof values === 'object' ? values : {},
+    p_request_id: String(requestId || '').trim()
+  });
+}
+
+function novaDailyCloseDbCancel_(token, payload) { // DAILY_CLOSE_CANCEL_DB_FIRST_V1
+  const safe = payload || {};
+  return novaRealtimeUserRpc_(token, 'nova_daily_close_cancel_v1', {
+    p_business_date: String(safe.businessDate || '').trim(),
+    p_site: String(safe.site || '').trim(),
+    p_reason: String(safe.reason || '').trim(),
+    p_request_id: String(safe.requestId || '').trim()
+  });
+}
