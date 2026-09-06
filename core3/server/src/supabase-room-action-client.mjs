@@ -44,8 +44,8 @@ async function readResponseBody(response) {
  * Cloud Run -> Supabase RPC adapter.
  *
  * The caller's bearer token is forwarded to Supabase. The server never uses a
- * service-role key for employee mutations; DB authorization is performed from
- * the authenticated user's JWT inside nova_roommaid_action_v2.
+ * service-role key for employee mutations or employee room reads. DB
+ * authorization is evaluated from the user's JWT inside the authenticated RPC.
  */
 export function createSupabaseRoomActionClient({
   supabaseUrl,
@@ -63,24 +63,7 @@ export function createSupabaseRoomActionClient({
   if (!safeApiKey) throw new Error('SUPABASE_PUBLISHABLE_KEY is required');
   if (typeof fetchImpl !== 'function') throw new Error('fetch implementation is required');
 
-  async function executeRoommaidAction({
-    authToken,
-    businessDate,
-    site,
-    roomNo,
-    action,
-    expectedVersion = 0,
-    requestId,
-  }) {
-    const requestBody = JSON.stringify({
-      p_business_date: businessDate,
-      p_site: site,
-      p_room_no: roomNo,
-      p_action: action,
-      p_expected_version: Number(expectedVersion || 0),
-      p_request_id: requestId,
-    });
-
+  async function callRpc({ rpcName, authToken, requestBody, mutation }) {
     let lastNetworkError = null;
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -89,7 +72,7 @@ export function createSupabaseRoomActionClient({
       let response;
 
       try {
-        response = await fetchImpl(`${baseUrl}/rest/v1/rpc/nova_roommaid_action_v2`, {
+        response = await fetchImpl(`${baseUrl}/rest/v1/rpc/${rpcName}`, {
           method: 'POST',
           headers: {
             apikey: safeApiKey,
@@ -107,18 +90,22 @@ export function createSupabaseRoomActionClient({
           await delay(40 * attempt);
           continue;
         }
-        throw new SupabaseResultUnknownError(
-          'DB 처리 결과를 확인할 수 없습니다. 같은 Idempotency-Key로 재시도해야 합니다.',
-          error,
-        );
+        if (mutation) {
+          throw new SupabaseResultUnknownError(
+            'DB 처리 결과를 확인할 수 없습니다. 같은 Idempotency-Key로 재시도해야 합니다.',
+            error,
+          );
+        }
+        throw new SupabaseRpcError('DB 조회 응답을 받을 수 없습니다.', {
+          status: 503,
+          code: 'NETWORK_ERROR',
+        });
       } finally {
         clearTimeout(timer);
       }
 
       const body = await readResponseBody(response);
-      if (response.ok) {
-        return body;
-      }
+      if (response.ok) return body;
 
       if (isRetryableStatus(response.status) && attempt < attempts) {
         await delay(40 * attempt);
@@ -135,11 +122,53 @@ export function createSupabaseRoomActionClient({
       });
     }
 
-    throw new SupabaseResultUnknownError(
-      'DB 처리 결과를 확인할 수 없습니다. 같은 Idempotency-Key로 재시도해야 합니다.',
-      lastNetworkError,
-    );
+    if (mutation) {
+      throw new SupabaseResultUnknownError(
+        'DB 처리 결과를 확인할 수 없습니다. 같은 Idempotency-Key로 재시도해야 합니다.',
+        lastNetworkError,
+      );
+    }
+    throw new SupabaseRpcError('DB 조회 응답을 받을 수 없습니다.', {
+      status: 503,
+      code: 'NETWORK_ERROR',
+    });
   }
 
-  return { executeRoommaidAction };
+  async function executeRoommaidAction({
+    authToken,
+    businessDate,
+    site,
+    roomNo,
+    action,
+    expectedVersion = 0,
+    requestId,
+  }) {
+    return callRpc({
+      rpcName: 'nova_roommaid_action_v2',
+      authToken,
+      mutation: true,
+      requestBody: JSON.stringify({
+        p_business_date: businessDate,
+        p_site: site,
+        p_room_no: roomNo,
+        p_action: action,
+        p_expected_version: Number(expectedVersion || 0),
+        p_request_id: requestId,
+      }),
+    });
+  }
+
+  async function listRoommaidRooms({ authToken, businessDate, site }) {
+    return callRpc({
+      rpcName: 'nova_roommaid_rooms_v1',
+      authToken,
+      mutation: false,
+      requestBody: JSON.stringify({
+        p_business_date: businessDate,
+        p_site: site,
+      }),
+    });
+  }
+
+  return { executeRoommaidAction, listRoommaidRooms };
 }
