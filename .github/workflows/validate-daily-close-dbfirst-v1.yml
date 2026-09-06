@@ -1,0 +1,74 @@
+name: Validate Daily Close DB First V1
+
+on:
+  push:
+    branches: [feat/full-db-houseman-ui-20260907]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+
+      - name: Apply daily close DB-first patch
+        run: python3 scripts/patch_daily_close_dbfirst_v1.py
+
+      - name: Validate DB-first ordering and markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'DAILY_CLOSE_SAVE_DB_FIRST_V1' 14_DailyClose.js
+          grep -q 'novaDailyCloseDbSave_' 14_DailyClose.js
+          grep -q 'dailyCloseDbRequestId_' 14_DailyClose.js
+          grep -q 'nova_daily_close_save_v2' RealtimeDbFirstServer.js
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('14_DailyClose.js').read_text(encoding='utf-8')
+          start = text.index('function saveDailyCloseSnapshotForSite_')
+          end = text.index('function buildDailyCloseSnapshot_', start)
+          block = text[start:end]
+          db = block.index('dbCloseCommit = novaDailyCloseDbSave_')
+          mark = block.index('markExistingDailyCloseDeleted_')
+          sheet = block.index('historySheet.getRange(startRow')
+          assert db < mark < sheet, (db, mark, sheet)
+          assert 'dbToken: token' in text
+          assert 'DAILY_CLOSE_V1:' in text
+          print('daily close DB -> Sheet ordering OK')
+          PY
+
+      - name: Validate JavaScript syntax
+        run: |
+          node --check 14_DailyClose.js
+          node --check RealtimeDbFirstServer.js
+
+      - name: Validate NOVA regression gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum 14_DailyClose.js | awk '{print $1}')"
+          python3 scripts/patch_daily_close_dbfirst_v1.py
+          after="$(sha256sum 14_DailyClose.js | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Persist validated daily close source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 14_DailyClose.js; then
+            echo 'Validated source already persisted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 14_DailyClose.js
+          git commit -m 'Persist manual daily close DB-first v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
