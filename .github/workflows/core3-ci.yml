@@ -20,16 +20,28 @@ permissions:
 jobs:
   room-state-domain:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Check domain JavaScript syntax
-        run: node --check core3/server/src/room-state-engine.mjs
-      - name: Run room-state domain tests
-        run: node --test core3/server/test/*.test.mjs
+      - name: Check Core server JavaScript syntax
+        working-directory: core3/server
+        run: npm run check
+      - name: Run Core server tests
+        working-directory: core3/server
+        run: npm test
+      - name: Ensure live transaction code has no Sheet or Apps Script dependency
+        run: |
+          set -euo pipefail
+          if grep -R --line-number -E 'SpreadsheetApp|google\.script\.run|Google[[:space:]]*Sheet|Sheets API' core3/server/src; then
+            echo '::error::NOVA Core live transaction path must not depend on Google Sheet or Apps Script.'
+            exit 1
+          fi
+          echo 'Core live transaction isolation check passed.'
+      - name: Build Cloud Run container
+        run: docker build -t nova-core3-ci core3/server
       - name: Ensure production backup branch is not referenced as a deploy target
         run: |
           set -euo pipefail
