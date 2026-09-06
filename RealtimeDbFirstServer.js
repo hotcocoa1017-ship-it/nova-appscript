@@ -82,3 +82,17 @@ function novaRoomUploadDbApply_(token, payload) { // ROOM_UPLOAD_DB_FIRST_V2
     p_request_id: String(safe.requestId || '').trim()
   });
 }
+
+function novaQmInspectionDbFirstEnabled_() { // QM_INSPECTION_FINALIZE_DB_FIRST_V1
+  const props = PropertiesService.getScriptProperties();
+  if (String(props.getProperty('NOVA_REALTIME_ENABLED') || 'N').trim().toUpperCase() !== 'Y') return false;
+  return String(props.getProperty('NOVA_QM_INSPECTION_DB_FIRST_ENABLED') || 'Y').trim().toUpperCase() !== 'N';
+}
+
+function novaQmInspectionDbFinalize_(token, payload) { // QM_INSPECTION_FINALIZE_DB_FIRST_V1
+  const safe = payload || {};
+  return novaRealtimeUserRpc_(token, 'nova_qm_inspection_finalize_v1', {
+    p_payload: safe.inspection && typeof safe.inspection === 'object' ? safe.inspection : {},
+    p_request_id: String(safe.requestId || '').trim()
+  });
+}
