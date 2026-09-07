@@ -213,10 +213,10 @@
   }; // QM_DRAFT_DB_FIRST_V1
 
   const NOVA_REALTIME_ROOM_FIELDS_ = Object.freeze([
-    // Phase 1 Realtime owns cleaning progress and DB version metadata only.
-    // 객실상태/배정/객실운영상태(고장·객실확인)는 기존 Sheets가 원본이므로
-    // PostgreSQL의 지연·빈 값으로 덮어쓰지 않습니다.
-    'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo', 'operationalStatus', 'preassigned', 'vip', 'importantRoom', 'version', 'updatedAt'
+    // ROOM_STATUS_DB_READ_AUTHORITY_V1 · 객실상태를 포함한 현재 객실 운영필드는 DB 읽기를 원본으로 사용합니다.
+    // 기존 Sheet snapshot/version은 이력·fallback 용도로 유지하되 DB hydrate/reconcile 이후에는
+    // Sheet delta가 최신 DB 객실상태를 되돌리지 못하도록 동일 merge 경로에서 보호합니다.
+    'roomStatus', 'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo', 'operationalStatus', 'preassigned', 'vip', 'importantRoom', 'version', 'updatedAt'
   ]);
 
   function novaRealtimeIsEnabled_() {
