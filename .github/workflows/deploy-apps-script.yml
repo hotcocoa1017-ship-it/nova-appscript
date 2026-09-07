@@ -224,20 +224,29 @@ jobs:
         run: |
           set -euo pipefail
           node --check 03_Auth.js
+          node --check 04_Api.js
           node --check 05_Performance.js
+          node --check 06_Indicator.js
           node --check 10_Mobile.js
+          node --check 11_Monthly.js
+          node --check 13_DepartureDelay.js
           node --check 16_QmChecklist.js
           node --check QmMobileBrowse.js
           node --check RealtimeDailySync.js
           node --check 17_RoommaidPerformance.js
           node --check 19_RoommaidCloseJournal.js
           node --check TelegramSelfConnect.js
+          node --check DbFirstBridge.js
+          node --check DailyCloseDbFirstBridge.js
+          node --check MonthlyDbFirstBridge.js
+          node --check RoommaidReportingDbFirstBridge.js
           python3 - <<'PY'
           from pathlib import Path
           import re
           for source, target in [
               ('Client.html', '/tmp/NovaClient.js'),
               ('HousemanUiPerformancePatch.html', '/tmp/NovaNotification.js'),
+              ('NotificationCenterV1.html', '/tmp/NovaNotificationCenter.js'),
           ]:
               text = Path(source).read_text(encoding='utf-8')
               scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
@@ -247,12 +256,13 @@ jobs:
           PY
           node --check /tmp/NovaClient.js
           node --check /tmp/NovaNotification.js
+          node --check /tmp/NovaNotificationCenter.js
 
       - name: Validate patch idempotence
         shell: bash
         run: |
           set -euo pipefail
-          tracked=(Index.html 02_Repository.js 03_Auth.js 05_Performance.js 10_Mobile.js 16_QmChecklist.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js)
+          tracked=(Index.html 02_Repository.js 03_Auth.js 04_Api.js 05_Performance.js 06_Indicator.js 10_Mobile.js 11_Monthly.js 13_DepartureDelay.js 16_QmChecklist.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html NotificationCenterV1.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js DbFirstBridge.js DailyCloseDbFirstBridge.js MonthlyDbFirstBridge.js RoommaidReportingDbFirstBridge.js)
           before="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
           python3 scripts/patch_realtime_client.py
           python3 scripts/patch_sync_status_autohide.py
@@ -298,7 +308,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          generated=(Index.html 02_Repository.js 03_Auth.js 05_Performance.js 10_Mobile.js 16_QmChecklist.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js)
+          generated=(Index.html 02_Repository.js 03_Auth.js 04_Api.js 05_Performance.js 06_Indicator.js 10_Mobile.js 11_Monthly.js 13_DepartureDelay.js 16_QmChecklist.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html NotificationCenterV1.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js DbFirstBridge.js DailyCloseDbFirstBridge.js MonthlyDbFirstBridge.js RoommaidReportingDbFirstBridge.js)
           if git diff --quiet -- "${generated[@]}"; then
             echo "Generated production sources already match repository source."
             exit 0
