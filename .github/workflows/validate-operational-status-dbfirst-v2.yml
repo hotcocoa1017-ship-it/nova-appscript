@@ -1,0 +1,83 @@
+name: Validate Operational Status DB First V2
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+    paths:
+      - scripts/patch_operational_status_dbfirst_v2.py
+      - .github/workflows/validate-operational-status-dbfirst-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply patch
+        run: python scripts/patch_operational_status_dbfirst_v2.py
+      - name: Validate DB-first ordering and JIT removal
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'OPERATION_STATUS_DB_FIRST_V2' RoomOperationalStatusFix.js
+          grep -q "action: 'UPDATE_ROOM_OPERATION_STATUS'" RoomOperationalStatusFix.js
+          grep -q 'novaMobileRealtimeActionFetch_' RoomOperationalStatusFix.js
+          grep -q 'mirrorPending: true' RoomOperationalStatusFix.js
+          test "$(grep -c 'OPERATION_STATUS_DB_FIRST_V2_CLIENT' Client.html)" -ge 2
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('RoomOperationalStatusFix.js').read_text(encoding='utf-8')
+          db=s.index('novaMobileRealtimeActionFetch_')
+          sheet=s.index('updateRowByHeaders_')
+          assert db < sheet, 'DB action must precede legacy Sheet write branch'
+          c=Path('Client.html').read_text(encoding='utf-8')
+          marker='OPERATION_STATUS_DB_FIRST_V2_CLIENT'
+          assert c.count(marker) >= 2
+          print('DB-first ordering validated')
+          PY
+      - name: JavaScript syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check RoomOperationalStatusFix.js
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('Client.html').read_text(encoding='utf-8')
+          start=s.find('<script>'); end=s.rfind('</script>')
+          assert start >= 0 and end > start
+          Path('/tmp/client.js').write_text(s[start+8:end], encoding='utf-8')
+          PY
+          node --check /tmp/client.js
+      - name: NOVA regression validation
+        run: python scripts/validate_nova_release.py
+      - name: Patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- RoomOperationalStatusFix.js Client.html > /tmp/first.diff
+          python scripts/patch_operational_status_dbfirst_v2.py
+          git diff -- RoomOperationalStatusFix.js Client.html > /tmp/second.diff
+          diff -u /tmp/first.diff /tmp/second.diff
+      - name: Persist generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- RoomOperationalStatusFix.js Client.html; then
+            echo 'No generated source changes.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add RoomOperationalStatusFix.js Client.html
+          git commit -m 'Persist operational status DB-first v2 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
