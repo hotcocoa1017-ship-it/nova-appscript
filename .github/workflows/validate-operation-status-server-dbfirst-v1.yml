@@ -1,0 +1,73 @@
+name: Validate Operation Status Server DB First V1
+
+on:
+  push:
+    branches: [feat/full-db-houseman-ui-20260907]
+    paths:
+      - 'scripts/patch_operation_status_server_dbfirst_v1.py'
+      - '.github/workflows/validate-operation-status-server-dbfirst-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+          fetch-depth: 1
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply patch
+        run: python3 scripts/patch_operation_status_server_dbfirst_v1.py
+      - name: Validate DB-first guard and mirror ownership
+        run: |
+          set -euo pipefail
+          grep -q 'OPERATION_STATUS_SERVER_DB_FIRST_V1' 06_Indicator.js
+          grep -q 'changeIndicatorRoomOperationalStatusDbFirst_' 06_Indicator.js
+          grep -q "action === 'UPDATE_ROOM_OPERATION_STATUS'" RealtimeDailySync.js
+          grep -q "status: 'UPDATE_ROOM_OPERATION_STATUS'" RealtimeDailySync.js
+          python3 - <<'PY'
+          from pathlib import Path
+          text=Path('06_Indicator.js').read_text(encoding='utf-8')
+          start=text.index('function changeIndicatorRoomOperationalStatusDbFirst_')
+          nxt=text.find('\nfunction ',start+20)
+          body=text[start:nxt if nxt>=0 else len(text)]
+          for token in ['getRequiredSheet_','updateRowByHeaders_','appendUnifiedHistory_','reserveDataVersion_']:
+              assert token not in body, token
+          assert "novaMobileRealtimeActionFetch_(token, roomNo" in body
+          assert "action: 'UPDATE_ROOM_OPERATION_STATUS'" in body
+          assert 'expectedVersion: 0' in body
+          print('operation status server DB-first structural gates OK')
+          PY
+      - name: JavaScript syntax checks
+        run: |
+          cp 06_Indicator.js /tmp/check.js
+          node --check /tmp/check.js
+      - name: NOVA regression validation
+        run: python3 scripts/validate_nova_release.py
+      - name: Patch idempotence
+        run: |
+          set -euo pipefail
+          sha256sum 06_Indicator.js > /tmp/before.sha
+          python3 scripts/patch_operation_status_server_dbfirst_v1.py
+          sha256sum 06_Indicator.js > /tmp/after.sha
+          diff -u /tmp/before.sha /tmp/after.sha
+      - name: Persist generated source
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 06_Indicator.js
+          if git diff --cached --quiet; then
+            echo 'No generated source changes to persist.'
+            exit 0
+          fi
+          git commit -m 'Persist operation status server DB-first v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
