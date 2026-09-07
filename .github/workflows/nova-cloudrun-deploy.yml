@@ -52,6 +52,23 @@ jobs:
           grep -Fq 'preassigned: r.preassigned === true' cloudrun/index.js
           grep -Fq 'importantRoom: r.important_room === true' cloudrun/index.js
 
+      - name: Apply CHECKED_OUT DB-first patch
+        run: python3 cloudrun/patch_checkout_dbfirst_v1.py
+
+      - name: Validate CHECKED_OUT DB-first patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "CHECKOUT_DB_FIRST_V1" cloudrun/index.js
+          if grep -q "CHECKOUT_LEGACY_ONLY" cloudrun/index.js; then
+            echo '::error::Legacy CHECKED_OUT rejection remains.'
+            exit 2
+          fi
+          grep -Fq "if (action === 'CHANGE_ROOM_STATUS')" cloudrun/index.js
+          grep -Fq 'set room_status=$4' cloudrun/index.js
+          grep -Fq "action,before_status,after_status" cloudrun/index.js
+          grep -Fq "const roomPatch = {" cloudrun/index.js
+
       - name: Validate Cloud Run source
         run: node --check cloudrun/index.js
 
@@ -66,7 +83,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add cloudrun/index.js
-          git commit -m "Persist Cloud Run operation flags sync V1 [skip ci]"
+          git commit -m "Persist Cloud Run DB-first patches [skip ci]"
           git push origin HEAD:perf/room-actions-v16
 
       - name: Authenticate to Google Cloud with WIF
@@ -170,5 +187,6 @@ jobs:
           echo '- Service: nova-realtime-api' >> "$GITHUB_STEP_SUMMARY"
           echo '- Region: asia-southeast1' >> "$GITHUB_STEP_SUMMARY"
           echo '- Operation flags DB sync patch: PASS' >> "$GITHUB_STEP_SUMMARY"
+          echo '- CHECKED_OUT DB-first patch: PASS' >> "$GITHUB_STEP_SUMMARY"
           echo '- Source validation: PASS' >> "$GITHUB_STEP_SUMMARY"
           echo '- Production health check: PASS' >> "$GITHUB_STEP_SUMMARY"
