@@ -54,6 +54,16 @@ if MARKER not in api:
     api = replace_once(api, anchor, helper, 'PWA route helper', 122)
     api_path.write_text(api, encoding='utf-8')
 
+# Existing PWA V2 installations may predate the indicator route. Promote them independently of MARKER.
+api = api_path.read_text(encoding='utf-8')
+legacy_allowlist = "allowedRoutes = ['cleaning', 'qm', 'houseman', 'archive']"
+indicator_allowlist = "allowedRoutes = ['cleaning', 'qm', 'houseman', 'archive', 'indicator']"
+if indicator_allowlist not in api:
+    if legacy_allowlist not in api:
+        fail('PWA route allowlist anchor unavailable for indicator promotion', 134)
+    api = api.replace(legacy_allowlist, indicator_allowlist, 1)
+    api_path.write_text(api, encoding='utf-8')
+
 # 2) Index: make sanitized server-side deep-link data available before client scripts start.
 index_path = Path('Index.html')
 index = index_path.read_text(encoding='utf-8')
@@ -126,7 +136,7 @@ index = index_path.read_text(encoding='utf-8')
 center = center_path.read_text(encoding='utf-8')
 requirements = [
     (api, MARKER, 'API marker'),
-    (api, "allowedRoutes = ['cleaning', 'qm', 'houseman', 'archive', 'indicator']", 'route allowlist'),
+    (api, indicator_allowlist, 'route allowlist'),
     (index, 'window.__NOVA_PWA_ROUTE_V2__', 'Index route bootstrap'),
     (center, "const PWA_ORIGIN='https://nova-pwa-hotcocoa1017-3826.vercel.app'", 'exact PWA origin'),
     (center, "type:'NOVA_PUSH_BRIDGE_V2'", 'push bridge message'),
