@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 concurrency:
@@ -27,8 +27,47 @@ jobs:
         with:
           ref: perf/room-actions-v16
 
+      - name: Apply operation flags DB sync patch
+        run: python3 cloudrun/patch_operation_flags_sync_v1.py
+
+      - name: Validate operation flags DB sync patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "ROOM_OPERATION_FLAGS_SYNC_V1" cloudrun/index.js
+          grep -Fq "preassigned: raw?.preassigned === true" cloudrun/index.js
+          grep -Fq "vip: raw?.vip === true" cloudrun/index.js
+          grep -Fq "importantRoom: raw?.importantRoom === true" cloudrun/index.js
+          test "$(grep -Fc 'const n = i * 15;' cloudrun/index.js)" -eq 2
+          if grep -Fq 'const n = i * 12;' cloudrun/index.js; then
+            echo '::error::Legacy 12-column room tuple remains.'
+            exit 2
+          fi
+          grep -Fq 'preassigned=excluded.preassigned' cloudrun/index.js
+          grep -Fq 'vip=excluded.vip' cloudrun/index.js
+          grep -Fq 'important_room=excluded.important_room' cloudrun/index.js
+          grep -Fq 'set preassigned=$4' cloudrun/index.js
+          grep -Fq 'vip=$5' cloudrun/index.js
+          grep -Fq 'important_room=$6' cloudrun/index.js
+          grep -Fq 'preassigned: r.preassigned === true' cloudrun/index.js
+          grep -Fq 'importantRoom: r.important_room === true' cloudrun/index.js
+
       - name: Validate Cloud Run source
         run: node --check cloudrun/index.js
+
+      - name: Persist generated Cloud Run source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- cloudrun/index.js; then
+            echo 'Cloud Run source already matches generated source.'
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add cloudrun/index.js
+          git commit -m "Persist Cloud Run operation flags sync V1 [skip ci]"
+          git push origin HEAD:perf/room-actions-v16
 
       - name: Authenticate to Google Cloud with WIF
         uses: google-github-actions/auth@v2
@@ -130,5 +169,6 @@ jobs:
           echo '- Authentication: Workload Identity Federation' >> "$GITHUB_STEP_SUMMARY"
           echo '- Service: nova-realtime-api' >> "$GITHUB_STEP_SUMMARY"
           echo '- Region: asia-southeast1' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Operation flags DB sync patch: PASS' >> "$GITHUB_STEP_SUMMARY"
           echo '- Source validation: PASS' >> "$GITHUB_STEP_SUMMARY"
           echo '- Production health check: PASS' >> "$GITHUB_STEP_SUMMARY"
