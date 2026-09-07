@@ -35,7 +35,11 @@ require(sync, "mirrorNovaRealtimeEventsDrain_({ maxBatches: 2, timeBudgetMs: 450
 require_order(sync, "mirrorNovaRealtimeEventsDrain_({ maxBatches: 2, timeBudgetMs: 45000 })", "syncNovaRealtimeCurrentBusinessDate(dateText, siteText, {})", 'legacy DB event mirror before forward sync')
 require(client, 'ROOM_STATUS_DB_READ_AUTHORITY_V1', 'roomStatus DB read-authority marker')
 require(client, 'const NOVA_REALTIME_ROOM_FIELDS_ = Object.freeze([', 'Realtime DB-owned field list')
-require(client, "'roomStatus', 'cleaningStatus'", 'roomStatus precedes cleaningStatus in DB-owned fields')
+room_fields_start = client.index('const NOVA_REALTIME_ROOM_FIELDS_ = Object.freeze([')
+room_fields_end = client.index(']);', room_fields_start)
+room_fields_block = client[room_fields_start:room_fields_end]
+for field in ["'roomStatus'", "'cleaningStatus'", "'cleaningType'", "'assignmentType'", "'operationalStatus'", "'preassigned'", "'vip'", "'importantRoom'"]:
+    require(room_fields_block, field, f'DB-owned room field {field}')
 require(client, "roomStatus: String(row.room_status ?? row.roomStatus ?? '')", 'full DB row roomStatus mapping')
 require(client, "putText('roomStatus', 'room_status', 'roomStatus');", 'partial DB row roomStatus mapping')
 require(client, 'CHECKOUT_DB_FIRST_CLIENT_V1', 'CHECKED_OUT DB-first path remains')
