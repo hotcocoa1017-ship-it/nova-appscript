@@ -20,6 +20,12 @@ jobs:
       - name: Apply monthly DB-first patch
         run: python3 scripts/patch_monthly_history_dbfirst_v1.py
 
+      - name: Apply operation-settings read DB-first patch
+        run: python3 scripts/patch_operation_settings_read_dbfirst_v1.py
+
+      - name: Apply roommaid performance DB-first patch
+        run: python3 scripts/patch_roommaid_performance_dbfirst_v1.py
+
       - name: Validate markers and safety gate
         shell: bash
         run: |
@@ -30,6 +36,11 @@ jobs:
           grep -q 'novaMonthlyHistoryDbRead_' 11_Monthly.js
           grep -q 'MONTHLY_HISTORY_DB_FIRST_V1' MonthlyDbFirstServer.js
           grep -q 'nova_monthly_history_v1' db/monthly_history_db_first_v1.sql
+          grep -q 'OPERATION_SETTINGS_READ_DB_FIRST_V1' RealtimeDbFirstServer.js
+          grep -q 'OPERATION_SETTINGS_READ_DB_FIRST_V1' 15_AdminSettings.js
+          grep -q 'operationDb: operationDb ?' 15_AdminSettings.js
+          grep -q 'nova_operation_settings_read_v1' db/operation_settings_read_v1.sql
+          grep -q 'ROOMMAID_PERFORMANCE_DB_FIRST_V1' 17_RoommaidPerformance.js
           python3 - <<'PY'
           from pathlib import Path
           text = Path('11_Monthly.js').read_text(encoding='utf-8')
@@ -37,13 +48,21 @@ jobs:
           assert "NOVA.RECORD_TYPES.HOUSEMAN_ORDER" not in text[text.index('const dbReplaceTypes = new Set(['):text.index(']);', text.index('const dbReplaceTypes = new Set(['))]
           assert "return keptSheet.concat(dbRows);" in text
           assert "rowNumber: -(index + 1)" in text
-          print('monthly DB hybrid gate OK')
+          admin = Path('15_AdminSettings.js').read_text(encoding='utf-8')
+          assert 'operationDb && operationDb.confirmed === true' in admin
+          perf = Path('17_RoommaidPerformance.js').read_text(encoding='utf-8')
+          assert 'readMonthlyHistoryRowsDbFirst_(request, [NOVA.RECORD_TYPES.CLEANING], token)' in perf
+          assert 'readMonthlyHistoryRows_(request, [NOVA.RECORD_TYPES.CLEANING])' not in perf
+          print('reporting DB hybrid gates OK')
           PY
 
       - name: Validate JavaScript syntax
         run: |
           node --check 11_Monthly.js
           node --check MonthlyDbFirstServer.js
+          node --check RealtimeDbFirstServer.js
+          node --check 15_AdminSettings.js
+          node --check 17_RoommaidPerformance.js
 
       - name: Validate NOVA regression gate
         run: python3 scripts/validate_nova_release.py
@@ -52,21 +71,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          before="$(sha256sum 11_Monthly.js | awk '{print $1}')"
+          before="$(sha256sum 11_Monthly.js RealtimeDbFirstServer.js 15_AdminSettings.js 17_RoommaidPerformance.js | sha256sum | awk '{print $1}')"
           python3 scripts/patch_monthly_history_dbfirst_v1.py
-          after="$(sha256sum 11_Monthly.js | awk '{print $1}')"
+          python3 scripts/patch_operation_settings_read_dbfirst_v1.py
+          python3 scripts/patch_roommaid_performance_dbfirst_v1.py
+          after="$(sha256sum 11_Monthly.js RealtimeDbFirstServer.js 15_AdminSettings.js 17_RoommaidPerformance.js | sha256sum | awk '{print $1}')"
           test "$before" = "$after"
 
-      - name: Persist validated monthly source
+      - name: Persist validated reporting DB-first sources
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- 11_Monthly.js; then
-            echo 'Validated monthly source already persisted.'
+          if git diff --quiet -- 11_Monthly.js RealtimeDbFirstServer.js 15_AdminSettings.js 17_RoommaidPerformance.js; then
+            echo 'Validated reporting DB-first sources already persisted.'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add 11_Monthly.js
-          git commit -m 'Persist monthly history DB-first v1 [skip ci]'
+          git add 11_Monthly.js RealtimeDbFirstServer.js 15_AdminSettings.js 17_RoommaidPerformance.js
+          git commit -m 'Persist reporting DB-first reads v1 [skip ci]'
           git push origin HEAD:feat/full-db-houseman-ui-20260907
