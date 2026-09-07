@@ -51,10 +51,13 @@ require(REALTIME, "'선배정여부': preassigned ? 'Y' : 'N'", 'preassigned She
 require(REALTIME, "'VIP여부': vip ? 'Y' : 'N'", 'VIP Sheet mirror')
 require(REALTIME, "'중요객실여부': importantRoom ? 'Y' : 'N'", 'important-room Sheet mirror')
 
-# 4) Preserve the legacy safety rule as a fallback guard too.
-require(INDICATOR, "if (previousCleaningStatus !== 'QM_WAITING')", 'legacy QM_CLEAR state guard')
+# 4) Preserve the established recovery behavior of QM_CLEAR.
+#    ADMIN/ORDER may clear a stale QM assignment from waiting/checking/completed/rework
+#    while keeping roommaid completion/performance and existing checklist/history intact.
+require(INDICATOR, 'QM_CLEAR_REWORK_CONTROLS_V1', 'legacy QM clear recovery marker')
+require(INDICATOR, "['QM_WAITING', 'QM_CHECKING', 'QM_COMPLETED', 'REWORK'].includes(previousCleaningStatus)", 'QM_CLEAR recovery states')
 require(INDICATOR, "updates['QM사번'] = ''", 'legacy QM clear assignment behavior')
 require(INDICATOR, "updates['청소상태'] = 'COMPLETED'", 'legacy QM clear completion state')
+forbid(INDICATOR, "if (previousCleaningStatus !== 'QM_WAITING') throw new Error('QM 점검 시작 전 배정만 취소할 수 있습니다.');", 'obsolete QM_WAITING-only guard')
 
-# Release trigger: 2026-09-07 DB-first cutover gate.
 print('QM_CLEAR DB-first + operation flags regression gate passed.')
