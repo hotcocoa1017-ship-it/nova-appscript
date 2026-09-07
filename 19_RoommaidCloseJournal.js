@@ -58,16 +58,12 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
       });
     }
 
-    // 업무이력은 날짜 TextFinder로 후보행만 읽습니다. 전체 업무이력 열 스캔을 제거합니다.
-    let dbSaved = null; // DAILY_CLOSE_READ_DB_FIRST_V1
-    try {
-      dbSaved = readDailyCloseDbSnapshots_(token, businessDate, businessDate, preferredSite)[0] || null;
-    } catch (error) {
-      dbSaved = null;
-    }
-    const historyBundle = readRoommaidCloseHistoryBundleFast_(businessDate, preferredSite);
+    // DB-native 업무일자/사업장은 PostgreSQL history를 원본으로 사용하고 Sheet TextFinder를 건너뜁니다.
+    // 과거·미완전 업무일자는 기존 Sheet 후보행 조회를 그대로 유지합니다.
+    const historyBundle = readRoommaidCloseHistoryBundleDbFirst_(token, businessDate, preferredSite); // ROOMMAID_CLOSE_HISTORY_DB_FIRST_V1
     const historyRows = historyBundle.historyRows;
-    const saved = dbSaved || historyBundle.saved;
+    const dbSaved = historyBundle.dbSaved || null;
+    const saved = historyBundle.saved;
 
     // 미마감 조회는 PostgreSQL 현재객실을 우선 사용합니다. 저장된 마감은 기존 Sheet 기반 sourceSignature를
     // 그대로 비교해야 과거 저장서명과 DB updated_at 차이로 false stale이 생기지 않습니다.
@@ -146,7 +142,9 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
         savedSource: dbSaved ? 'REALTIME_DB' : (historyBundle.saved ? 'SHEET' : 'NONE'), // DAILY_CLOSE_READ_DB_FIRST_V1
         currentRowCount: currentRows.length,
         historyRowCount: historyRows.length,
-        historyLookup: 'DATE_TEXTFINDER'
+        historyLookup: historyBundle.dbFirst ? 'REALTIME_DB' : 'DATE_TEXTFINDER', // ROOMMAID_CLOSE_HISTORY_DB_FIRST_V1
+        historyDbFirst: Boolean(historyBundle.dbFirst),
+        historyStateVersion: Number(historyBundle.stateVersion || 0)
       }
     };
     putCachedJson_(cacheKey, result, Math.min(30, Number(NOVA.SNAPSHOT_CACHE_SECONDS || 45)));
