@@ -1,0 +1,92 @@
+name: Validate Checkout DB First V1
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+    paths:
+      - scripts/patch_checkout_dbfirst_v1.py
+      - .github/workflows/validate-checkout-dbfirst-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply patch
+        run: python scripts/patch_checkout_dbfirst_v1.py
+      - name: Validate checkout DB-first routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'CHECKOUT_DB_FIRST_V1' 06_Indicator.js
+          grep -q 'changeIndicatorRoomCheckoutDbFirst_' 06_Indicator.js
+          grep -q 'CHECKOUT_DB_FIRST_V1_CLIENT' Client.html
+          grep -q 'CHECKOUT_DB_FIRST_V1_MIRROR' RealtimeDailySync.js
+          python - <<'PY'
+          from pathlib import Path
+          i=Path('06_Indicator.js').read_text(encoding='utf-8')
+          c=Path('Client.html').read_text(encoding='utf-8')
+          r=Path('RealtimeDailySync.js').read_text(encoding='utf-8')
+          helper=i.index('function changeIndicatorRoomCheckoutDbFirst_')
+          legacy=i.index('function changeIndicatorRoomCheckoutFast_')
+          assert helper < legacy
+          assert "action: 'CHANGE_ROOM_STATUS'" in i[helper:legacy]
+          assert "roomStatus: 'CHECKED_OUT'" in i[helper:legacy]
+          assert 'novaMobileRealtimeActionFetch_' in i[helper:legacy]
+          assert 'mirrorPending: true' in i[helper:legacy]
+          assert "|| mappedAction === 'CHANGE_ROOM_STATUS'; // CHECKOUT_DB_FIRST_V1_CLIENT" in c
+          assert "String(safe.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT'" not in c
+          assert "String(payload.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT'" not in c
+          assert "departureConfirmedNotifications" in r
+          assert "previousRoomStatus === 'DUE_OUT' && requestedRoomStatus === 'CHECKED_OUT'" in r
+          assert 'queueRoommaidDepartureConfirmedTelegram_' in r
+          print('checkout DB-first routing validated')
+          PY
+      - name: JavaScript syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check 06_Indicator.js
+          node --check RealtimeDailySync.js
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('Client.html').read_text(encoding='utf-8')
+          start=s.find('<script>'); end=s.rfind('</script>')
+          assert start >= 0 and end > start
+          Path('/tmp/client.js').write_text(s[start+8:end], encoding='utf-8')
+          PY
+          node --check /tmp/client.js
+      - name: NOVA regression validation
+        run: python scripts/validate_nova_release.py
+      - name: Patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- 06_Indicator.js Client.html RealtimeDailySync.js > /tmp/first.diff
+          python scripts/patch_checkout_dbfirst_v1.py
+          git diff -- 06_Indicator.js Client.html RealtimeDailySync.js > /tmp/second.diff
+          diff -u /tmp/first.diff /tmp/second.diff
+      - name: Persist generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 06_Indicator.js Client.html RealtimeDailySync.js; then
+            echo 'No generated source changes.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 06_Indicator.js Client.html RealtimeDailySync.js
+          git commit -m 'Persist checkout DB-first v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
