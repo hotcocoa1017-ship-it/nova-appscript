@@ -31,8 +31,8 @@ jobs:
           set -euo pipefail
           grep -q 'function novaHousemanMonthlyDbCancelIfPresent_' RealtimeDbFirstServer.js
           test "$(grep -c 'MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1' 11_Monthly.js)" -ge 2
-          grep -q 'DB 삭제 선확정은 Apps Script 서버가 수행합니다.' AppJs.html
-          test "$(grep -c 'await cancelMonthlyHousemanRealtimeIfPresent_(item.recordId);' AppJs.html || true)" -eq 0
+          test "$(grep -c 'DB 삭제 선확정은 Apps Script 서버가 수행합니다.' Client.html)" -eq 2
+          test "$(grep -c 'await cancelMonthlyHousemanRealtimeIfPresent_(item.recordId);' Client.html || true)" -eq 0
           grep -q '/v1/houseman-orders/' RealtimeDbFirstServer.js
           grep -q '/cancel' RealtimeDbFirstServer.js
           grep -q 'HOUSEMAN_ORDER_NOT_FOUND' RealtimeDbFirstServer.js
@@ -44,33 +44,33 @@ jobs:
           node --check 11_Monthly.js
           python - <<'PY'
           from pathlib import Path
-          s=Path('AppJs.html').read_text(encoding='utf-8')
+          s=Path('Client.html').read_text(encoding='utf-8')
           start=s.find('<script>')
           end=s.rfind('</script>')
           assert start >= 0 and end > start
-          Path('/tmp/appjs.js').write_text(s[start+8:end], encoding='utf-8')
+          Path('/tmp/client.js').write_text(s[start+8:end], encoding='utf-8')
           PY
-          node --check /tmp/appjs.js
+          node --check /tmp/client.js
       - name: NOVA regression validation
         run: python scripts/validate_nova_release.py
       - name: Patch idempotence
         shell: bash
         run: |
           set -euo pipefail
-          git diff -- RealtimeDbFirstServer.js 11_Monthly.js AppJs.html > /tmp/first.diff
+          git diff -- RealtimeDbFirstServer.js 11_Monthly.js Client.html > /tmp/first.diff
           python scripts/patch_monthly_houseman_dbfirst_cancel_v1.py
-          git diff -- RealtimeDbFirstServer.js 11_Monthly.js AppJs.html > /tmp/second.diff
+          git diff -- RealtimeDbFirstServer.js 11_Monthly.js Client.html > /tmp/second.diff
           diff -u /tmp/first.diff /tmp/second.diff
       - name: Persist generated source
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- RealtimeDbFirstServer.js 11_Monthly.js AppJs.html; then
+          if git diff --quiet -- RealtimeDbFirstServer.js 11_Monthly.js Client.html; then
             echo 'No generated source changes.'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add RealtimeDbFirstServer.js 11_Monthly.js AppJs.html
+          git add RealtimeDbFirstServer.js 11_Monthly.js Client.html
           git commit -m 'Persist monthly houseman DB-first cancel/delete v1 [skip ci]'
           git push origin HEAD:feat/full-db-houseman-ui-20260907
