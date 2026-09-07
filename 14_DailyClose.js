@@ -84,6 +84,33 @@ function buildDailyCloseDailyOverview_(request, dbToken) { // (일별 저장자�
     };
   }
 
+  // DB-ready 단일 사업장 LIVE 조회는 Sheet current/history를 읽지 않습니다. // DAILY_CLOSE_LIVE_DB_FIRST_V1
+  if (request.site) {
+    const dbLiveSource = tryNovaDailyCloseDbSource_(dbToken, request.date, request.site);
+    if (dbLiveSource && dbLiveSource.ready) {
+      const live = buildDailyCloseSnapshot_(request.date, request.site, {
+        closedBy: '',
+        closedAt: '',
+        includeRooms: false,
+        currentRows: dbLiveSource.currentRows,
+        historyRows: dbLiveSource.historyRows
+      });
+      return {
+        period: 'DAILY',
+        businessDate: request.date,
+        site: request.site,
+        source: 'LIVE',
+        isClosed: false,
+        closedAt: '',
+        closedBy: '',
+        summary: aggregateDailyCloseSummaries_([live]),
+        sites: [Object.assign({ source: 'LIVE', dbFirst: true }, live)],
+        dbFirst: true,
+        message: ''
+      };
+    }
+  }
+
   const allCurrentRows = readCurrentRowsForClose_(request.date, request.site);
   const allHistoryRows = readHistoryRowsForClose_(request.date, request.site);
   const availableSites = request.site

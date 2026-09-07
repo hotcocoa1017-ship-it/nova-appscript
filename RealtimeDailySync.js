@@ -24,14 +24,22 @@ const NOVA_REALTIME_FINAL = Object.freeze({
   FORWARD_INTERVAL_MS: 5 * 60 * 1000
 });
 
-function syncNovaRealtimeCurrentBusinessDate(businessDate, site, options) { // (당일 Sheets -> PostgreSQL 증분동기화)
+function novaRealtimeSheetForwardSyncEnabled_() { // DB_PRIMARY_FORWARD_GUARD_V1
+  const props = PropertiesService.getScriptProperties();
+  return String(props.getProperty('NOVA_SHEET_FORWARD_SYNC_ENABLED') || 'N').trim().toUpperCase() === 'Y';
+}
+
+function syncNovaRealtimeCurrentBusinessDate(businessDate, site, options) { // (레거시 Sheets -> PostgreSQL 정방향 · DB_PRIMARY_FORWARD_GUARD_V1)
   const dateText = novaRealtimeFinalBusinessDate_(businessDate);
   const siteText = String(site || '').trim();
+  const safeOptions = options || {};
+  if (safeOptions.forceLegacyForward !== true && !novaRealtimeSheetForwardSyncEnabled_()) {
+    return { ok: true, skipped: true, reason: 'DB_PRIMARY_SHEET_FORWARD_DISABLED', businessDate: dateText, site: siteText };
+  }
   const rooms = novaRealtimeFinalBuildRooms_(dateText, siteText, '');
   if (!rooms.length) throw new Error(`Realtime 동기화 대상 객실이 없습니다. (${dateText}${siteText ? ' · ' + siteText : ''})`);
   const sites = Array.from(new Set(rooms.map(row => row.site).filter(Boolean))).sort();
   const users = novaRealtimeFinalBuildUsers_(sites);
-  const safeOptions = options || {};
   return novaRealtimeFinalSignedPost_('/v1/admin/sync-current-rooms', {
     businessDate: dateText,
     source: safeOptions.forceSheetCleaning ? 'GOOGLE_SHEETS_NOVA_PREFLIGHT' : 'GOOGLE_SHEETS_NOVA_CURRENT',
@@ -50,6 +58,9 @@ function syncNovaRealtimeRoomForAction(token, payload) { // (룸메이드 작업
   const site = resolveUserSessionSite_(auth.user, safe.site); // SITE_SCOPE_INDICATOR_CLOSE_V2
   const roomNo = String(safe.roomNo || '').trim();
   if (!site || !roomNo) throw new Error('Realtime 단건 동기화에 사업장과 객실번호가 필요합니다.');
+  if (!novaRealtimeSheetForwardSyncEnabled_()) {
+    return { ok: true, skipped: true, reason: 'DB_PRIMARY_JIT_SHEET_SYNC_DISABLED', businessDate, site, roomNo };
+  }
   const rooms = novaRealtimeFinalBuildRooms_(businessDate, site, roomNo);
   if (!rooms.length) throw new Error(`${roomNo}호를 현재객실현황에서 찾을 수 없습니다.`);
   const users = novaRealtimeFinalBuildUsers_([site]);
@@ -181,7 +192,7 @@ function novaRealtimeScheduledCurrentRoomsSync() { // (기존 핸들러 호환: 
 }
 
 function testNovaRealtimeCurrentBusinessDateSync() { // (N 상태에서도 수동 검증 가능)
-  const result = syncNovaRealtimeCurrentBusinessDate(novaRealtimeFinalBusinessDate_(), '');
+  const result = syncNovaRealtimeCurrentBusinessDate(novaRealtimeFinalBusinessDate_(), '', { forceLegacyForward: true });
   console.log(JSON.stringify(result, null, 2));
   return result;
 }
