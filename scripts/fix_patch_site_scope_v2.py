@@ -37,3 +37,9 @@ subprocess.run([sys.executable, 'scripts/validate_qm_houseman_dbfirst_20260906.p
 # 3중 동기화로 수렴시킵니다. 네트워크 응답이 멈춰 actionInFlight가 고착되는 경로도 제한시간으로 해제합니다.
 subprocess.run([sys.executable, 'scripts/patch_room_state_sync_hardening_20260906.py'], check=True)
 subprocess.run([sys.executable, 'scripts/validate_room_state_sync_hardening_20260906.py'], check=True)
+
+# QM 최종제출은 객실 QM_COMPLETED + 점검결과 + draft 완료 + Realtime 이벤트를
+# PostgreSQL 단일 트랜잭션으로 확정한 뒤 기존 Sheet 상세이력을 후행 미러합니다.
+# RPC 미배포처럼 DB 변경 전임이 확실한 경우만 기존 QM_COMPLETE 경로를 허용합니다.
+subprocess.run([sys.executable, 'scripts/patch_qm_finalize_dbfirst_v2_20260907.py'], check=True)
+subprocess.run([sys.executable, 'scripts/validate_qm_finalize_dbfirst_v2_20260907.py'], check=True)
