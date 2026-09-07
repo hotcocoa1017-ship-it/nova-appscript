@@ -1,2 +1,2 @@
-NOVA Cloud Run operation flags DB sync V1 release trigger
-2026-09-07 retry 2
+NOVA Cloud Run DB-first release trigger
+2026-09-07 CHECKED_OUT DB-first v1
