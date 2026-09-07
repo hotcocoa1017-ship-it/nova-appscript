@@ -31,7 +31,7 @@ function getMonthlyHistory(token, filters) { // (월별 이력 페이지 조회)
         pageCount
       },
       items: pageItems,
-      close: request.type === 'CLEANING' ? buildDailyCloseOverviewForRequest_(request) : {},
+      close: request.type === 'CLEANING' ? buildDailyCloseOverviewForRequest_(request, token) : {}, // DAILY_CLOSE_READ_DB_FIRST_V1
       serverTime: nowText_()
     };
   });

@@ -14,7 +14,7 @@ function getDailyCloseOverview(token, filters) { // (일일·월별 마감통계
   return measureResponse_('getDailyCloseOverview', () => {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const request = normalizeMonthlyFilters_(filters || {}, user);
-    return Object.assign({ ok: true }, buildDailyCloseOverviewForRequest_(request));
+    return Object.assign({ ok: true }, buildDailyCloseOverviewForRequest_(request, token)); // DAILY_CLOSE_READ_DB_FIRST_V1
   });
 }
 
@@ -49,18 +49,40 @@ function saveDailyCloseSnapshot(token, payload) { // (업무일자 공식 마감
   });
 }
 
-function buildDailyCloseOverviewForRequest_(request) { // (조회방식별 마감통계 묶음 구성)
-  if (request.period === 'DAILY') return buildDailyCloseDailyOverview_(request);
-  return buildDailyCloseMonthlyOverview_(request);
+function buildDailyCloseOverviewForRequest_(request, dbToken) { // (조회방식별 마감통계 묶음 구성 · DAILY_CLOSE_READ_DB_FIRST_V1)
+  if (request.period === 'DAILY') return buildDailyCloseDailyOverview_(request, dbToken);
+  return buildDailyCloseMonthlyOverview_(request, dbToken);
 }
 
-function buildDailyCloseDailyOverview_(request) { // (일별 저장자료 또는 실시간 마감통계 조회)
+function buildDailyCloseDailyOverview_(request, dbToken) { // (일별 저장자료 또는 실시간 마감통계 조회)
+  const dbSavedSites = readDailyCloseDbSnapshots_(dbToken, request.date, request.date, request.site);
+  // 사업장이 명시됐고 DB 확정본이 있으면 Sheet 전체 조회 없이 즉시 반환합니다.
+  if (request.site && dbSavedSites.length) {
+    const items = dbSavedSites.map(item => Object.assign({ source: 'CLOSED', dbFirst: true }, item));
+    return {
+      period: 'DAILY',
+      businessDate: request.date,
+      site: request.site,
+      source: 'CLOSED',
+      isClosed: true,
+      closedAt: latestText_(items.map(item => item.closedAt)),
+      closedBy: items.length === 1 ? String(items[0].closedByName || items[0].closedBy || '') : '',
+      summary: aggregateDailyCloseSummaries_(items),
+      sites: items,
+      dbFirst: true,
+      message: ''
+    };
+  }
+
   const allCurrentRows = readCurrentRowsForClose_(request.date, request.site);
   const allHistoryRows = readHistoryRowsForClose_(request.date, request.site);
   const availableSites = request.site
     ? (allCurrentRows.length ? [request.site] : [])
     : Array.from(new Set(allCurrentRows.map(data => String(data['사업장'] || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, 'ko'));
-  const savedSites = readDailyCloseSummaries_(request.date, request.site);
+  const savedSites = mergeDailyCloseSnapshots_(
+    readDailyCloseSummaries_(request.date, request.site),
+    dbSavedSites
+  );
   const savedBySite = {};
   savedSites.forEach(item => { savedBySite[item.site] = item; });
 
@@ -92,11 +114,16 @@ function buildDailyCloseDailyOverview_(request) { // (일별 저장자료 또는
   };
 }
 
-function buildDailyCloseMonthlyOverview_(request) { // (월별 저장 마감자료 합산)
-  const prefix = `${request.year}-${String(request.month).padStart(2, '0')}-`;
-  const summaries = readDailyCloseSummaryRows_()
+function buildDailyCloseMonthlyOverview_(request, dbToken) { // (월별 저장 마감자료 합산 · DAILY_CLOSE_READ_DB_FIRST_V1)
+  const monthText = String(request.month).padStart(2, '0');
+  const prefix = `${request.year}-${monthText}-`;
+  const startDate = `${request.year}-${monthText}-01`;
+  const endDate = Utilities.formatDate(new Date(Number(request.year), Number(request.month), 0), NOVA.TIMEZONE, NOVA.DATE_FORMAT);
+  const sheetSummaries = readDailyCloseSummaryRows_()
     .filter(item => item.businessDate.startsWith(prefix))
-    .filter(item => !request.site || item.site === request.site)
+    .filter(item => !request.site || item.site === request.site);
+  const dbSummaries = readDailyCloseDbSnapshots_(dbToken, startDate, endDate, request.site);
+  const summaries = mergeDailyCloseSnapshots_(sheetSummaries, dbSummaries)
     .sort((a, b) => a.businessDate.localeCompare(b.businessDate) || a.site.localeCompare(b.site, 'ko'));
   return {
     period: 'MONTHLY',
@@ -649,6 +676,54 @@ function buildDailyCloseValidation_(currentRows) { // (마감 전 상태 정합�
     }
   });
   return { ok: issues.length === 0, issueCount: issues.length, issues: issues.slice(0, 200) };
+}
+
+
+function readDailyCloseDbSnapshots_(token, startDate, endDate, site) { // DAILY_CLOSE_READ_DB_FIRST_V1
+  if (!token || typeof novaDailyCloseDbRead_ !== 'function') return [];
+  if (typeof novaDailyCloseDbFirstEnabled_ === 'function' && !novaDailyCloseDbFirstEnabled_()) return [];
+  try {
+    const result = novaDailyCloseDbRead_(token, {
+      startDate: String(startDate || '').trim(),
+      endDate: String(endDate || startDate || '').trim(),
+      site: String(site || '').trim()
+    });
+    return (Array.isArray(result && result.items) ? result.items : []).map(item => {
+      const detail = item && item.snapshot && typeof item.snapshot === 'object'
+        ? Object.assign({}, item.snapshot)
+        : {};
+      if (detail.roommaidCloseJournal) {
+        detail.roommaidCloseJournal = expandRoommaidCloseJournalFromStorage_(detail.roommaidCloseJournal);
+      }
+      return Object.assign({}, detail, {
+        businessDate: String(item && item.businessDate || detail.businessDate || '').trim(),
+        site: String(item && item.site || detail.site || '').trim(),
+        closedAt: String(item && item.closedAt || detail.closedAt || '').trim(),
+        closedBy: String(item && item.closedBy || detail.closedBy || '').trim(),
+        closedByName: String(item && item.closedByName || detail.closedByName || '').trim(),
+        dbFirst: true,
+        dbCloseVersion: Number(item && item.version || 0),
+        dbRequestId: String(item && item.requestId || '').trim()
+      });
+    }).filter(item => item.businessDate && item.site);
+  } catch (error) {
+    console.warn('[NOVA DAILY CLOSE DB read fallback]', error && error.message ? error.message : error);
+    return [];
+  }
+}
+
+function mergeDailyCloseSnapshots_(sheetItems, dbItems) { // DAILY_CLOSE_READ_DB_FIRST_V1
+  const byKey = {};
+  (Array.isArray(sheetItems) ? sheetItems : []).forEach(item => {
+    const key = `${String(item && item.businessDate || '').trim()}|${String(item && item.site || '').trim()}`;
+    if (key !== '|') byKey[key] = item;
+  });
+  // PostgreSQL 확정본이 동일 업무일자·사업장 Sheet 미러보다 우선합니다.
+  (Array.isArray(dbItems) ? dbItems : []).forEach(item => {
+    const key = `${String(item && item.businessDate || '').trim()}|${String(item && item.site || '').trim()}`;
+    if (key !== '|') byKey[key] = item;
+  });
+  return Object.values(byKey);
 }
 
 function readDailyCloseSummaries_(businessDate, site) { // (업무일자 저장 마감요약 조회)
