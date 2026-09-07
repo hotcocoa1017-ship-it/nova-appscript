@@ -235,9 +235,20 @@ function updateRoomOperation(token, payload) { // (객실 청소배정·상태�
       });
     }
 
-    // 고장·객실확인은 사용자 전체 인덱스·일반 작업분기 로딩을 건너뛰고 핵심 저장만 수행한다. 잠금은 450ms 이내 확보하고 실패 시 Client가 자동 재시도한다.
-    // 동일 상태 재요청은 멱등 성공으로 처리해 일시적 재시도에도 중복이력을 만들지 않는다.
+    // 객실 조치상태도 PostgreSQL을 원본으로 사용합니다. // OPERATION_STATUS_SERVER_DB_FIRST_V1
+    // Realtime=Y이면 DB를 먼저 확정하고 Sheet/ADMIN_SETTING 이력은 DB 이벤트 미러가 후행 처리합니다.
+    // Realtime=N일 때만 기존 Sheet 고속경로를 유지합니다.
     if (action === 'UPDATE_ROOM_OPERATION_STATUS') {
+      if (typeof novaMobileRealtimeEnabled_ === 'function'
+          && novaMobileRealtimeEnabled_()
+          && typeof novaMobileRealtimeActionFetch_ === 'function') {
+        return changeIndicatorRoomOperationalStatusDbFirst_(token, user, safe, {
+          startedMs,
+          businessDate,
+          site,
+          roomNo
+        });
+      }
       return changeIndicatorRoomOperationalStatusFast_(user, safe, {
         startedMs,
         businessDate,
@@ -2994,5 +3005,73 @@ function updateIndicatorRoomOperationFlagsDbFirst_(token, user, payload, context
     notificationDeferred: false,
     deferredNotification: null,
     timing: { operationFlags: true, dbFirst: true, totalMs: Math.max(0, finishedMs - startedMs) }
+  };
+}
+
+function changeIndicatorRoomOperationalStatusDbFirst_(token, user, payload, context) { // OPERATION_STATUS_SERVER_DB_FIRST_V1
+  const safe = payload || {};
+  const info = context || {};
+  const businessDate = info.businessDate;
+  const site = String(info.site || '').trim();
+  const roomNo = String(info.roomNo || '').trim();
+  const startedMs = Number(info.startedMs || Date.now());
+  if (!site || !roomNo) throw new Error('객실 조치상태 저장에 사업장과 객실번호가 필요합니다.');
+
+  const rawOperationalStatus = String(safe.operationalStatus || '').trim();
+  const operationalStatus = normalizeIndicatorRoomOperationalStatus_(rawOperationalStatus);
+  if (rawOperationalStatus && !operationalStatus) throw new Error('사용할 수 없는 객실 조치상태입니다.');
+
+  const requestId = String(safe.requestId || '').trim() || `ROOM_OPERATION_STATUS:${Utilities.getUuid()}`;
+  const expectedState = safe.expectedState && typeof safe.expectedState === 'object' ? Object.assign({}, safe.expectedState) : {};
+  expectedState.operationalStatus = String(expectedState.operationalStatus || safe.currentOperationalStatus || '').trim();
+  const dbResult = novaMobileRealtimeActionFetch_(token, roomNo, {
+    businessDate,
+    site,
+    action: 'UPDATE_ROOM_OPERATION_STATUS',
+    operationalStatus,
+    requestId,
+    // Sheet 마지막변경버전과 PostgreSQL room version은 서로 다른 버전 도메인이므로 전달하지 않습니다.
+    expectedVersion: 0,
+    expectedState
+  });
+  if (!dbResult || !dbResult.ok) {
+    const error = new Error(String(dbResult && (dbResult.message || dbResult.code) || '객실 조치상태를 DB에 저장하지 못했습니다.'));
+    error.code = String(dbResult && dbResult.code || 'OPERATION_STATUS_DB_WRITE_FAILED');
+    throw error;
+  }
+
+  const dbRoom = dbResult.room && typeof dbResult.room === 'object' ? dbResult.room : {};
+  const version = Number(dbResult.version || dbRoom.version || 0);
+  const finishedMs = Date.now();
+  return {
+    ok: true,
+    dbFirst: true,
+    alreadySet: Boolean(dbResult.idempotent || dbResult.alreadySet),
+    version,
+    requestId: String(dbResult.requestId || requestId),
+    room: {
+      rowNumber: Number(safe.rowNumber || 0),
+      businessDate: String(dbRoom.businessDate || businessDate),
+      site: String(dbRoom.site || site),
+      roomNo: String(dbRoom.roomNo || roomNo),
+      roomStatus: String(dbRoom.roomStatus || expectedState.roomStatus || ''),
+      cleaningStatus: String(dbRoom.cleaningStatus || expectedState.cleaningStatus || ''),
+      cleaningType: String(dbRoom.cleaningType || expectedState.cleaningType || NOVA.CLEANING_TYPES.NORMAL),
+      assignmentType: String(dbRoom.assignmentType || expectedState.assignmentType || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO),
+      roommaidEmployeeNo: String(dbRoom.roommaidEmployeeNo || expectedState.roommaidEmployeeNo || ''),
+      secondaryRoommaidEmployeeNo: String(dbRoom.secondaryRoommaidEmployeeNo || expectedState.secondaryRoommaidEmployeeNo || ''),
+      qmEmployeeNo: String(dbRoom.qmEmployeeNo || expectedState.qmEmployeeNo || ''),
+      operationalStatus: String(dbRoom.operationalStatus ?? operationalStatus),
+      preassigned: Boolean(dbRoom.preassigned ?? expectedState.preassigned),
+      vip: Boolean(dbRoom.vip ?? expectedState.vip),
+      importantRoom: Boolean(dbRoom.importantRoom ?? expectedState.importantRoom),
+      updatedAt: String(dbRoom.updatedAt || ''),
+      version
+    },
+    mirrorPending: true,
+    notificationQueued: false,
+    notificationDeferred: false,
+    deferredNotification: null,
+    timing: { operationalStatus: true, dbFirst: true, totalMs: Math.max(0, finishedMs - startedMs) }
   };
 }
