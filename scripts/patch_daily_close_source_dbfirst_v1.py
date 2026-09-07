@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# Trigger revision 2: validation workflow exists before this push.
 # Patch daily close save path.
 p14 = Path('14_DailyClose.js')
 t14 = p14.read_text(encoding='utf-8')
