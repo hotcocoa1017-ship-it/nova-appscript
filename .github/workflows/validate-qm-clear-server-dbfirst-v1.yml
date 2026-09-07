@@ -1,0 +1,128 @@
+name: Validate QM Clear Server DB First V1
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Apply patch
+        run: python3 scripts/patch_qm_clear_server_dbfirst_v1.py
+
+      - name: Validate DB-first guard and RPC bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'QM_CLEAR_SERVER_DB_FIRST_V1' 06_Indicator.js
+          grep -q 'clearIndicatorQmDbFirst_' 06_Indicator.js
+          grep -q 'novaQmClearDbFirstEnabled_' RealtimeDbFirstServer.js
+          grep -q 'novaQmClearDbApply_' RealtimeDbFirstServer.js
+          grep -q 'NOVA_QM_CLEAR_DB_FIRST_ENABLED' RealtimeDbFirstServer.js
+          grep -q "'nova_qm_clear_v1'" RealtimeDbFirstServer.js
+          grep -q 'create or replace function public.nova_qm_clear_v1' db/qm_clear_db_first_v1.sql
+          grep -q 'QM_CLEAR_V1' db/qm_clear_db_first_v1.sql
+          grep -q 'for update' db/qm_clear_db_first_v1.sql
+          grep -q 'nova_request_dedup' db/qm_clear_db_first_v1.sql
+          grep -q 'revoke execute on function public.nova_qm_clear_v1' db/qm_clear_db_first_v1.sql
+          python3 - <<'PY'
+          from pathlib import Path
+          indicator = Path('06_Indicator.js').read_text(encoding='utf-8')
+          start = indicator.index('function clearIndicatorQmDbFirst_')
+          end = indicator.index('function assignIndicatorQmDbFirst_', start)
+          helper = indicator[start:end]
+          forbidden = ['getRequiredSheet_', 'updateRowByHeaders_', 'appendUnifiedHistory_', 'acquireWriteLock_', 'SpreadsheetApp']
+          for token in forbidden:
+              assert token not in helper, f'QM clear DB-first helper still touches Sheet: {token}'
+          assert 'novaQmClearDbApply_' in helper
+          assert "qmEmployeeNo: ''" in helper
+          assert 'mirrorPending: true' in helper
+          print('QM clear server helper is DB-only')
+          PY
+
+      - name: Validate DB event mirror semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "if (action === 'QM_CLEAR')" RealtimeDailySync.js
+          grep -q "status: 'QM_CLEAR'" RealtimeDailySync.js
+          grep -q "previousQmEmployeeNo: previousQmNo" RealtimeDailySync.js
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('RealtimeDailySync.js').read_text(encoding='utf-8')
+          start = text.index("if (action === 'QM_CLEAR')")
+          end = text.index("if (action === 'QM_ASSIGN')", start)
+          block = text[start:end]
+          assert "qmEmployeeNo: ''" in block
+          assert "status: 'QM_CLEAR'" in block
+          assert 'previousQmEmployeeNo: previousQmNo' in block
+          for forbidden in ['qmAssignmentNotifications.push', 'qmNotifications.push', 'assignmentNotifications.push']:
+              assert forbidden not in block, f'QM clear mirror must not create notification: {forbidden}'
+          sql = Path('db/qm_clear_db_first_v1.sql').read_text(encoding='utf-8')
+          assert "when v_before_status in ('QM_WAITING','QM_CHECKING','QM_COMPLETED','REWORK') then 'COMPLETED'" in sql
+          assert 'qm_employee_no=null' in sql
+          assert 'roommaid_employee_no' not in sql[sql.index('update public.nova_rooms_current'):sql.index('returning * into v_room')].replace("coalesce(v_room.roommaid_employee_no,'')", '')
+          print('QM clear preserves roommaid assignment and history ownership')
+          PY
+
+      - name: Validate client does not send QM_CLEAR to Cloud Run direct action
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('Client.html').read_text(encoding='utf-8')
+          start = text.index('const realtimeAction =')
+          end = text.index(';', start)
+          block = text[start:end]
+          assert "'QM_CLEAR'" not in block
+          print('QM_CLEAR remains on Apps Script secure RPC route, not Cloud Run direct action')
+          PY
+
+      - name: JavaScript syntax checks
+        run: |
+          node --check 06_Indicator.js
+          node --check RealtimeDbFirstServer.js
+          node --check RealtimeDailySync.js
+
+      - name: NOVA regression validation
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum 06_Indicator.js RealtimeDbFirstServer.js RealtimeDailySync.js | sha256sum | awk '{print $1}')"
+          python3 scripts/patch_qm_clear_server_dbfirst_v1.py
+          after="$(sha256sum 06_Indicator.js RealtimeDbFirstServer.js RealtimeDailySync.js | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Persist generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(06_Indicator.js RealtimeDbFirstServer.js RealtimeDailySync.js)
+          if git diff --quiet -- "${files[@]}"; then
+            echo 'QM clear DB-first sources already persisted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "${files[@]}"
+          git commit -m 'Persist QM clear server DB-first v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
