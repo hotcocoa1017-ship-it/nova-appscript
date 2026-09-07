@@ -100,13 +100,16 @@ if "['cleaning', 'qm', 'houseman', 'archive', 'indicator']" not in api:
     API.write_text(api, encoding='utf-8')
 
 center = CENTER.read_text(encoding='utf-8')
-if "indicator:['통합 인디케이터']" not in center:
-    center = replace_once(
-        center,
-        "archive:['Archive 이력']},labels=map[r]||[]",
-        "archive:['Archive 이력'],indicator:['통합 인디케이터']},labels=map[r]||[]",
-        'notification indicator route'
-    )
+indicator_route = "indicator:['통합 인디케이터']"
+if indicator_route not in center:
+    route_start = center.find('function route(x){')
+    map_start = center.find('map={', route_start if route_start >= 0 else 0)
+    map_end = center.find('},labels=', map_start if map_start >= 0 else 0)
+    if route_start < 0 or map_start < 0 or map_end < 0:
+        fail('notification indicator route: route map anchor unavailable after prior notification patches')
+    map_body = center[map_start + len('map={'):map_end]
+    separator = '' if not map_body.strip() else ','
+    center = center[:map_end] + separator + indicator_route + center[map_end:]
     CENTER.write_text(center, encoding='utf-8')
 
 # Ensure the patch source that creates the PWA route remains compatible with a fresh baseline too.
