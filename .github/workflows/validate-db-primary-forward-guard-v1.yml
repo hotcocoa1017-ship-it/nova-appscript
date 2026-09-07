@@ -1,0 +1,74 @@
+name: Validate DB Primary Forward Guard V1
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+    paths:
+      - scripts/patch_db_primary_live_and_forward_guard_v1.py
+      - .github/workflows/validate-db-primary-forward-guard-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply patch
+        run: python scripts/patch_db_primary_live_and_forward_guard_v1.py
+      - name: Validate markers and legacy guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'DAILY_CLOSE_LIVE_DB_FIRST_V1' 14_DailyClose.js
+          grep -q 'DB_PRIMARY_FORWARD_GUARD_V1' RealtimeDailySync.js
+          grep -q 'DB_PRIMARY_SHEET_FORWARD_DISABLED' RealtimeDailySync.js
+          grep -q 'DB_PRIMARY_JIT_SHEET_SYNC_DISABLED' RealtimeDailySync.js
+          grep -q "NOVA_SHEET_FORWARD_SYNC_ENABLED.*'N'" RealtimeDailySync.js
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('RealtimeDailySync.js').read_text(encoding='utf-8')
+          assert s.count('function novaRealtimeSheetForwardSyncEnabled_()') == 1
+          assert s.count("const safeOptions = options || {};") >= 1
+          d=Path('14_DailyClose.js').read_text(encoding='utf-8')
+          assert d.count('DAILY_CLOSE_LIVE_DB_FIRST_V1') == 1
+          print('marker validation passed')
+          PY
+      - name: JavaScript syntax checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check RealtimeDailySync.js
+          node --check 14_DailyClose.js
+      - name: NOVA regression validation
+        run: python scripts/validate_nova_release.py
+      - name: Patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- 14_DailyClose.js RealtimeDailySync.js > /tmp/first.diff
+          python scripts/patch_db_primary_live_and_forward_guard_v1.py
+          git diff -- 14_DailyClose.js RealtimeDailySync.js > /tmp/second.diff
+          diff -u /tmp/first.diff /tmp/second.diff
+      - name: Persist generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 14_DailyClose.js RealtimeDailySync.js; then
+            echo 'No generated source changes.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 14_DailyClose.js RealtimeDailySync.js
+          git commit -m 'Persist DB primary live and forward guard v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
