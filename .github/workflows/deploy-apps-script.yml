@@ -92,11 +92,17 @@ jobs:
       - name: Apply QM end-to-end acceleration
         run: python3 scripts/patch_qm_end_to_end_accel_20260906.py
 
+      - name: Apply QM clear DB-first and operation flags preservation
+        run: python3 scripts/patch_qm_clear_dbfirst_operation_flags_20260907.py
+
       - name: Validate QM direct DB-first start
         run: python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
 
       - name: Validate QM end-to-end acceleration
         run: python3 scripts/validate_qm_end_to_end_accel_20260906.py
+
+      - name: Validate QM clear DB-first and operation flags preservation
+        run: python3 scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
 
       - name: Validate full Realtime routing
         shell: bash
@@ -109,11 +115,15 @@ jobs:
           grep -q "function getMyTelegramConnectionStatus" TelegramSelfConnect.js
           grep -q "REALTIME_SUBSCRIPTION_RESILIENCE_V1" Client.html
           grep -q "await novaRealtime_.supabase.realtime.setAuth(auth.token)" Client.html
-          grep -q "'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'" Client.html
+          grep -q "'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_CLEAR', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'" Client.html
+          grep -q "QM_CLEAR_DB_FIRST_V2" Client.html
+          grep -q "QM_CLEAR_EVENT_MIRROR_V2" RealtimeDailySync.js
+          grep -q "ROOM_OPERATION_FLAGS_FORWARD_SYNC_V2" RealtimeDailySync.js
           grep -q "updateRoomOperationalStatusSafe" Client.html
           grep -q "action === 'ASSIGN_ROOMMAID'" RealtimeDailySync.js
           grep -q "action === 'UPDATE_ROOM_OPERATION_STATUS'" RealtimeDailySync.js
           grep -q "action === 'QM_ASSIGN'" RealtimeDailySync.js
+          grep -q "action === 'QM_CLEAR'" RealtimeDailySync.js
           grep -q "action === 'CHANGE_ROOM_STATUS'" RealtimeDailySync.js
           grep -q "REALTIME_ASSIGNMENT_BATCH_MERGE_V1" RealtimeDailySync.js
           grep -q "ROOMMAID_PERFORMANCE_ATTRIBUTION_V1" RealtimeDailySync.js
@@ -233,10 +243,12 @@ jobs:
           python3 scripts/patch_mobile_view_state_persistence_20260904.py
           python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
           python3 scripts/patch_qm_end_to_end_accel_20260906.py
+          python3 scripts/patch_qm_clear_dbfirst_operation_flags_20260907.py
           python3 scripts/validate_site_scope_indicator_close_v2.py
           python3 scripts/validate_order_site_context_v1.py
           python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
           python3 scripts/validate_qm_end_to_end_accel_20260906.py
+          python3 scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
           after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
           test "$before" = "$after"
 
