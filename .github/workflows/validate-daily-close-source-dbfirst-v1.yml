@@ -1,0 +1,50 @@
+name: Validate Daily Close Source DB First V1
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+    paths:
+      - scripts/patch_daily_close_source_dbfirst_v1.py
+      - DailyCloseSourceDbFirstServer.js
+      - .github/workflows/validate-daily-close-source-dbfirst-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Patch source
+        run: python scripts/patch_daily_close_source_dbfirst_v1.py
+      - name: Verify markers
+        run: |
+          grep -q "const dbSources = {}; // DAILY_CLOSE_SOURCE_DB_FIRST_V1" 14_DailyClose.js
+          grep -q "tryNovaDailyCloseDbSource_(token, businessDate, site)" 19_RoommaidCloseJournal.js
+          grep -q "function novaDailyCloseDbSource_" DailyCloseSourceDbFirstServer.js
+      - name: Verify idempotence
+        run: |
+          cp 14_DailyClose.js /tmp/14.before.js
+          cp 19_RoommaidCloseJournal.js /tmp/19.before.js
+          python scripts/patch_daily_close_source_dbfirst_v1.py
+          cmp /tmp/14.before.js 14_DailyClose.js
+          cmp /tmp/19.before.js 19_RoommaidCloseJournal.js
+      - name: Persist generated source
+        run: |
+          if git diff --quiet -- 14_DailyClose.js 19_RoommaidCloseJournal.js; then
+            echo "No generated change"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add 14_DailyClose.js 19_RoommaidCloseJournal.js
+          git commit -m "Persist daily close DB source v1 [skip ci]"
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
