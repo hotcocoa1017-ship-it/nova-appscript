@@ -1,4 +1,7 @@
 from pathlib import Path
+import hashlib
+import re
+import subprocess
 import sys
 
 errors = []
@@ -36,6 +39,44 @@ def order(text, left, right, label):
         errors.append(f'ORDER: {label} :: {left} -> {right}')
 
 
+def node_check(path, label):
+    p = Path(path)
+    if not p.exists():
+        errors.append(f'SYNTAX MISSING: {path}')
+        checks.append((label, False))
+        return
+    result = subprocess.run(['node', '--check', str(p)], text=True, capture_output=True, check=False)
+    ok = result.returncode == 0
+    checks.append((label, ok))
+    if not ok:
+        errors.append(f'SYNTAX: {label} :: {(result.stderr or result.stdout).strip()}')
+
+
+def node_check_html(path, label):
+    text = read(path)
+    blocks = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+    if not blocks:
+        errors.append(f'SYNTAX: {label} :: no script block')
+        checks.append((label, False))
+        return
+    result = subprocess.run(['node', '--check', '-'], input='\n'.join(blocks), text=True, capture_output=True, check=False)
+    ok = result.returncode == 0
+    checks.append((label, ok))
+    if not ok:
+        errors.append(f'SYNTAX: {label} :: {(result.stderr or result.stdout).strip()}')
+
+
+def digest(paths):
+    h = hashlib.sha256()
+    for path in paths:
+        p = Path(path)
+        h.update(path.encode('utf-8'))
+        h.update(b'\0')
+        h.update(p.read_bytes() if p.exists() else b'<missing>')
+        h.update(b'\0')
+    return h.hexdigest()
+
+
 bridge = read('DbFirstBridge.js')
 daily = read('DailyCloseDbFirstBridge.js')
 monthly_bridge = read('MonthlyDbFirstBridge.js')
@@ -48,6 +89,7 @@ perf = read('17_RoommaidPerformance.js')
 close = read('19_RoommaidCloseJournal.js')
 api = read('04_Api.js')
 center = read('NotificationCenterV1.html')
+canonical = read('scripts/fix_patch_site_scope_v2.py')
 workflow = read('.github/workflows/deploy-apps-script.yml')
 shift_sql = read('supabase/migrations/20260907_shift_zone_bootstrap_v3.sql')
 delay_sql = read('supabase/migrations/20260907_departure_delay_db_first_v3.sql')
@@ -74,7 +116,7 @@ require(client, "callServer('saveHousemanZoneAssignmentDbFirst'", 'zone DB-first
 require(client, "novaRealtimeRequestId_('SHIFT_SAVE_V3'", 'shift idempotent request id')
 require(client, 'ZONE_${action}_V3', 'zone idempotent request id')
 require(bridge, 'if (db && db.ok && db.initialized === true)', 'initialized DB authority')
-require(bridge, 'initialized=false', 'one-time bootstrap comment/guard')
+require(bridge, 'initialized=false', 'one-time bootstrap guard')
 require(bridge, "'nova_houseman_shift_zone_bootstrap_v3'", 'shift bootstrap RPC')
 require(bridge, 'mirrorShiftZoneDbStateToSheets_', 'shift compatibility mirror')
 order(bridge, "'nova_houseman_shift_save_v2'", 'mirrorShiftZoneDbStateToSheets_(token, dbState)', 'shift DB commit before Sheet mirror')
@@ -87,7 +129,7 @@ require(shift_sql, 'nova_houseman_roster_state', 'bootstrap initialization state
 # 3) Departure delay: DB cron + internal NOVA notification center; no Archive key/extra Edge coupling.
 require(delay, 'DEPARTURE_DELAY_NOTIFICATION_NATIVE_V4', 'departure notification-native app marker')
 require(delay, "reason: 'DB_CRON_NATIVE'", 'Apps Script auto trigger delegates to DB cron')
-require(delay, "nova_departure_delay_dashboard_v1", 'departure DB dashboard')
+require(delay, 'nova_departure_delay_dashboard_v1', 'departure DB dashboard')
 require(delay, 'processDepartureDelayAlertsLegacy_', 'legacy delay processor retained for compatibility only')
 forbid(delay, 'NOVA_DEPARTURE_DELAY_SYSTEM_EDGE_', 'obsolete departure Edge endpoint')
 forbid(delay, 'novaDepartureDelaySystemPost_', 'obsolete departure Edge bridge')
@@ -132,7 +174,6 @@ require(monthly, 'readMonthlyHistoryRowsDbFirst_', 'monthly DB-aware reader')
 require(client, "callServer('getMonthlyHistoryDbFirst'", 'monthly client DB read route')
 require(client, "callServer('getMonthlyHistoryExportDbFirst'", 'monthly Excel DB route')
 require(client, "callServer('writeMonthlyViewSheetDbFirst'", 'monthly Sheet export DB route')
-
 require(report_bridge, 'NOVA_ROOMMAID_REPORTING_DB_FIRST_V2', 'roommaid reporting bridge marker')
 require(report_bridge, "'nova_roommaid_close_history_v1'", 'roommaid close DB history RPC')
 require(report_bridge, 'db.nativeComplete !== true', 'roommaid close hybrid boundary')
@@ -140,7 +181,8 @@ require(perf, 'ROOMMAID_REPORTING_DB_FIRST_APP_V2', 'roommaid performance DB tok
 require(close, 'ROOMMAID_REPORTING_DB_FIRST_APP_V2', 'roommaid close DB route')
 require(close, 'readRoommaidCloseHistoryBundleDbFirst_', 'roommaid close DB history bridge')
 
-# 6) Canonical workflow must gate these paths before any production push.
+# 6) Canonical chain: existing workflow invokes one meta-patcher; meta-patcher must own all new patches and this gate.
+require(workflow, 'python3 scripts/fix_patch_site_scope_v2.py', 'canonical workflow invokes meta-patcher')
 for script in [
     'patch_shift_zone_dbfirst_v3_20260907.py',
     'patch_departure_delay_dbfirst_v3_20260907.py',
@@ -149,12 +191,38 @@ for script in [
     'patch_roommaid_reporting_dbfirst_v2_20260907.py',
     'validate_whole_db_transition_v1_20260908.py'
 ]:
-    require(workflow, script, f'canonical workflow {script}')
-for file in [
+    require(canonical, script, f'canonical meta-patcher {script}')
+
+# 7) Syntax gate for all newly introduced/touched runtime files.
+for path in [
     'DbFirstBridge.js', 'DailyCloseDbFirstBridge.js', 'MonthlyDbFirstBridge.js',
     'RoommaidReportingDbFirstBridge.js', '13_DepartureDelay.js', '04_Api.js'
 ]:
-    require(workflow, file, f'workflow tracks/syntax {file}')
+    node_check(path, f'JavaScript syntax {path}')
+node_check_html('NotificationCenterV1.html', 'Notification center script syntax')
+
+# 8) New patch subset must be idempotent even if the older workflow hash list does not yet include these files.
+new_tracked = [
+    'DbFirstBridge.js', 'DailyCloseDbFirstBridge.js', 'MonthlyDbFirstBridge.js', 'RoommaidReportingDbFirstBridge.js',
+    'Client.html', '11_Monthly.js', '13_DepartureDelay.js', '17_RoommaidPerformance.js', '19_RoommaidCloseJournal.js',
+    '04_Api.js', 'NotificationCenterV1.html', 'scripts/patch_pwa_web_push_v2.py'
+]
+before = digest(new_tracked)
+for script in [
+    'scripts/patch_shift_zone_dbfirst_v3_20260907.py',
+    'scripts/patch_departure_delay_dbfirst_v3_20260907.py',
+    'scripts/patch_daily_close_dbfirst_fallback_v1_20260908.py',
+    'scripts/patch_monthly_daily_dbfirst_v2_20260907.py',
+    'scripts/patch_roommaid_reporting_dbfirst_v2_20260907.py'
+]:
+    result = subprocess.run([sys.executable, script], text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        errors.append(f'IDEMPOTENCE PATCH FAILED: {script} :: {(result.stderr or result.stdout).strip()}')
+after = digest(new_tracked)
+idempotent = before == after
+checks.append(('whole-DB patch subset idempotent', idempotent))
+if not idempotent:
+    errors.append('IDEMPOTENCE: whole-DB patch subset changed generated sources on second run')
 
 if errors:
     print(f'Whole DB transition gate FAILED: {len(errors)} issue(s), {len(checks)} checks.', file=sys.stderr)
