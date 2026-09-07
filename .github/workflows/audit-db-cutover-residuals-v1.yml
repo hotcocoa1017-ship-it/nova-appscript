@@ -1,0 +1,33 @@
+name: Audit DB Cutover Residuals V1
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+    paths:
+      - scripts/audit_db_cutover_residuals_v1.py
+      - .github/workflows/audit-db-cutover-residuals-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run DB cutover residual audit
+        run: python scripts/audit_db_cutover_residuals_v1.py
+      - name: NOVA regression validation
+        run: python scripts/validate_nova_release.py
+      - name: Show review-primary findings
+        shell: bash
+        run: |
+          echo '--- REVIEW_PRIMARY ---'
+          awk '/^\[REVIEW_PRIMARY\]/{flag=1;next}/^\[ALLOW_MIRROR_FALLBACK\]/{flag=0}flag' db_cutover_residual_audit.txt
