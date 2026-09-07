@@ -34,8 +34,9 @@ forbid(CLIENT, "QM_CLEAR_DB_RESULT_UNKNOWN') return callServer", 'unsafe QM_CLEA
 # 2) DB event mirror must restore legacy Sheet/current-room/history compatibility.
 require(REALTIME, 'QM_CLEAR_EVENT_MIRROR_V2', 'QM_CLEAR event mirror marker')
 require(REALTIME, "if (action === 'QM_CLEAR')", 'QM_CLEAR event branch')
-require(REALTIME, "'QM사번': ''", 'QM_CLEAR Sheet QM clear')
-require(REALTIME, "'청소상태': 'COMPLETED'", 'QM_CLEAR Sheet status')
+require(REALTIME, 'roomUpdates.push({', 'QM_CLEAR ordered batch merge')
+require(REALTIME, "cleaningStatus: 'COMPLETED'", 'QM_CLEAR Sheet status')
+require(REALTIME, "qmEmployeeNo: ''", 'QM_CLEAR Sheet QM clear')
 require(REALTIME, "status: 'QM_CLEAR'", 'QM_CLEAR unified history')
 require(REALTIME, 'previousQmEmployeeNo', 'QM_CLEAR previous QM attribution')
 require(REALTIME, 'alreadyApplied.add(requestId)', 'Realtime request dedup')
