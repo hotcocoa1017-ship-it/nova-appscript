@@ -60,4 +60,5 @@ require(INDICATOR, "updates['QM사번'] = ''", 'legacy QM clear assignment behav
 require(INDICATOR, "updates['청소상태'] = 'COMPLETED'", 'legacy QM clear completion state')
 forbid(INDICATOR, "if (previousCleaningStatus !== 'QM_WAITING') throw new Error('QM 점검 시작 전 배정만 취소할 수 있습니다.');", 'obsolete QM_WAITING-only guard')
 
+# Release retry marker: Apps Script version history cleaned on 2026-09-07.
 print('QM_CLEAR DB-first + operation flags regression gate passed.')
