@@ -145,14 +145,18 @@ def patch_realtime():
         const mirroredPrimaryNo = String(eventDetail.primaryEmployeeNo || roommaidNo || '').trim();
         const mirroredSecondaryNo = String(eventDetail.secondaryEmployeeNo || secondaryRoommaidNo || '').trim();
 
-        const updates = {
-          'QM사번': '',
-          '청소상태': 'COMPLETED',
-          '수정일시': nowText_(),
-          '마지막변경버전': version
-        };
-        updateRowByHeaders_(sheet, rowInfo.rowNumber, updates);
-        Object.assign(rowInfo.data, updates);
+        // 같은 이벤트 배치에 QM_ASSIGN -> QM_CLEAR가 연속으로 있어도 마지막 이벤트가 이기도록
+        // 기존 roomUpdates 병합 큐를 사용합니다. 직접 Sheet 쓰기는 앞선 큐가 뒤에서 덮을 수 있습니다.
+        roomUpdates.push({
+          rowNumber: rowInfo.rowNumber,
+          cleaningStatus: 'COMPLETED',
+          qmEmployeeNo: '',
+          version,
+          updatedAt: nowText_()
+        });
+        rowInfo.data['QM사번'] = '';
+        rowInfo.data['청소상태'] = 'COMPLETED';
+        rowInfo.data['마지막변경버전'] = version;
 
         historyPayloads.push({
           recordType: NOVA.RECORD_TYPES.QM,
