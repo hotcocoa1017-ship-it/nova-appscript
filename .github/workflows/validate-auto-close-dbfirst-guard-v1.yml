@@ -1,0 +1,62 @@
+name: Validate Auto Close DB First Guard V1
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+    paths:
+      - scripts/patch_auto_close_dbfirst_guard_v1.py
+      - .github/workflows/validate-auto-close-dbfirst-guard-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply patch
+        run: python scripts/patch_auto_close_dbfirst_guard_v1.py
+      - name: Validate automatic close DB-first markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'AUTO_CLOSE_DB_FIRST_GUARD_V1' 15_AdminSettings.js
+          grep -q "dbToken: token" 15_AdminSettings.js
+          grep -q "DB_SYSTEM_ENDPOINT_REQUIRED" 15_AdminSettings.js
+          grep -q "const businessDate = businessDateText_()" 15_AdminSettings.js
+          grep -q "tryNovaDailyCloseDbSource_" 15_AdminSettings.js
+          grep -q "readDailyCloseDbSnapshots_" 15_AdminSettings.js
+      - name: JavaScript syntax check
+        run: node --check 15_AdminSettings.js
+      - name: NOVA regression validation
+        run: python scripts/validate_nova_release.py
+      - name: Patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- 15_AdminSettings.js > /tmp/first.diff
+          python scripts/patch_auto_close_dbfirst_guard_v1.py
+          git diff -- 15_AdminSettings.js > /tmp/second.diff
+          diff -u /tmp/first.diff /tmp/second.diff
+      - name: Persist generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 15_AdminSettings.js; then
+            echo 'No generated source changes.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 15_AdminSettings.js
+          git commit -m 'Persist automatic close DB-first guard v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
