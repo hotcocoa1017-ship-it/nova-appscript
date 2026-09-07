@@ -1,4 +1,4 @@
-name: NOVA Cloud Run Validate Only
+name: NOVA DB-First Validate Only
 
 on:
   push:
@@ -13,10 +13,10 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  cloudrun-validate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout Cloud Run branch
         uses: actions/checkout@v4
         with:
           ref: perf/room-actions-v16
@@ -51,7 +51,7 @@ jobs:
           grep -Fq 'important_room=excluded.important_room' cloudrun/index.js
           if grep -q 'CHECKOUT_LEGACY_ONLY' cloudrun/index.js; then exit 22; fi
 
-      - name: Validate patch idempotence
+      - name: Validate Cloud Run patch idempotence
         shell: bash
         run: |
           set -euo pipefail
@@ -62,7 +62,59 @@ jobs:
           after="$(sha256sum cloudrun/index.js | cut -d' ' -f1)"
           test "$before" = "$after"
 
-      - name: Confirm no deployment capability in this workflow
+  appsscript-metadata-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Apps Script main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Apply existing upload convergence/read-authority patch
+        run: python3 scripts/patch_room_upload_realtime_sync_20260907.py
+
+      - name: Apply previous-cycle metadata DB authority patch
+        run: python3 scripts/patch_room_previous_cycle_db_authority_20260907.py
+
+      - name: Validate previous-cycle metadata DB authority
+        run: python3 scripts/validate_room_previous_cycle_db_authority_20260907.py
+
+      - name: Validate existing upload convergence/read authority
+        run: python3 scripts/validate_room_upload_realtime_sync_20260907.py
+
+      - name: Validate full NOVA release regression
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate generated Apps Script JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in *.js; do
+            node --check "$file"
+          done
+
+      - name: Validate Apps Script patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before_client="$(sha256sum Client.html | cut -d' ' -f1)"
+          before_sync="$(sha256sum RealtimeDailySync.js | cut -d' ' -f1)"
+          python3 scripts/patch_room_upload_realtime_sync_20260907.py
+          python3 scripts/patch_room_previous_cycle_db_authority_20260907.py
+          after_client="$(sha256sum Client.html | cut -d' ' -f1)"
+          after_sync="$(sha256sum RealtimeDailySync.js | cut -d' ' -f1)"
+          test "$before_client" = "$after_client"
+          test "$before_sync" = "$after_sync"
+
+  no-deploy-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout validation workflow
+        uses: actions/checkout@v4
+        with:
+          ref: perf/room-actions-v16
+
+      - name: Confirm validation workflow cannot deploy
         shell: bash
         run: |
           set -euo pipefail
@@ -73,5 +125,5 @@ jobs:
           found = [item for item in forbidden if item in text]
           if found:
               raise SystemExit('Validate-only workflow contains deployment commands: ' + ', '.join(found))
-          print('Validation-only workflow: PASS. No deployment commands present.')
+          print('PASS: validation workflow has no deployment commands.')
           PY
