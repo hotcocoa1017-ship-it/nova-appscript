@@ -510,6 +510,10 @@ function roomDto(r) {
     secondaryRoommaidEmployeeNo: r.secondary_roommaid_employee_no || '',
     qmEmployeeNo: r.qm_employee_no || '',
     operationalStatus: r.operational_status || '',
+    // ROOM_OPERATION_FLAGS_SYNC_V1 · independent room operation flags
+    preassigned: r.preassigned === true,
+    vip: r.vip === true,
+    importantRoom: r.important_room === true,
     version: Number(r.version || 0),
     updatedAt: r.updated_at || ''
   };
@@ -828,7 +832,10 @@ function normalizeMigrationRoom_(raw) {
     qmEmployeeNo:
       cleanText_(raw?.qmEmployeeNo, 40),
     operationalStatus:
-      cleanText_(raw?.operationalStatus, 80)
+      cleanText_(raw?.operationalStatus, 80),
+    preassigned: raw?.preassigned === true,
+    vip: raw?.vip === true,
+    importantRoom: raw?.importantRoom === true
   };
 }
 
@@ -1076,7 +1083,7 @@ app.post('/v1/admin/bootstrap-import', async (req, res, next) => {
       const params = [];
 
       const values = group.map((r, i) => {
-        const n = i * 12;
+        const n = i * 15;
 
         params.push(
           r.businessDate,
@@ -1090,7 +1097,10 @@ app.post('/v1/admin/bootstrap-import', async (req, res, next) => {
           r.roommaidEmployeeNo || null,
           r.secondaryRoommaidEmployeeNo || null,
           r.qmEmployeeNo || null,
-          r.operationalStatus
+          r.operationalStatus,
+          r.preassigned,
+          r.vip,
+          r.importantRoom
         );
 
         return `(
@@ -1105,7 +1115,10 @@ app.post('/v1/admin/bootstrap-import', async (req, res, next) => {
           $${n + 9},
           $${n + 10},
           $${n + 11},
-          $${n + 12}
+          $${n + 12},
+          $${n + 13}::boolean,
+          $${n + 14}::boolean,
+          $${n + 15}::boolean
         )`;
       }).join(',');
 
@@ -1122,7 +1135,10 @@ app.post('/v1/admin/bootstrap-import', async (req, res, next) => {
           roommaid_employee_no,
           secondary_roommaid_employee_no,
           qm_employee_no,
-          operational_status
+          operational_status,
+          preassigned,
+          vip,
+          important_room
         )
         values ${values}
       `, params);
@@ -1339,7 +1355,7 @@ app.post(
         const values =
           group.map((r, i) => {
 
-            const n = i * 12;
+            const n = i * 15;
 
             params.push(
               r.businessDate,
@@ -1353,7 +1369,10 @@ app.post(
               r.roommaidEmployeeNo || null,
               r.secondaryRoommaidEmployeeNo || null,
               r.qmEmployeeNo || null,
-              r.operationalStatus
+              r.operationalStatus,
+              r.preassigned,
+              r.vip,
+              r.importantRoom
             );
 
             return `(
@@ -1368,7 +1387,10 @@ app.post(
               $${n + 9},
               $${n + 10},
               $${n + 11},
-              $${n + 12}
+              $${n + 12},
+              $${n + 13}::boolean,
+              $${n + 14}::boolean,
+              $${n + 15}::boolean
             )`;
 
           }).join(',');
@@ -1386,7 +1408,10 @@ app.post(
             roommaid_employee_no,
             secondary_roommaid_employee_no,
             qm_employee_no,
-            operational_status
+            operational_status,
+            preassigned,
+            vip,
+            important_room
           )
           values ${values}
 
@@ -1422,6 +1447,10 @@ app.post(
 
             operational_status=
               excluded.operational_status,
+
+            preassigned=excluded.preassigned,
+            vip=excluded.vip,
+            important_room=excluded.important_room,
 
             version=
               case
@@ -2797,12 +2826,15 @@ app.post(
 
         const updated = await client.query(
           `update public.nova_rooms_current
-              set version=version+1,
-                  updated_by=$4,
+              set preassigned=$4,
+                  vip=$5,
+                  important_room=$6,
+                  version=version+1,
+                  updated_by=$7,
                   updated_at=now()
             where business_date=$1 and site=$2 and room_no=$3
             returning *`,
-          [businessDate, site, roomNo, user.employee_no]
+          [businessDate, site, roomNo, preassigned, vip, importantRoom, user.employee_no]
         );
         const nextRoom = updated.rows[0];
         const detail = {
