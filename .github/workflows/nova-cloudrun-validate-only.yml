@@ -1,0 +1,73 @@
+name: NOVA Cloud Run Validate Only
+
+on:
+  push:
+    branches:
+      - perf/room-actions-v16
+    paths:
+      - 'cloudrun/**'
+      - '.github/workflows/nova-cloudrun-validate-only.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: perf/room-actions-v16
+
+      - name: Apply operation flags patch
+        run: python3 cloudrun/patch_operation_flags_sync_v1.py
+
+      - name: Apply previous-cycle metadata patch
+        run: python3 cloudrun/patch_room_previous_cycle_metadata_v1.py
+
+      - name: Apply CHECKED_OUT DB-first patch
+        run: python3 cloudrun/patch_checkout_dbfirst_v1.py
+
+      - name: Validate generated Cloud Run source
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check cloudrun/index.js
+          grep -q 'ROOM_OPERATION_FLAGS_SYNC_V1' cloudrun/index.js
+          grep -q 'ROOM_PREVIOUS_CYCLE_METADATA_SYNC_V1' cloudrun/index.js
+          grep -q 'CHECKOUT_DB_FIRST_V1' cloudrun/index.js
+          test "$(grep -Fc 'const n = i * 20;' cloudrun/index.js)" -eq 2
+          if grep -Fq 'const n = i * 15;' cloudrun/index.js; then exit 21; fi
+          grep -Fq "lastRoomStatus: r.last_room_status || ''" cloudrun/index.js
+          grep -Fq 'last_room_status=excluded.last_room_status' cloudrun/index.js
+          grep -Fq 'previous_room_status=excluded.previous_room_status' cloudrun/index.js
+          grep -Fq 'previous_cleaning_status=excluded.previous_cleaning_status' cloudrun/index.js
+          grep -Fq 'previous_roommaid_employee_no=excluded.previous_roommaid_employee_no' cloudrun/index.js
+          grep -Fq 'previous_secondary_roommaid_employee_no=excluded.previous_secondary_roommaid_employee_no' cloudrun/index.js
+          grep -Fq 'preassigned=excluded.preassigned' cloudrun/index.js
+          grep -Fq 'vip=excluded.vip' cloudrun/index.js
+          grep -Fq 'important_room=excluded.important_room' cloudrun/index.js
+          if grep -q 'CHECKOUT_LEGACY_ONLY' cloudrun/index.js; then exit 22; fi
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(sha256sum cloudrun/index.js | cut -d' ' -f1)"
+          python3 cloudrun/patch_operation_flags_sync_v1.py
+          python3 cloudrun/patch_room_previous_cycle_metadata_v1.py
+          python3 cloudrun/patch_checkout_dbfirst_v1.py
+          after="$(sha256sum cloudrun/index.js | cut -d' ' -f1)"
+          test "$before" = "$after"
+
+      - name: Confirm no deployment capability in this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -Eq 'gcloud run deploy|update-traffic|clasp push' .github/workflows/nova-cloudrun-validate-only.yml; then
+            echo '::error::Validate-only workflow contains a deployment command.'
+            exit 23
+          fi
+          echo 'Validation-only workflow: PASS. No deployment commands present.'
