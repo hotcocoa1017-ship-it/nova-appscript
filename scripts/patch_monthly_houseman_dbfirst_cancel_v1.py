@@ -160,7 +160,7 @@ def patch_monthly():
 
 
 def patch_client():
-    path = Path('AppJs.html')
+    path = Path('Client.html')
     text = path.read_text(encoding='utf-8')
     pattern = r"^[ \t]*await\s+cancelMonthlyHousemanRealtimeIfPresent_\(item\.recordId\);[ \t]*$"
     matches = list(re.finditer(pattern, text, flags=re.M))
