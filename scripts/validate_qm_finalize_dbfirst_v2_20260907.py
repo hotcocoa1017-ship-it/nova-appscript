@@ -56,7 +56,7 @@ require(SQL, 'grant execute on function public.nova_qm_inspection_finalize_v2(js
 require(SQL, 'grant execute on function public.nova_qm_inspection_finalize_v2(jsonb,text) to service_role;', 'service role grant')
 forbid(SQL, 'nova_qm_inspection_finalize_v1(', 'V1 delegation')
 
-# Client: stable request id -> direct V2 -> only explicit pre-mutation fallback -> post-commit Sheet detail mirror.
+# Client: stable request id -> preflight-normalized direct V2 -> only explicit pre-mutation fallback -> post-commit Sheet detail mirror.
 require(CLIENT, 'QM_FINALIZE_DB_FIRST_V2', 'client marker')
 require(CLIENT, 'function novaQmFinalizeStableRequestId_(active)', 'stable request helper')
 require(CLIENT, 'sessionStorage.getItem(key)', 'request-id retry persistence')
@@ -68,7 +68,7 @@ require(CLIENT, "error.code = 'QM_FINALIZE_DB_RESULT_UNKNOWN'", 'ambiguous resul
 require(CLIENT, "return { ok: false, legacyFallback: true, reason: 'RPC_MISSING' }", 'missing RPC fallback')
 require(CLIENT, "return { ok: false, legacyFallback: true, reason: 'AUTH_PREP_FAILED' }", 'pre-mutation auth fallback')
 require(CLIENT, 'const finalizeStable = novaQmFinalizeStableRequestId_(active);', 'final handler stable request')
-require(CLIENT, 'let realtime = await novaQmFinalizeDbFirstV2_(active, draft, passed, requestId);', 'V2 primary final commit')
+require(CLIENT, 'let realtime = await novaQmFinalizeDbFirstV2_(active, finalizePreflight, requestId);', 'V2 primary final commit')
 require(CLIENT, 'if (realtime?.legacyFallback === true) {', 'explicit legacy fallback guard')
 require(CLIENT, "realtime = await saveRoomActionRealtimeOrLegacy_('updateMobileRoomOperation'", 'legacy QM_COMPLETE fallback preserved')
 require(CLIENT, 'applyQmRealtimeRoomLocal_(active.roomNo, realtime.room);', 'local DB room application')
@@ -83,7 +83,7 @@ require_order(CLIENT, 'let realtime = await novaQmFinalizeDbFirstV2_', 'applyQmR
 require_order(CLIENT, 'applyQmRealtimeRoomLocal_(active.roomNo, realtime.room);', 'const persistDetail = async () => {', 'DB/local completion before Sheet detail mirror')
 require_regex(
     CLIENT,
-    r"let realtime = await novaQmFinalizeDbFirstV2_\(active, draft, passed, requestId\);\s*if \(realtime\?\.legacyFallback === true\) \{\s*realtime = await saveRoomActionRealtimeOrLegacy_",
+    r"let realtime = await novaQmFinalizeDbFirstV2_\(active, finalizePreflight, requestId\);\s*if \(realtime\?\.legacyFallback === true\) \{\s*realtime = await saveRoomActionRealtimeOrLegacy_",
     'generic QM_COMPLETE is reachable only through explicit legacyFallback'
 )
 
@@ -103,4 +103,4 @@ with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8', delete=Fal
     temp_js = handle.name
 subprocess.run(['node', '--check', temp_js], check=True)
 
-print('PASS: QM final submission V2 is staged as atomic DB-first, exact-version/idempotent, fail-closed after mutation may begin, legacy-compatible, and JavaScript syntax-safe.')
+print('PASS: QM final submission V2 is staged as atomic DB-first, exact-version/idempotent, fail-closed after mutation may begin, preflight-compatible, legacy-compatible, and JavaScript syntax-safe.')
