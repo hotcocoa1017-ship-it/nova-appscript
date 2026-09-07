@@ -10,6 +10,7 @@ on:
 permissions:
   contents: write
 
+# Trigger revision 2: workflow already exists before this push.
 jobs:
   patch-and-validate:
     runs-on: ubuntu-latest
