@@ -214,9 +214,14 @@
 
   const NOVA_REALTIME_ROOM_FIELDS_ = Object.freeze([
     // ROOM_STATUS_DB_READ_AUTHORITY_V1 · 객실상태를 포함한 현재 객실 운영필드는 DB 읽기를 원본으로 사용합니다.
+    // ROOM_PREVIOUS_CYCLE_DB_AUTHORITY_V1 · 마지막상태/이전 정비주기 flat 필드도 DB hydrate/reconcile이 소유합니다.
     // 기존 Sheet snapshot/version은 이력·fallback 용도로 유지하되 DB hydrate/reconcile 이후에는
-    // Sheet delta가 최신 DB 객실상태를 되돌리지 못하도록 동일 merge 경로에서 보호합니다.
-    'roomStatus', 'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo', 'operationalStatus', 'preassigned', 'vip', 'importantRoom', 'version', 'updatedAt'
+    // Sheet delta가 최신 DB 상태를 되돌리지 못하도록 동일 merge 경로에서 보호합니다.
+    'roomStatus', 'lastRoomStatus', 'previousRoomStatus', 'previousCleaningStatus', 'previousRoommaidEmployeeNo', 'previousSecondaryRoommaidEmployeeNo',
+    'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo', 'operationalStatus', 'preassigned', 'vip', 'importantRoom', 'version', 'updatedAt'
+  ]);
+  const NOVA_REALTIME_CLEANING_TARGET_ROOM_STATUSES_ = Object.freeze([
+    'CHECKED_OUT', 'CHECKED_OUT_RC', 'CHECKED_OUT_HU', 'STOCK', 'STOCK_RC', 'STOCK_HU'
   ]);
 
   function novaRealtimeIsEnabled_() {
@@ -430,6 +435,43 @@
       if (Object.prototype.hasOwnProperty.call(realtimeRoom, key)) merged[key] = realtimeRoom[key];
     });
     if (realtimeRoom.building) merged.building = realtimeRoom.building;
+
+    // ROOM_PREVIOUS_CYCLE_DB_AUTHORITY_V1 · DB flat metadata를 기존 UI 구조로 재조립합니다.
+    const hasDbPreviousCycleMetadata = [
+      'lastRoomStatus', 'previousRoomStatus', 'previousCleaningStatus',
+      'previousRoommaidEmployeeNo', 'previousSecondaryRoommaidEmployeeNo'
+    ].some(key => Object.prototype.hasOwnProperty.call(realtimeRoom, key));
+    if (hasDbPreviousCycleMetadata) {
+      const currentRoomStatus = String(merged.roomStatus || '').trim().toUpperCase();
+      const lastRoomStatus = String(merged.lastRoomStatus || '').trim().toUpperCase();
+      merged.displayBaseRoomStatus = NOVA_REALTIME_CLEANING_TARGET_ROOM_STATUSES_.includes(currentRoomStatus)
+        ? currentRoomStatus
+        : (currentRoomStatus === 'VACANT_CLEAN' && NOVA_REALTIME_CLEANING_TARGET_ROOM_STATUSES_.includes(lastRoomStatus) ? lastRoomStatus : '');
+
+      const previousRoomStatus = String(merged.previousRoomStatus || '').trim().toUpperCase();
+      if (previousRoomStatus) {
+        const primaryNo = String(merged.previousRoommaidEmployeeNo || '').trim();
+        const secondaryNo = String(merged.previousSecondaryRoommaidEmployeeNo || '').trim();
+        const legacyPreviousCycle = legacyRoom && legacyRoom.previousCycle ? legacyRoom.previousCycle : {};
+        const roommaids = state.indicator.data?.staff?.roommaids || [];
+        const primaryStaff = roommaids.find(user => String(user.employeeNo || '').trim() === primaryNo);
+        const secondaryStaff = roommaids.find(user => String(user.employeeNo || '').trim() === secondaryNo);
+        merged.previousCycle = {
+          roomStatus: previousRoomStatus,
+          cleaningStatus: String(merged.previousCleaningStatus || '').trim().toUpperCase(),
+          roommaidEmployeeNo: primaryNo,
+          roommaidName: primaryNo
+            ? String(primaryStaff?.name || (String(legacyPreviousCycle.roommaidEmployeeNo || '').trim() === primaryNo ? legacyPreviousCycle.roommaidName || '' : ''))
+            : '',
+          secondaryRoommaidEmployeeNo: secondaryNo,
+          secondaryRoommaidName: secondaryNo
+            ? String(secondaryStaff?.name || (String(legacyPreviousCycle.secondaryRoommaidEmployeeNo || '').trim() === secondaryNo ? legacyPreviousCycle.secondaryRoommaidName || '' : ''))
+            : ''
+        };
+      } else {
+        merged.previousCycle = null;
+      }
+    }
 
     // ROOM_STATE_SYNC_HARDENING_V1 · 청소시작/완료 optimistic 상태는 DB가 확정하거나 더 앞선 상태로 진행할 때까지 보호합니다.
     const pendingCleaningAction = String(legacyRoom?.__pendingAction || '').trim().toUpperCase();
@@ -2369,7 +2411,7 @@
     if (state.shifts.loading && !options.force) return;
     state.shifts.loading = true;
     try {
-      const result = await callServer('getShiftManagementData', state.token, {
+      const result = await callServer('getShiftManagementDataDbFirst', state.token, { // SHIFT_ZONE_DB_FIRST_CLIENT_V3
         businessDate: state.shifts.businessDate || state.bootstrap.app.businessDate,
         site: state.shifts.site
       });
@@ -2525,12 +2567,13 @@
     button.disabled = true;
     button.textContent = '처리 중…';
     try {
-      const result = await callServer('saveHousemanZoneAssignment', state.token, {
+      const result = await callServer('saveHousemanZoneAssignmentDbFirst', state.token, { // SHIFT_ZONE_DB_FIRST_CLIENT_V3
         businessDate: state.shifts.businessDate,
         site: state.shifts.site,
         employeeNo,
         buildings: state.shifts.zoneDraft.buildings,
-        action
+        action,
+        requestId: novaRealtimeRequestId_(`ZONE_${action}_V3`, employeeNo)
       });
       if (!result?.ok) throw new Error(result?.message || '담당동을 처리하지 못했습니다.');
       showToast(result.message || '담당동을 처리했습니다.');
@@ -2555,10 +2598,11 @@
       ['A', 'B', 'C'].forEach(code => {
         assignments[code] = Array.from(new Set((state.shifts.draft[code] || []).filter(Boolean)));
       });
-      const result = await callServer('saveShiftAssignments', state.token, {
+      const result = await callServer('saveShiftAssignmentsDbFirst', state.token, { // SHIFT_ZONE_DB_FIRST_CLIENT_V3
         businessDate: state.shifts.businessDate,
         site: state.shifts.site,
-        assignments
+        assignments,
+        requestId: novaRealtimeRequestId_('SHIFT_SAVE_V3', state.shifts.site || '')
       });
       if (!result?.ok) throw new Error(result?.message || '근무조를 저장하지 못했습니다.');
       showToast(result.message || '근무조를 저장했습니다.');
@@ -4264,7 +4308,7 @@
     const periodLabel = filters.period === 'DAILY' ? '일별' : '월별';
     if (!preserveTable && $('monthlyTableBody')) $('monthlyTableBody').innerHTML = `<tr><td colspan="11" class="table-empty">${periodLabel} 데이터를 불러오는 중입니다.</td></tr>`;
     try {
-      const result = await callServer('getMonthlyHistory', state.token, filters);
+      const result = await callServer('getMonthlyHistoryDbFirst', state.token, filters); // MONTHLY_DAILY_DB_FIRST_CLIENT_V2
       if (!result?.ok) throw new Error(result?.message || '조회 데이터를 불러오지 못했습니다.');
       state.monthly.loaded = true;
       state.monthly.data = result;
@@ -4433,7 +4477,11 @@
     button.disabled = true;
     button.textContent = '마감 저장 중…';
     try {
-      const result = await callServer('saveDailyCloseSnapshot', state.token, { businessDate, site });
+      const result = await callServer('saveDailyCloseSnapshotDbFirst', state.token, {
+        businessDate,
+        site,
+        requestId: novaRealtimeRequestId_('DAILY_CLOSE_V3', site || businessDate)
+      }); // MONTHLY_DAILY_DB_FIRST_CLIENT_V2
       if (!result?.ok) throw new Error(result?.message || '마감자료를 저장하지 못했습니다.');
       showToast(result.message || '마감자료를 저장했습니다.');
       await loadMonthlyHistory({ page: 1 });
@@ -4853,7 +4901,7 @@
     button.disabled = true;
     button.textContent = '파일 생성 중…';
     try {
-      const result = await callServer('getMonthlyHistoryExport', state.token, collectMonthlyFilters_({ page: 1 }));
+      const result = await callServer('getMonthlyHistoryExportDbFirst', state.token, collectMonthlyFilters_({ page: 1 })); // MONTHLY_DAILY_DB_FIRST_CLIENT_V2
       if (!result?.ok) throw new Error(result?.message || '엑셀 데이터를 만들지 못했습니다.');
       const xml = buildExcelXml_(result.headers || [], result.rows || []);
       downloadTextFile_(result.filename || 'NOVA_통합조회.xls', xml, 'application/vnd.ms-excel;charset=utf-8');
@@ -4871,7 +4919,7 @@
     button.disabled = true;
     button.textContent = '반영 중…';
     try {
-      const result = await callServer('writeMonthlyViewSheet', state.token, collectMonthlyFilters_({ page: 1 }));
+      const result = await callServer('writeMonthlyViewSheetDbFirst', state.token, collectMonthlyFilters_({ page: 1 })); // MONTHLY_DAILY_DB_FIRST_CLIENT_V2
       if (!result?.ok) throw new Error(result?.message || '월별조회 시트에 반영하지 못했습니다.');
       showToast(result.message || '월별조회 시트에 반영했습니다.');
     } catch (error) {
@@ -7162,7 +7210,10 @@
   function roomVisualSignature_(room) { // (서버확정 후 재렌더 필요 여부 비교)
     if (!room) return '';
     return JSON.stringify([
-      room.roomStatus || '', room.displayBaseRoomStatus || '', room.cleaningStatus || '', room.cleaningType || '', room.assignmentType || '',
+      room.roomStatus || '', room.displayBaseRoomStatus || '',
+      room.previousCycle?.roomStatus || '', room.previousCycle?.cleaningStatus || '',
+      room.previousCycle?.roommaidEmployeeNo || '', room.previousCycle?.secondaryRoommaidEmployeeNo || '',
+      room.cleaningStatus || '', room.cleaningType || '', room.assignmentType || '',
       room.roommaidEmployeeNo || '', room.roommaidName || '', room.secondaryRoommaidEmployeeNo || '',
       room.secondaryRoommaidName || '', room.qmEmployeeNo || '', room.qmName || '', normalizeIndicatorRoomOperationalStatus_(room.operationalStatus), Number(room.pendingOrderCount || 0)
     ]);
@@ -7577,6 +7628,177 @@
     }
   }
 
+  // ROOM_UPLOAD_DB_FIRST_APP_V4
+  // DB snapshot -> 기존 Apps Script 업무규칙 계산 -> PostgreSQL 원자 commit -> 최신 DB값 Sheet mirror.
+  async function novaRoomUploadRpcV4_(functionName, body, attempt = 0) {
+    const auth = await novaQmDraftAuthBundle_();
+    if (!auth?.token || !auth?.supabaseUrl || !auth?.publishableKey) {
+      const error = new Error('객실업로드 DB 인증정보를 준비하지 못했습니다.');
+      error.code = 'ROOM_UPLOAD_DB_AUTH_UNAVAILABLE';
+      throw error;
+    }
+    const endpoint = `${String(auth.supabaseUrl || '').replace(/\/+$/, '')}/rest/v1/rpc/${functionName}`;
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${String(auth.token || '')}`,
+          'apikey': String(auth.publishableKey || '')
+        },
+        body: JSON.stringify(body || {})
+      });
+    } catch (networkError) {
+      if (attempt < 2) {
+        await novaRealtimeSleep_([180, 450, 900][attempt] || 900);
+        return novaRoomUploadRpcV4_(functionName, body, attempt + 1);
+      }
+      const error = new Error('객실업로드 DB 처리 결과를 확인하지 못했습니다. 현재 상태를 다시 확인해 주세요.');
+      error.code = 'ROOM_UPLOAD_DB_RESULT_UNKNOWN';
+      throw error;
+    }
+
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data?.ok) return data;
+
+    const error = new Error(data?.message || data?.details || data?.hint || `객실업로드 DB 오류 (${response.status})`);
+    error.status = Number(response.status || 0);
+    error.code = String(data?.code || '').trim();
+    error.data = data || null;
+    const code = error.code.toUpperCase();
+
+    if (response.status === 401 && attempt < 2) {
+      novaRealtime_.qmDraftAuthBundle = null;
+      await novaRealtimeSleep_(180);
+      return novaRoomUploadRpcV4_(functionName, body, attempt + 1);
+    }
+    if ((response.status === 429 || response.status >= 500) && attempt < 2) {
+      await novaRealtimeSleep_([180, 450, 900][attempt] || 900);
+      return novaRoomUploadRpcV4_(functionName, body, attempt + 1);
+    }
+    error.missingRpc = response.status === 404 || ['PGRST202', 'PGRST205'].includes(code);
+    throw error;
+  }
+
+  function novaRoomUploadStableRequestId_(previewId, resetMode) {
+    const key = `nova-room-upload-v4:${String(previewId || '')}:${resetMode ? 'reset' : 'merge'}`;
+    try {
+      const existing = String(sessionStorage.getItem(key) || '').trim();
+      if (existing) return { key, requestId: existing };
+    } catch (ignore) {}
+    const requestId = novaRealtimeRequestId_('ROOM_UPLOAD_V4', previewId || 'UPLOAD');
+    try { sessionStorage.setItem(key, requestId); } catch (ignore) {}
+    return { key, requestId };
+  }
+
+  async function novaRoomUploadStateV3_(businessDate, site) {
+    return novaRoomUploadRpcV4_('nova_room_upload_state_v3', {
+      p_business_date: String(businessDate || ''),
+      p_site: String(site || '')
+    });
+  }
+
+  async function novaRoomUploadDbFirstV4_(previewId, resetMode) {
+    const businessDate = String(state.indicator.businessDate || state.bootstrap?.app?.businessDate || '').trim();
+    const site = String(state.indicator.site || '').trim();
+    if (!businessDate || !site) {
+      return callServer('applyRoomStatusUpload', state.token, previewId, { resetExisting: resetMode });
+    }
+
+    let beforeState;
+    try {
+      beforeState = await novaRoomUploadStateV3_(businessDate, site);
+    } catch (error) {
+      if (error?.missingRpc || error?.code === 'ROOM_UPLOAD_DB_AUTH_UNAVAILABLE') {
+        console.warn('[NOVA Upload] DB-first state unavailable before mutation · legacy fallback:', error?.message || error);
+        return callServer('applyRoomStatusUpload', state.token, previewId, { resetExisting: resetMode });
+      }
+      throw error;
+    }
+
+    const prepared = await callServer('prepareRoomStatusUploadDbFirst', state.token, previewId, {
+      resetExisting: resetMode,
+      dbCurrentRows: Array.isArray(beforeState.currentRows) ? beforeState.currentRows : [],
+      expectedVersions: beforeState.expectedVersions || {}
+    });
+    if (!prepared?.ok || !prepared?.dbFirstPrepared || !prepared?.planId) {
+      throw new Error(prepared?.message || '객실업로드 DB-first 계산을 준비하지 못했습니다.');
+    }
+
+    const stable = novaRoomUploadStableRequestId_(previewId, resetMode);
+    let committed;
+    try {
+      committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v4', {
+        p_business_date: prepared.businessDate,
+        p_site: prepared.site,
+        p_rooms: prepared.rooms,
+        p_upload: prepared.upload,
+        p_expected_versions: prepared.expectedVersions,
+        p_version: 0,
+        p_request_id: stable.requestId
+      });
+    } catch (error) {
+      if (error?.missingRpc) {
+        console.warn('[NOVA Upload] V4 RPC missing before DB mutation · legacy fallback:', error?.message || error);
+        try { sessionStorage.removeItem(stable.key); } catch (ignore) {}
+        return callServer('applyRoomStatusUpload', state.token, previewId, { resetExisting: resetMode });
+      }
+      // 네트워크 결과불명/버전충돌/권한오류에서는 Sheet-first를 병행하지 않습니다.
+      throw error;
+    }
+    if (!committed?.ok || committed?.dbFirst !== true) {
+      throw new Error(committed?.message || '객실업로드 DB 확정 결과를 확인하지 못했습니다.');
+    }
+
+    let afterState = null;
+    let afterError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        afterState = await novaRoomUploadStateV3_(prepared.businessDate, prepared.site);
+        if (afterState?.ok && Number(afterState.version || 0) >= Number(committed.version || 0)) break;
+        afterState = null;
+      } catch (error) {
+        afterError = error;
+      }
+      await novaRealtimeSleep_([180, 450, 900][attempt] || 900);
+    }
+    if (!afterState?.ok) {
+      const error = new Error(afterError?.message || 'DB 반영은 완료되었으나 최신 객실값을 다시 읽지 못했습니다. 같은 업로드 버튼을 다시 누르면 동일 요청으로 복구를 시도합니다.');
+      error.code = 'ROOM_UPLOAD_DB_COMMITTED_MIRROR_PENDING';
+      throw error;
+    }
+
+    let mirrored = null;
+    let mirrorError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        mirrored = await callServer('mirrorRoomStatusUploadDbFirst', state.token, previewId, prepared.planId, {
+          dbCurrentRows: Array.isArray(afterState.currentRows) ? afterState.currentRows : [],
+          version: Number(afterState.version || committed.version || 0),
+          requestId: stable.requestId
+        });
+        if (mirrored?.ok) break;
+        mirrorError = new Error(mirrored?.message || 'Sheet 미러 실패');
+      } catch (error) {
+        mirrorError = error;
+      }
+      await novaRealtimeSleep_([220, 650, 1200][attempt] || 1200);
+    }
+    if (!mirrored?.ok) {
+      const error = new Error(mirrorError?.message || 'DB 반영은 완료되었으나 기존 Sheet 이력 동기화가 지연되었습니다. 같은 업로드 버튼을 다시 눌러 복구해 주세요.');
+      error.code = 'ROOM_UPLOAD_DB_COMMITTED_MIRROR_PENDING';
+      throw error;
+    }
+
+    try { sessionStorage.removeItem(stable.key); } catch (ignore) {}
+    return Object.assign({}, mirrored, {
+      dbFirst: true,
+      requestId: stable.requestId,
+      dbCommittedVersion: Number(committed.version || 0)
+    });
+  }
+
   async function applyRoomUploadPreview_(resetExisting) { // (검증된 객실현황 유지 반영·초기화 후 교체)
     const clickedAt = performance.now();
     const previewId = state.indicator.uploadPreviewId;
@@ -7605,13 +7827,11 @@
         : '객실현황 반영 중…';
     }
     try {
-      const result = await callServer('applyRoomStatusUpload', state.token, previewId, {
-        resetExisting: resetMode
-      });
+      const result = await novaRoomUploadDbFirstV4_(previewId, resetMode);
       if (!result?.ok) throw new Error(result?.message || '객실현황 반영에 실패했습니다.');
-      // ROOM_UPLOAD_REALTIME_CONVERGENCE_V1 · Sheet 잠금이 해제된 뒤 별도 요청으로 DB를 즉시 수렴시킵니다.
-      // 서버가 먼저 pending DB 이벤트를 미러하므로 라이브 배정/QM 상태를 stale 업로드값으로 덮지 않습니다.
-      if (novaRealtimeIsEnabled_()) {
+      // ROOM_UPLOAD_REALTIME_CONVERGENCE_V1 · legacy Sheet-first에만 후행 DB 수렴이 필요합니다.
+      // V4는 DB가 이미 원본이므로 다시 Sheet→DB forward sync를 실행하지 않습니다.
+      if (novaRealtimeIsEnabled_() && result?.dbFirst !== true) {
         void callServer('syncRoomStatusUploadRealtimeNow', state.token, result.businessDate, result.site)
           .then(syncResult => {
             if (syncResult?.deferred) {
@@ -8674,6 +8894,107 @@
   }
 
 
+  // QM_FINALIZE_DB_FIRST_V2 · 객실 최종상태 + 점검결과 + draft 완료를 PostgreSQL 단일 트랜잭션으로 확정
+  function novaQmFinalizeStableRequestId_(active) {
+    const date = String(state.mobile.businessDate || '').trim();
+    const site = String(state.mobile.site || '').trim();
+    const roomNo = String(active?.roomNo || '').trim();
+    const draftId = String(active?.draft?.draftId || '').trim() || 'NO_DRAFT';
+    const key = `nova-qm-final-v2:${date}:${site}:${roomNo}:${draftId}`;
+    try {
+      const existing = String(sessionStorage.getItem(key) || '').trim();
+      if (existing) return { key, requestId: existing };
+    } catch (ignore) {}
+    const requestId = novaRealtimeRequestId_('QM_FINALIZE_V2', roomNo);
+    try { sessionStorage.setItem(key, requestId); } catch (ignore) {}
+    return { key, requestId };
+  }
+
+  async function novaQmFinalizeDbFirstV2_(active, preflight, requestId) { // QM_FINALIZE_PREFLIGHT_V2
+    let auth;
+    try {
+      auth = await novaQmDraftAuthBundle_();
+    } catch (error) {
+      // 아직 DB 요청을 전송하지 않았으므로 기존 QM_COMPLETE 경로 fallback이 안전합니다.
+      console.warn('[NOVA QM] 최종제출 DB 인증 준비 실패 · 기존 경로 사용:', error?.message || error);
+      return { ok: false, legacyFallback: true, reason: 'AUTH_PREP_FAILED' };
+    }
+    if (!auth?.token || !auth?.supabaseUrl || !auth?.publishableKey) {
+      return { ok: false, legacyFallback: true, reason: 'AUTH_BUNDLE_MISSING' };
+    }
+
+    const room = (state.mobile.data?.rooms || []).find(item => String(item.roomNo || '') === String(active?.roomNo || ''));
+    const draftId = String(active?.draft?.draftId || '').trim();
+    const inspectionId = draftId || `QMINS-${String(requestId || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 80)}`;
+    const body = {
+      p_payload: {
+        businessDate: String(state.mobile.businessDate || ''),
+        site: String(state.mobile.site || ''),
+        roomNo: String(active?.roomNo || ''),
+        inspectionId,
+        draftId,
+        checklistRevision: String(preflight?.revision || active?.checklist?.revision || ''),
+        answers: Array.isArray(preflight?.answers) ? preflight.answers : [],
+        defects: Array.isArray(preflight?.defects) ? preflight.defects : [],
+        resultStatus: String(preflight?.resultStatus || '').trim().toUpperCase(),
+        startedAt: String(preflight?.startedAt || active?.draft?.startedAt || ''),
+        expectedVersion: Number(active?.roomVersion || room?.version || 0)
+      },
+      p_request_id: String(requestId || '')
+    };
+
+    const send = async attempt => {
+      const endpoint = `${String(auth.supabaseUrl || '').replace(/\/+$/, '')}/rest/v1/rpc/nova_qm_inspection_finalize_v2`;
+      let response;
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${String(auth.token || '')}`,
+            'apikey': String(auth.publishableKey || '')
+          },
+          body: JSON.stringify(body)
+        });
+      } catch (networkError) {
+        if (attempt < 2) {
+          await novaRealtimeSleep_([180, 480, 950][attempt] || 950);
+          return send(attempt + 1);
+        }
+        const error = new Error('QM 최종제출 DB 처리 결과를 확인하지 못했습니다. 화면을 새로고침하여 객실상태를 확인해 주세요.');
+        error.code = 'QM_FINALIZE_DB_RESULT_UNKNOWN';
+        throw error;
+      }
+
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data?.ok) return data;
+      const code = String(data?.code || '').trim().toUpperCase();
+
+      if (response.status === 401 && attempt < 2) {
+        novaRealtime_.qmDraftAuthBundle = null;
+        auth = await novaQmDraftAuthBundle_();
+        await novaRealtimeSleep_(140);
+        return send(attempt + 1);
+      }
+      if ((response.status === 429 || response.status >= 500) && attempt < 2) {
+        await novaRealtimeSleep_([180, 480, 950][attempt] || 950);
+        return send(attempt + 1);
+      }
+      if (response.status === 404 || ['PGRST202', 'PGRST205'].includes(code)) {
+        // RPC 미배포는 DB mutation이 시작되지 않은 것이 명확하므로 기존 경로만 이 경우 허용합니다.
+        return { ok: false, legacyFallback: true, reason: 'RPC_MISSING' };
+      }
+
+      const error = new Error(data?.message || data?.details || data?.hint || `QM 최종제출 DB 오류 (${response.status})`);
+      error.status = Number(response.status || 0);
+      error.code = code;
+      error.data = data || null;
+      throw error;
+    };
+
+    return send(0);
+  }
+
   async function submitQmInspectionDetailWithBusyRetry_(payload) { // LIVE_OPERATION_RETRY_RESILIENCE_V1 · QM 상세이력 BUSY_RETRY 전용 재시도
     const delays = [0, 500, 1300, 2600];
     let lastResult = null;
@@ -8711,7 +9032,8 @@
     const passed = !items.some(item => answerMap[item.code]?.result === 'FAIL') && !(draft.defects || []).length;
     const realtimeAction = 'QM_COMPLETE'; // QM_REWORK_OPERATIONAL_STATUS_V1 · FAIL은 품질자료만 기록
     const targetStatus = 'QM_COMPLETED';
-    const requestId = novaRealtimeRequestId_(realtimeAction, active.roomNo);
+    const finalizeStable = novaQmFinalizeStableRequestId_(active);
+    const requestId = finalizeStable.requestId;
     const room = (state.mobile.data?.rooms || []).find(item => String(item.roomNo || '') === String(active.roomNo || ''));
 
     try {
@@ -8724,6 +9046,7 @@
           answers: draft.answers, defects: draft.defects, expectedVersion: Number(active.roomVersion || 0)
         });
         if (!result?.ok) throw new Error(result?.message || '점검결과를 저장하지 못했습니다.');
+        try { sessionStorage.removeItem(finalizeStable.key); } catch (ignore) {}
         state.qmChecklist.activeInspection = null;
         closeModal();
         showToast(result.message || '점검결과를 저장했습니다.');
@@ -8731,18 +9054,37 @@
         return;
       }
 
-      const realtime = await saveRoomActionRealtimeOrLegacy_('updateMobileRoomOperation', {
+      const finalizePreflight = await callServer('prepareQmInspectionFinalizeDbFirst', state.token, {
         businessDate: state.mobile.businessDate,
         site: state.mobile.site,
         roomNo: active.roomNo,
-        action: realtimeAction,
-        requestId,
-        expectedVersion: Number(active.roomVersion || room?.version || 0),
-        expectedState: {
-          cleaningStatus: String(room?.cleaningStatus || 'QM_CHECKING'),
-          qmEmployeeNo: String(room?.qmEmployeeNo || state.bootstrap?.user?.employeeNo || '')
-        }
+        revision: active.checklist.revision,
+        answers: draft.answers,
+        defects: draft.defects,
+        startedAt: String(active?.draft?.startedAt || '')
       });
+      if (!finalizePreflight?.ok || finalizePreflight?.preflight !== true) {
+        throw new Error(finalizePreflight?.message || 'QM 최종제출 사전검증에 실패했습니다.');
+      }
+      // DB와 후행 Sheet 이력이 동일한 정규화 자료를 사용하도록 preflight 결과로 맞춥니다.
+      draft.answers = Array.isArray(finalizePreflight.answers) ? finalizePreflight.answers : [];
+      draft.defects = Array.isArray(finalizePreflight.defects) ? finalizePreflight.defects : [];
+      let realtime = await novaQmFinalizeDbFirstV2_(active, finalizePreflight, requestId);
+      if (realtime?.legacyFallback === true) {
+        realtime = await saveRoomActionRealtimeOrLegacy_('updateMobileRoomOperation', {
+          businessDate: state.mobile.businessDate,
+          site: state.mobile.site,
+          roomNo: active.roomNo,
+          action: realtimeAction,
+          requestId,
+          expectedVersion: Number(active.roomVersion || room?.version || 0),
+          expectedState: {
+            cleaningStatus: String(room?.cleaningStatus || 'QM_CHECKING'),
+            qmEmployeeNo: String(room?.qmEmployeeNo || state.bootstrap?.user?.employeeNo || '')
+          }
+        });
+      }
+      if (!realtime?.ok) throw new Error(realtime?.message || 'QM 최종제출 DB 확정에 실패했습니다.');
       applyQmRealtimeRoomLocal_(active.roomNo, realtime.room);
       active.roomVersion = Number(realtime.version || realtime.room?.version || active.roomVersion || 0);
       state.qmChecklist.activeInspection = null;
@@ -8771,6 +9113,7 @@
       };
       void persistDetail().then(result => {
         if (!result?.ok) throw new Error(result?.message || 'QM 상세이력 저장 실패');
+        try { sessionStorage.removeItem(finalizeStable.key); } catch (ignore) {}
         loadMobileSnapshot({ silent: true, force: true }).catch(error => console.warn('[NOVA QM] 상세이력 저장 후 갱신 실패:', error));
       }).catch(error => {
         console.error('[NOVA QM] 상태 반영 후 상세이력 저장 실패:', error);

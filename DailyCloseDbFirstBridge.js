@@ -142,7 +142,9 @@ function saveDailyCloseSnapshotDbFirst(token, payload) { // (DB source -> 기존
     if (!prepared.length) throw new Error(`${businessDate} DB 현재객실현황에 마감할 사업장이 없습니다.`);
 
     const results = [];
+    let saveLegacyFallback = false; // DAILY_CLOSE_SAVE_FALLBACK_FAILSAFE_V1
     prepared.forEach(item => {
+      if (saveLegacyFallback) return;
       const requestId = String(safe.requestId || novaDbFirstRequestId_(`DAILY_CLOSE_${item.site}`)).trim();
       const db = novaDbFirstRpc_(token, 'nova_daily_close_save_v2', {
         p_business_date: businessDate,
@@ -152,6 +154,7 @@ function saveDailyCloseSnapshotDbFirst(token, payload) { // (DB source -> 기존
       }, { allowLegacyFallback: true });
       if (db && db.legacyFallback) {
         if (results.length) throw new Error('일부 사업장 DB 마감이 이미 확정되어 legacy 저장으로 전환할 수 없습니다.');
+        saveLegacyFallback = true;
         return;
       }
       let mirror = null;
@@ -162,6 +165,7 @@ function saveDailyCloseSnapshotDbFirst(token, payload) { // (DB source -> 기존
       }
       results.push(Object.assign({}, db, { site: item.site, snapshot: Object.assign({}, item.snapshot, { rooms: undefined }), mirror }));
     });
+    if (saveLegacyFallback) return saveDailyCloseSnapshot(token, payload);
     if (!results.length && mustLegacyFallback) return saveDailyCloseSnapshot(token, payload);
     return {
       ok: true,

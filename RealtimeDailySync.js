@@ -1294,6 +1294,17 @@ function novaRealtimeFinalBuildRooms_(businessDate, site, roomNo) {
       roommaidEmployeeNo: String(row[map['룸메이드사번']] || '').trim(),
       secondaryRoommaidEmployeeNo: String(row[map['보조룸메이드사번']] || '').trim(),
       qmEmployeeNo: String(row[map['QM사번']] || '').trim(),
+      // ROOM_PREVIOUS_CYCLE_DB_AUTHORITY_V1 · 마지막상태/이전 정비주기 5필드를 DB mirror에 함께 보존합니다.
+      lastRoomStatus: map['마지막객실상태'] !== undefined
+        ? String(row[map['마지막객실상태']] || '').trim().toUpperCase() : '',
+      previousRoomStatus: map['이전객실상태'] !== undefined
+        ? String(row[map['이전객실상태']] || '').trim().toUpperCase() : '',
+      previousCleaningStatus: map['이전청소상태'] !== undefined
+        ? String(row[map['이전청소상태']] || '').trim().toUpperCase() : '',
+      previousRoommaidEmployeeNo: map['이전룸메이드사번'] !== undefined
+        ? String(row[map['이전룸메이드사번']] || '').trim() : '',
+      previousSecondaryRoommaidEmployeeNo: map['이전보조룸메이드사번'] !== undefined
+        ? String(row[map['이전보조룸메이드사번']] || '').trim() : '',
       // ROOM_OPERATION_FLAGS_FORWARD_SYNC_V2 · DB-first 운영표시가 5분 정방향 동기화에서 유실되지 않게 명시합니다.
       preassigned: map['선배정여부'] !== undefined && normalizeYesNo_(row[map['선배정여부']]) === 'Y',
       vip: map['VIP여부'] !== undefined && normalizeYesNo_(row[map['VIP여부']]) === 'Y',

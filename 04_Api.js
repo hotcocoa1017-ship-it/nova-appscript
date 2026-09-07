@@ -14,7 +14,7 @@ function doGet(e) { // (웹앱 진입)
 
 function getNovaPwaRouteJson_(e) { // (PWA Push 딥링크 파라미터를 안전한 JSON으로 제한)
   const p = e && e.parameter ? e.parameter : {};
-  const allowedRoutes = ['cleaning', 'qm', 'houseman', 'archive'];
+  const allowedRoutes = ['cleaning', 'qm', 'houseman', 'archive', 'indicator'];
   const routeValue = String(p.route || '').trim().toLowerCase();
   const siteValue = String(p.site || '').trim();
   const roomValue = String(p.roomNo || '').trim().replace(/[^0-9A-Za-z가-힣_-]/g, '').slice(0, 24);

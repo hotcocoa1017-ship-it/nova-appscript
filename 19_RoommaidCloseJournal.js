@@ -59,7 +59,7 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
     }
 
     // 업무이력은 날짜 TextFinder로 후보행만 읽습니다. 전체 업무이력 열 스캔을 제거합니다.
-    const historyBundle = readRoommaidCloseHistoryBundleFast_(businessDate, preferredSite);
+    const historyBundle = readRoommaidCloseHistoryBundleDbFirst_(token, businessDate, preferredSite); // ROOMMAID_REPORTING_DB_FIRST_APP_V2
     const historyRows = historyBundle.historyRows;
     const saved = historyBundle.saved;
 

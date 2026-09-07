@@ -379,6 +379,52 @@ function getQmInspectionPhoto(token, payload) { // (권한검증 후 QM 사진 �
   });
 }
 
+// QM_FINALIZE_PREFLIGHT_V2
+// DB 최종확정 전에 기존 Apps Script 체크리스트 revision/필수값/사진/하자 규칙을 그대로 검증합니다.
+// 이 함수는 운영 상태·이력·초안을 쓰지 않는 순수 preflight 입니다.
+function prepareQmInspectionFinalizeDbFirst(token, payload) {
+  return measureResponse_('prepareQmInspectionFinalizeDbFirst', () => {
+    const user = requireRole_(token, ['QM']);
+    const safe = payload || {};
+    const businessDate = normalizeBusinessDate_(safe.businessDate);
+    const site = String(safe.site || user.defaultSite || '').trim();
+    const roomNo = String(safe.roomNo || '').trim();
+    if (!site || !roomNo) throw new Error('QM 최종점검 식별정보가 없습니다.');
+
+    const checklist = getQmChecklistForSubmit_();
+    if (!checklist.items.length) throw new Error('사용 가능한 QM 체크리스트가 없습니다.');
+    const requestedRevision = String(safe.revision || '').trim();
+    if (requestedRevision && requestedRevision !== checklist.revision) {
+      throw new Error('점검 중 체크리스트가 변경되었습니다. 화면을 새로고침한 뒤 다시 점검하세요.');
+    }
+
+    const normalizedDraft = normalizeQmDraftPayload_(safe, checklist, {
+      answers: [],
+      defects: []
+    });
+    const answers = validateFinalQmAnswers_(normalizedDraft.answers, checklist.items);
+    const defects = validateFinalQmDefects_(normalizedDraft.defects, checklist.places);
+    const itemFailCount = answers.filter(answer => String(answer.result || '').trim().toUpperCase() === 'FAIL').length;
+    const resultStatus = itemFailCount || defects.length ? 'FAIL' : 'PASS';
+
+    return {
+      ok: true,
+      preflight: true,
+      businessDate,
+      site,
+      roomNo,
+      revision: checklist.revision,
+      answers,
+      defects,
+      resultStatus,
+      itemFailCount,
+      customDefectCount: defects.length,
+      startedAt: String(safe.startedAt || '').trim(),
+      qmEmployeeNo: user.employeeNo
+    };
+  });
+}
+
 function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 최종제출·완료·재정비·실적저장)
   return measureResponse_('submitQmChecklistInspection', () => {
     const user = requireRole_(token, ['QM']);

@@ -15,7 +15,19 @@ function ensureDepartureDelayTrigger_() { // (퇴실지연 5분 자동점검 트
   return { ok: true, count: 1, intervalMinutes: getDepartureDelayTriggerMinutes_() };
 }
 
-function processDepartureDelayAlerts() { // (퇴실지연 자동 확인·신규 지연객실 알림)
+// DEPARTURE_DELAY_NOTIFICATION_NATIVE_V4
+function processDepartureDelayAlerts() { // (운영 자동알림은 PostgreSQL 5분 cron + NOVA 알림센터가 소유)
+  return {
+    ok: true,
+    dbFirst: true,
+    notificationNative: true,
+    skipped: true,
+    reason: 'DB_CRON_NATIVE',
+    businessDate: Utilities.formatDate(new Date(), NOVA.TIMEZONE, NOVA.DATE_FORMAT)
+  };
+}
+
+function processDepartureDelayAlertsLegacy_() { // (기존 Sheet/Telegram 수동 호환보존 · DEPARTURE_DELAY_NOTIFICATION_NATIVE_V4)
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(3000)) return { ok: false, skipped: true, reason: 'LOCKED' };
   try {
@@ -110,7 +122,23 @@ function processDepartureDelayAlerts() { // (퇴실지연 자동 확인·신규 
   }
 }
 
-function getDepartureDelayDashboard(token, options) { // (관리자·오더테이커 퇴실지연 현황 조회)
+function getDepartureDelayDashboard(token, options) { // (DB 현재객실 + NOVA 알림상태 조회)
+  return measureResponse_('getDepartureDelayDashboard', () => {
+    requireRole_(token, ['ADMIN', 'ORDER']);
+    const safe = options || {};
+    const businessDate = normalizeBusinessDate_(safe.businessDate);
+    const site = String(safe.site || '').trim();
+    const db = novaDbFirstRpc_(token, 'nova_departure_delay_dashboard_v1', {
+      p_business_date: businessDate,
+      p_site: site
+    }, { readOnly: true, allowLegacyFallback: true });
+    if (db && db.ok) return db;
+    if (db && db.legacyFallback) return getDepartureDelayDashboardLegacy_(token, options);
+    throw new Error(db && db.message || '퇴실지연 DB 현황을 불러오지 못했습니다.');
+  });
+}
+
+function getDepartureDelayDashboardLegacy_(token, options) { // (기존 Sheet 조회 fallback · DEPARTURE_DELAY_NOTIFICATION_NATIVE_V4)
   return measureResponse_('getDepartureDelayDashboard', () => {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const safe = options || {};
@@ -160,10 +188,13 @@ function getDepartureDelayDashboard(token, options) { // (관리자·오더테�
   });
 }
 
-function runDepartureDelayCheckNow(token) { // (관리자·오더테이커 수동 자동점검 실행)
+function runDepartureDelayCheckNow(token) { // (DB cron 운영현황 수동 조회 · DEPARTURE_DELAY_NOTIFICATION_NATIVE_V4)
   requireRole_(token, ['ADMIN', 'ORDER']);
-  const result = processDepartureDelayAlerts();
-  return Object.assign({ message: departureDelayCheckMessage_(result) }, result);
+  const businessDate = Utilities.formatDate(new Date(), NOVA.TIMEZONE, NOVA.DATE_FORMAT);
+  const result = getDepartureDelayDashboard(token, { businessDate, site: '' });
+  return Object.assign({}, result, {
+    message: '퇴실지연 자동점검은 DB에서 5분 주기로 실행됩니다. 현재 DB 현황을 조회했습니다.'
+  });
 }
 
 function getDepartureDelayRule_(businessDate, now) { // (주중·주말 퇴실·알림 기준 계산)

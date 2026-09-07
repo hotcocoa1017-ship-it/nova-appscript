@@ -409,7 +409,14 @@ function buildMonthlyHistoryBundle_(request) { // (월별 이력 조회·필터�
   };
 }
 
-function readMonthlyHistoryRows_(request, allowedRecordTypesOverride) { // (업무이력 월·일 행 선별·행 인덱스 캐시)
+function readMonthlyHistoryRows_(request, allowedRecordTypesOverride) { // NOVA_MONTHLY_DB_FIRST_V2
+  const token = String(request && request.__dbFirstToken || '').trim();
+  return token
+    ? readMonthlyHistoryRowsDbFirst_(token, request, allowedRecordTypesOverride)
+    : readMonthlyHistoryRowsLegacy_(request, allowedRecordTypesOverride);
+}
+
+function readMonthlyHistoryRowsLegacy_(request, allowedRecordTypesOverride) { // (기존 Sheet 이력 fallback · NOVA_MONTHLY_DB_FIRST_V2)
   const sheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];

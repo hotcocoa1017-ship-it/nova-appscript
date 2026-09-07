@@ -213,15 +213,16 @@ function updateRoomOperation(token, payload) { // (객실 청소배정·상태�
           recordType = NOVA.RECORD_TYPES.QM;
           updates['청소상태'] = 'QM_WAITING';
           break;
-        case 'QM_CLEAR': { // (QM 배정만 취소 · 룸메이드 배정/청소완료 실적 유지)
+        case 'QM_CLEAR': { // (QM 배정 초기화 · 룸메이드 배정/청소완료 실적 및 기존 점검이력 유지) // QM_CLEAR_REWORK_CONTROLS_V1
           recordType = NOVA.RECORD_TYPES.QM;
           const previousQmEmployeeNo = String(rowInfo.data['QM사번'] || '').trim();
           const previousCleaningStatus = String(rowInfo.data['청소상태'] || '').trim().toUpperCase();
-          if (!previousQmEmployeeNo) throw new Error('취소할 QM 배정이 없습니다.');
-          if (previousCleaningStatus !== 'QM_WAITING') throw new Error('QM 점검 시작 전 배정만 취소할 수 있습니다.');
+          if (!previousQmEmployeeNo) throw new Error('초기화할 QM 배정이 없습니다.');
           targetEmployeeNo = previousQmEmployeeNo;
           updates['QM사번'] = '';
-          updates['청소상태'] = 'COMPLETED';
+          if (['QM_WAITING', 'QM_CHECKING', 'QM_COMPLETED', 'REWORK'].includes(previousCleaningStatus)) {
+            updates['청소상태'] = 'COMPLETED';
+          }
           break;
         }
         case 'CLEAR_ASSIGNMENT':
@@ -1988,12 +1989,13 @@ function indicatorRoomOperationalStatusHeader_() { // (통합 인디게이터 �
   return '객실운영상태';
 }
 
-function normalizeIndicatorRoomOperationalStatus_(value) { // (고장·객실확인 상태 코드 정리)
+function normalizeIndicatorRoomOperationalStatus_(value) { // (고장·객실확인·재정비 상태 코드 정리 · QM_REWORK_OPERATIONAL_STATUS_V1)
   const raw = String(value || '').trim();
   const upper = raw.toUpperCase().replace(/\s+/g, '_');
   if (!raw) return '';
   if (['BROKEN', 'OUT_OF_ORDER', 'OOO', 'O.O.O', '0.0.0', '고장'].includes(upper) || raw === '고장') return 'BROKEN';
   if (['ROOM_CHECK', 'ROOMCHECK', 'CHECK_ROOM', '객실확인'].includes(upper) || raw === '객실확인') return 'ROOM_CHECK';
+  if (['REWORK', '재정비'].includes(upper) || raw === '재정비') return 'REWORK';
   return '';
 }
 

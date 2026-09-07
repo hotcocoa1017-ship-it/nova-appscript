@@ -13,6 +13,7 @@ const NOVA_DB_FIRST_BRIDGE_V1 = Object.freeze({
     'nova_houseman_shift_zone_bootstrap_v3',
     'nova_houseman_shift_save_v2',
     'nova_houseman_zone_save_v1',
+    'nova_departure_delay_dashboard_v1', // DEPARTURE_DELAY_NOTIFICATION_NATIVE_V4
     'nova_daily_close_source_v1',
     'nova_daily_close_save_v2',
     'nova_daily_close_read_v1',
