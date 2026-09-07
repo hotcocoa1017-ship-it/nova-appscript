@@ -158,3 +158,63 @@ function novaDailyCloseDbCancelMany_(token, payload) { // DAILY_CLOSE_CANCEL_MAN
     p_request_id: String(safe.requestId || '').trim()
   });
 }
+
+function novaHousemanMonthlyDbCancelIfPresent_(token, orderId, requestId) { // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1
+  const sessionToken = String(token || '').trim();
+  const id = String(orderId || '').trim();
+  requireRole_(sessionToken, ['ADMIN', 'ORDER']);
+  if (!id) throw new Error('하우스맨 오더 번호가 없습니다.');
+
+  const props = PropertiesService.getScriptProperties();
+  const enabled = String(props.getProperty('NOVA_REALTIME_ENABLED') || 'N').trim().toUpperCase() === 'Y';
+  const apiBase = String(props.getProperty('NOVA_REALTIME_API_BASE') || '').trim().replace(/\/+$/, '');
+  if (!enabled || !apiBase) {
+    return { ok: true, dbFirst: false, dbChecked: false, skipped: true, reason: 'REALTIME_DISABLED', orderId: id };
+  }
+
+  const requestedId = String(requestId || '').trim();
+  const rid = requestedId || Utilities.getUuid();
+  const response = UrlFetchApp.fetch(`${apiBase}/v1/houseman-orders/${encodeURIComponent(id)}/cancel`, {
+    method: 'post',
+    contentType: 'application/json; charset=utf-8',
+    payload: JSON.stringify({ requestId: rid }),
+    headers: {
+      Authorization: `Bearer ${sessionToken}`,
+      'X-Request-Id': rid
+    },
+    muteHttpExceptions: true,
+    followRedirects: true
+  });
+  const status = Number(response.getResponseCode() || 0);
+  let body = {};
+  try { body = JSON.parse(response.getContentText() || '{}'); } catch (error) { body = {}; }
+  const code = String(body.code || body.errorCode || '').trim().toUpperCase();
+
+  // 과거 Sheet-only 오더 또는 이전 호출에서 이미 DB 삭제된 오더는 Sheet 감사이력 정리를 계속 허용합니다.
+  if (status === 404 || code === 'HOUSEMAN_ORDER_NOT_FOUND') {
+    return {
+      ok: true,
+      dbFirst: false,
+      dbChecked: true,
+      dbMissing: true,
+      alreadyAbsent: true,
+      orderId: id,
+      requestId: rid
+    };
+  }
+
+  if (status < 200 || status >= 300 || body.ok === false) {
+    const message = String(body.message || body.error || body.code || `하우스맨 DB 취소 오류 (${status})`).trim();
+    throw new Error(message || `하우스맨 DB 취소 오류 (${status})`);
+  }
+
+  return Object.assign({}, body, {
+    ok: true,
+    dbFirst: true,
+    dbChecked: true,
+    dbMissing: false,
+    orderId: String(body.orderId || id),
+    requestId: String(body.requestId || rid)
+  });
+}
+

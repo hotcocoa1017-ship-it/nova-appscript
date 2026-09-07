@@ -70,13 +70,22 @@ function cancelMonthlyManagedHousemanOrder(token, payload) { // (월별조회 �
 
       let detail = {};
       try { detail = JSON.parse(String(found.data['세부내용JSON'] || '{}')); } catch (error) { detail = {}; }
+
+      const dbRequestId = Utilities.getUuid(); // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1
+      const dbResult = typeof novaHousemanMonthlyDbCancelIfPresent_ === 'function'
+        ? novaHousemanMonthlyDbCancelIfPresent_(token, orderId, dbRequestId)
+        : { ok: true, dbFirst: false, dbChecked: false, skipped: true };
+
       const version = reserveDataVersion_({ lockHeld: true });
       const now = nowText_();
       detail = Object.assign({}, detail, {
         cancelled: true,
         cancelledAt: now,
         cancelledBy: user.employeeNo,
-        cancelSource: 'MONTHLY_HISTORY'
+        cancelSource: 'MONTHLY_HISTORY',
+        dbFirst: Boolean(dbResult && dbResult.dbFirst),
+        dbChecked: Boolean(dbResult && dbResult.dbChecked),
+        dbRequestId: String(dbResult && dbResult.requestId || dbRequestId)
       });
 
       updateRowByHeaders_(sheet, found.rowNumber, {
@@ -118,6 +127,9 @@ function cancelMonthlyManagedHousemanOrder(token, payload) { // (월별조회 �
         orderId,
         version,
         order,
+        dbFirst: Boolean(dbResult && dbResult.dbFirst),
+        dbChecked: Boolean(dbResult && dbResult.dbChecked),
+        dbRequestId: String(dbResult && dbResult.requestId || dbRequestId),
         message: `${String(found.data['객실번호'] || '').trim()}호 오더를 취소했습니다.`
       };
     } finally {
@@ -155,6 +167,10 @@ function deleteMonthlyHousemanOrder(token, payload) { // (월별조회 하우스
           || String(found.data['완료일시'] || '').trim()) {
         throw new Error('접수 또는 처리가 시작된 오더는 삭제할 수 없습니다.');
       }
+      const dbRequestId = Utilities.getUuid(); // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1
+      const dbResult = typeof novaHousemanMonthlyDbCancelIfPresent_ === 'function'
+        ? novaHousemanMonthlyDbCancelIfPresent_(token, orderId, dbRequestId)
+        : { ok: true, dbFirst: false, dbChecked: false, skipped: true };
 
       const users = getUserIndex_().byEmployeeNo;
       const statusCodeMap = {};
@@ -173,7 +189,10 @@ function deleteMonthlyHousemanOrder(token, payload) { // (월별조회 하우스
       const auditRow = buildHousemanAuditRow_(sheet, current, 'DELETED', user.employeeNo, version, {
         source: 'MONTHLY_HISTORY',
         reason: 'ORDER_DELETED_BY_MANAGER',
-        previousStatus: statusCode
+        previousStatus: statusCode,
+        dbFirst: Boolean(dbResult && dbResult.dbFirst),
+        dbChecked: Boolean(dbResult && dbResult.dbChecked),
+        dbRequestId: String(dbResult && dbResult.requestId || dbRequestId)
       });
       const auditRowNumber = sheet.getLastRow() + 1;
       ensureSheetRowCapacity_(sheet, auditRowNumber);
@@ -191,6 +210,9 @@ function deleteMonthlyHousemanOrder(token, payload) { // (월별조회 하우스
         ok: true,
         orderId,
         version,
+        dbFirst: Boolean(dbResult && dbResult.dbFirst),
+        dbChecked: Boolean(dbResult && dbResult.dbChecked),
+        dbRequestId: String(dbResult && dbResult.requestId || dbRequestId),
         message: `${String(found.data['객실번호'] || '').trim()}호 오더를 삭제했습니다.`
       };
     } finally {

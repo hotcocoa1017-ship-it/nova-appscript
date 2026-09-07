@@ -4637,7 +4637,7 @@
     button.disabled = true;
     button.textContent = '취소 중…';
     try {
-      await cancelMonthlyHousemanRealtimeIfPresent_(item.recordId);
+      // DB 삭제 선확정은 Apps Script 서버가 수행합니다. // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1
       const result = await callServer('cancelMonthlyManagedHousemanOrder', state.token, {
         orderId: item.recordId,
         rowNumber: Number(item.rowNumber || 0)
@@ -4662,7 +4662,7 @@
     button.disabled = true;
     button.textContent = '삭제 중…';
     try {
-      await cancelMonthlyHousemanRealtimeIfPresent_(item.recordId);
+      // DB 삭제 선확정은 Apps Script 서버가 수행합니다. // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1
       const result = await callServer('deleteMonthlyHousemanOrder', state.token, {
         orderId: item.recordId,
         rowNumber: Number(item.rowNumber || 0)
