@@ -29,14 +29,24 @@ function saveDailyCloseSnapshot(token, payload) { // (업무일자 공식 마감
 
     const lock = acquireWriteLock_(30000);
     try {
-      const allCurrentRows = readCurrentRowsForClose_(businessDate, requestedSite);
-      const allHistoryRows = readHistoryRowsForClose_(businessDate, requestedSite);
-      const results = sites.map(site => saveDailyCloseSnapshotForSite_(businessDate, site, user, {
-        currentRows: allCurrentRows.filter(data => String(data['사업장'] || '').trim() === site),
-        historyRows: allHistoryRows.filter(data => String(data['사업장'] || '').trim() === site),
-        attendanceEmployeeNos: Array.isArray(safe.attendanceEmployeeNos) ? safe.attendanceEmployeeNos : [],
-        dbToken: token // DAILY_CLOSE_SAVE_DB_FIRST_V1 · 수동 사용자 마감만 DB-first
-      }));
+      const dbSources = {}; // DAILY_CLOSE_SOURCE_DB_FIRST_V1
+      sites.forEach(site => {
+        const source = tryNovaDailyCloseDbSource_(token, businessDate, site);
+        if (source && source.ready) dbSources[site] = source;
+      });
+      const needsSheetFallback = sites.some(site => !dbSources[site]);
+      const allCurrentRows = needsSheetFallback ? readCurrentRowsForClose_(businessDate, requestedSite) : [];
+      const allHistoryRows = needsSheetFallback ? readHistoryRowsForClose_(businessDate, requestedSite) : [];
+      const results = sites.map(site => {
+        const source = dbSources[site] || null;
+        return saveDailyCloseSnapshotForSite_(businessDate, site, user, {
+          currentRows: source ? source.currentRows : allCurrentRows.filter(data => String(data['사업장'] || '').trim() === site),
+          historyRows: source ? source.historyRows : allHistoryRows.filter(data => String(data['사업장'] || '').trim() === site),
+          attendanceEmployeeNos: Array.isArray(safe.attendanceEmployeeNos) ? safe.attendanceEmployeeNos : [],
+          dbToken: token, // DAILY_CLOSE_SAVE_DB_FIRST_V1 · 수동 사용자 마감만 DB-first
+          dbSource: Boolean(source) // DAILY_CLOSE_SOURCE_DB_FIRST_V1
+        });
+      });
       return {
         ok: true,
         businessDate,

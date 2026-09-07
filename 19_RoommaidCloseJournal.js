@@ -365,13 +365,16 @@ function saveRoommaidCloseJournal(token, payload) { // (룸메이드 마감일�
     const attendanceEmployeeNos = uniqueEmployeeNos_(safe.attendanceEmployeeNos || []);
     const lock = acquireWriteLock_(30000);
     try {
-      const currentRows = readCurrentRowsForClose_(businessDate, site);
+      const dbSource = tryNovaDailyCloseDbSource_(token, businessDate, site); // DAILY_CLOSE_SOURCE_DB_FIRST_V1
+      const currentRows = dbSource ? dbSource.currentRows : readCurrentRowsForClose_(businessDate, site);
       if (!currentRows.length) throw new Error(`${businessDate} ${site} 현재객실현황이 없습니다.`);
-      const historyRows = readHistoryRowsForClose_(businessDate, site);
+      const historyRows = dbSource ? dbSource.historyRows : readHistoryRowsForClose_(businessDate, site);
       const result = saveDailyCloseSnapshotForSite_(businessDate, site, user, {
         currentRows,
         historyRows,
-        attendanceEmployeeNos
+        attendanceEmployeeNos,
+        dbToken: token, // DAILY_CLOSE_SAVE_DB_FIRST_V1
+        dbSource: Boolean(dbSource)
       });
       return {
         ok: true,
