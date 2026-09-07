@@ -66,8 +66,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if grep -Eq 'gcloud run deploy|update-traffic|clasp push' .github/workflows/nova-cloudrun-validate-only.yml; then
-            echo '::error::Validate-only workflow contains a deployment command.'
-            exit 23
-          fi
-          echo 'Validation-only workflow: PASS. No deployment commands present.'
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/nova-cloudrun-validate-only.yml').read_text(encoding='utf-8')
+          forbidden = ['gcloud run ' + 'deploy', 'update-' + 'traffic', 'clasp ' + 'push']
+          found = [item for item in forbidden if item in text]
+          if found:
+              raise SystemExit('Validate-only workflow contains deployment commands: ' + ', '.join(found))
+          print('Validation-only workflow: PASS. No deployment commands present.')
+          PY
