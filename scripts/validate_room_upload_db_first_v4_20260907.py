@@ -1,0 +1,68 @@
+from pathlib import Path
+import re
+import sys
+
+SQL = Path('supabase/migrations/20260907_room_upload_db_first_v4.sql').read_text(encoding='utf-8')
+
+
+def require(needle: str, label: str):
+    if needle not in SQL:
+        print(f'ERROR: missing {label}: {needle}', file=sys.stderr)
+        raise SystemExit(91)
+
+
+def forbid(needle: str, label: str):
+    if needle in SQL:
+        print(f'ERROR: forbidden {label}: {needle}', file=sys.stderr)
+        raise SystemExit(92)
+
+
+require('NOVA_ROOM_UPLOAD_DB_FIRST_V4', 'migration marker')
+require('create or replace function public.nova_room_upload_apply_v4(', 'V4 RPC')
+require('p_expected_versions jsonb', 'per-room expected-version map')
+require("jsonb_typeof(coalesce(p_expected_versions,'{}'::jsonb)) <> 'object'", 'expected-version object validation')
+require("not (p_expected_versions ? c.room_no)", 'new DB room / stale snapshot detection')
+require("(p_expected_versions->>c.room_no)::bigint <> c.version", 'exact per-room version comparison')
+require("e.value::bigint <> 0", 'new-room expectedVersion=0 guard')
+require('pg_advisory_xact_lock', 'site/day transaction serialization')
+require('for update;', 'row lock')
+require("'ROOM_UPLOAD_APPLY_V4'", 'request dedup action')
+require("'uploadRpcVersion','V4'", 'V4 response marker')
+
+# Complete room-state preservation. These are the fields that may not be lost during a bulk upload.
+for field in [
+    'room_status', 'last_room_status', 'previous_room_status', 'previous_cleaning_status',
+    'cleaning_status', 'cleaning_type', 'assignment_type',
+    'roommaid_employee_no', 'secondary_roommaid_employee_no',
+    'previous_roommaid_employee_no', 'previous_secondary_roommaid_employee_no',
+    'qm_employee_no', 'operational_status', 'preassigned', 'vip', 'important_room',
+    'cleaning_started_at', 'cleaning_completed_at', 'version', 'updated_by', 'updated_at',
+]:
+    require(field, f'room-state field {field}')
+
+require('delete from public.nova_rooms_current r', 'atomic delete of absent rooms')
+require('insert into public.nova_room_upload_snapshots(', 'DB upload snapshot')
+require('insert into public.nova_reporting_state(', 'reporting-state invalidation')
+
+# Least-privilege execution model: no public/anon execution, authenticated/service_role only.
+require('revoke all on function public.nova_room_upload_apply_v4(text,text,jsonb,jsonb,jsonb,bigint,text) from public;', 'PUBLIC revoke')
+require('revoke all on function public.nova_room_upload_apply_v4(text,text,jsonb,jsonb,jsonb,bigint,text) from anon;', 'anon revoke')
+require('grant execute on function public.nova_room_upload_apply_v4(text,text,jsonb,jsonb,jsonb,bigint,text) to authenticated;', 'authenticated grant')
+require('grant execute on function public.nova_room_upload_apply_v4(text,text,jsonb,jsonb,jsonb,bigint,text) to service_role;', 'service_role grant')
+require("upper(coalesce(v_user.role,'')) not in ('ADMIN','ORDER')", 'role guard')
+require("message='사업장 권한이 없습니다.'", 'site guard')
+
+# V4 must not delegate concurrency to the old max-version RPCs.
+forbid('nova_room_upload_apply_v2(', 'V2 delegation')
+forbid('nova_room_upload_apply_v3(', 'V3 delegation')
+forbid('p_expected_version bigint', 'single max-version precondition')
+
+# Basic structural sanity checks for accidental truncation.
+if SQL.count('create or replace function public.nova_room_upload_apply_v4(') != 1:
+    raise SystemExit('ERROR: V4 function definition must occur exactly once')
+if SQL.count('$function$') != 2:
+    raise SystemExit('ERROR: V4 function body delimiter is incomplete')
+if not re.search(r'insert into public\.nova_rooms_current\([\s\S]*?on conflict\(business_date,site,room_no\) do update set', SQL):
+    raise SystemExit('ERROR: complete rooms_current UPSERT block not found')
+
+print('PASS: room upload DB-first V4 migration is staged with per-room optimistic concurrency, atomic scope locking, complete room-state preservation, dedup, and least-privilege grants.')
