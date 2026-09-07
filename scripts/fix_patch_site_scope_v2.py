@@ -53,4 +53,4 @@ subprocess.run([sys.executable, 'scripts/patch_departure_delay_dbfirst_v3_202609
 subprocess.run([sys.executable, 'scripts/patch_daily_close_dbfirst_fallback_v1_20260908.py'], check=True)
 subprocess.run([sys.executable, 'scripts/patch_monthly_daily_dbfirst_v2_20260907.py'], check=True)
 subprocess.run([sys.executable, 'scripts/patch_roommaid_reporting_dbfirst_v2_20260907.py'], check=True)
-subprocess.run([sys.executable, 'scripts/validate_whole_db_transition_v1_20260908.py'], check=True)
+subprocess.run([sys.executable, 'scripts/validate_whole_db_transition_v2_20260908.py'], check=True)
