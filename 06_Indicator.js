@@ -221,6 +221,20 @@ function updateRoomOperation(token, payload) { // (객실 청소배정·상태�
       });
     }
 
+    // 선배정/VIP/중요객실도 PostgreSQL 현재상태를 원본으로 사용합니다. // ROOM_OPERATION_FLAGS_DB_FIRST_V1
+    // DB 확정 후 현재객실현황·업무이력은 기존 DB 이벤트 미러가 후행 반영합니다.
+    if (action === 'UPDATE_OPERATION_FLAGS'
+        && typeof novaRoomOperationFlagsDbFirstEnabled_ === 'function'
+        && novaRoomOperationFlagsDbFirstEnabled_()
+        && typeof novaRoomOperationFlagsDbApply_ === 'function') {
+      return updateIndicatorRoomOperationFlagsDbFirst_(token, user, safe, {
+        startedMs,
+        businessDate,
+        site,
+        roomNo
+      });
+    }
+
     // 고장·객실확인은 사용자 전체 인덱스·일반 작업분기 로딩을 건너뛰고 핵심 저장만 수행한다. 잠금은 450ms 이내 확보하고 실패 시 Client가 자동 재시도한다.
     // 동일 상태 재요청은 멱등 성공으로 처리해 일시적 재시도에도 중복이력을 만들지 않는다.
     if (action === 'UPDATE_ROOM_OPERATION_STATUS') {
@@ -2924,4 +2938,61 @@ function appendUnifiedHistory_(payload) { // (업무이력 통합 기록)
   ensureSheetRowCapacity_(sheet, rowNumber);
   sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
   return recordId;
+}
+
+function updateIndicatorRoomOperationFlagsDbFirst_(token, user, payload, context) { // ROOM_OPERATION_FLAGS_DB_FIRST_V1
+  const safe = payload || {};
+  const info = context || {};
+  const businessDate = info.businessDate;
+  const site = String(info.site || '').trim();
+  const roomNo = String(info.roomNo || '').trim();
+  const startedMs = Number(info.startedMs || Date.now());
+  if (!site || !roomNo) throw new Error('운영표시 저장에 사업장과 객실번호가 필요합니다.');
+
+  const requestId = String(safe.requestId || '').trim() || `ROOM_FLAGS:${Utilities.getUuid()}`;
+  const dbResult = novaRoomOperationFlagsDbApply_(token, {
+    businessDate,
+    site,
+    roomNo,
+    preassigned: Boolean(safe.preassigned),
+    vip: Boolean(safe.vip),
+    importantRoom: Boolean(safe.importantRoom),
+    requestId
+  });
+  if (!dbResult || dbResult.ok === false) throw new Error(String(dbResult && dbResult.message || '객실 운영표시를 DB에 저장하지 못했습니다.'));
+
+  const dbRoom = dbResult.room && typeof dbResult.room === 'object' ? dbResult.room : {};
+  const version = Number(dbResult.version || dbRoom.version || 0);
+  const finishedMs = Date.now();
+  return {
+    ok: true,
+    dbFirst: true,
+    alreadySet: Boolean(dbResult.idempotent || dbResult.alreadySet),
+    version,
+    requestId: String(dbResult.requestId || requestId),
+    room: {
+      rowNumber: Number(safe.rowNumber || 0),
+      businessDate: String(dbRoom.businessDate || businessDate),
+      site: String(dbRoom.site || site),
+      roomNo: String(dbRoom.roomNo || roomNo),
+      roomStatus: String(dbRoom.roomStatus || ''),
+      cleaningStatus: String(dbRoom.cleaningStatus || ''),
+      cleaningType: String(dbRoom.cleaningType || ''),
+      assignmentType: String(dbRoom.assignmentType || ''),
+      roommaidEmployeeNo: String(dbRoom.roommaidEmployeeNo || ''),
+      secondaryRoommaidEmployeeNo: String(dbRoom.secondaryRoommaidEmployeeNo || ''),
+      qmEmployeeNo: String(dbRoom.qmEmployeeNo || ''),
+      operationalStatus: String(dbRoom.operationalStatus || ''),
+      preassigned: Boolean(dbRoom.preassigned),
+      vip: Boolean(dbRoom.vip),
+      importantRoom: Boolean(dbRoom.importantRoom),
+      updatedAt: String(dbRoom.updatedAt || ''),
+      version
+    },
+    mirrorPending: true,
+    notificationQueued: false,
+    notificationDeferred: false,
+    deferredNotification: null,
+    timing: { operationFlags: true, dbFirst: true, totalMs: Math.max(0, finishedMs - startedMs) }
+  };
 }

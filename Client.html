@@ -1269,7 +1269,7 @@
       return Object.assign({}, directResult, { reworkOperationalSafePath: true, dbFirst: directResult.dbFirst === true });
     }
 
-    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
+    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'CLEAR_ASSIGNMENT' // ROOM_OPERATION_FLAGS_DB_FIRST_V1: server RPC owns flag mutation].includes(mappedAction)
       || mappedAction === 'CHANGE_ROOM_STATUS'; // CHECKOUT_DB_FIRST_V1_CLIENT
 
     if (!realtimeAction) {

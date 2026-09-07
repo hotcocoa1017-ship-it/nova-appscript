@@ -179,6 +179,9 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
             '보조룸메이드사번': String(data['보조룸메이드사번'] || '').trim(),
             'QM사번': String(data['QM사번'] || '').trim(),
             '객실운영상태': String(data['객실운영상태'] || '').trim(),
+            '선배정여부': normalizeYesNo_(data['선배정여부']) === 'Y' ? 'Y' : 'N', // ROOM_OPERATION_FLAGS_DB_FIRST_V1
+            'VIP여부': normalizeYesNo_(data['VIP여부']) === 'Y' ? 'Y' : 'N',
+            '중요객실여부': normalizeYesNo_(data['중요객실여부']) === 'Y' ? 'Y' : 'N',
             '마지막변경버전': Number(data['마지막변경버전'] || 0),
             '수정일시': String(data['수정일시'] || previous['수정일시'] || '').trim()
           });
@@ -235,6 +238,9 @@ function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실
           '룸메이드사번': operation.roommaidEmployeeNo,
           '보조룸메이드사번': operation.secondaryRoommaidEmployeeNo,
           'QM사번': operation.qmEmployeeNo,
+          '선배정여부': resetExisting ? 'N' : (normalizeYesNo_(existingRoom['선배정여부']) === 'Y' ? 'Y' : 'N'), // ROOM_OPERATION_FLAGS_DB_FIRST_V1
+          'VIP여부': resetExisting ? 'N' : (normalizeYesNo_(existingRoom['VIP여부']) === 'Y' ? 'Y' : 'N'),
+          '중요객실여부': resetExisting ? 'N' : (normalizeYesNo_(existingRoom['중요객실여부']) === 'Y' ? 'Y' : 'N'),
           '마지막변경버전': version,
           '수정일시': updatedAt,
           '동': room.building,
@@ -476,6 +482,9 @@ function buildRoomUploadDbRows_(rows, headerMap) { // ROOM_UPLOAD_DB_FIRST_V2
       roommaidEmployeeNo: String(data['룸메이드사번'] || '').trim(),
       secondaryRoommaidEmployeeNo: String(data['보조룸메이드사번'] || '').trim(),
       qmEmployeeNo: String(data['QM사번'] || '').trim(),
+      preassigned: normalizeYesNo_(data['선배정여부']) === 'Y', // ROOM_OPERATION_FLAGS_DB_FIRST_V1
+      vip: normalizeYesNo_(data['VIP여부']) === 'Y',
+      importantRoom: normalizeYesNo_(data['중요객실여부']) === 'Y',
       operationalStatus: typeof normalizeIndicatorRoomOperationalStatus_ === 'function'
         ? normalizeIndicatorRoomOperationalStatus_(data['객실운영상태'])
         : String(data['객실운영상태'] || '').trim()

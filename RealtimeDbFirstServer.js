@@ -64,7 +64,7 @@ function novaRoomUploadDbFirstEnabled_() { // ROOM_UPLOAD_DB_FIRST_V2
 }
 
 function novaRoomUploadDbBundle_(token, businessDate, site) { // ROOM_UPLOAD_DB_FIRST_V2 · ROOM_UPLOAD_STATE_RPC_V1
-  return novaRealtimeUserRpc_(token, 'nova_room_upload_state_v1', {
+  return novaRealtimeUserRpc_(token, 'nova_room_upload_state_v2', {
     p_business_date: String(businessDate || '').trim(),
     p_site: String(site || '').trim()
   });
@@ -72,13 +72,32 @@ function novaRoomUploadDbBundle_(token, businessDate, site) { // ROOM_UPLOAD_DB_
 
 function novaRoomUploadDbApply_(token, payload) { // ROOM_UPLOAD_DB_FIRST_V2
   const safe = payload || {};
-  return novaRealtimeUserRpc_(token, 'nova_room_upload_apply_v2', {
+  return novaRealtimeUserRpc_(token, 'nova_room_upload_apply_v3', {
     p_business_date: String(safe.businessDate || '').trim(),
     p_site: String(safe.site || '').trim(),
     p_rooms: Array.isArray(safe.rooms) ? safe.rooms : [],
     p_upload: safe.upload && typeof safe.upload === 'object' ? safe.upload : {},
     p_expected_version: Number.isFinite(Number(safe.expectedVersion)) ? Number(safe.expectedVersion) : 0,
     p_version: Number(safe.version || 0),
+    p_request_id: String(safe.requestId || '').trim()
+  });
+}
+
+function novaRoomOperationFlagsDbFirstEnabled_() { // ROOM_OPERATION_FLAGS_DB_FIRST_V1
+  const props = PropertiesService.getScriptProperties();
+  if (String(props.getProperty('NOVA_REALTIME_ENABLED') || 'N').trim().toUpperCase() !== 'Y') return false;
+  return String(props.getProperty('NOVA_ROOM_OPERATION_FLAGS_DB_FIRST_ENABLED') || 'Y').trim().toUpperCase() !== 'N';
+}
+
+function novaRoomOperationFlagsDbApply_(token, payload) { // ROOM_OPERATION_FLAGS_DB_FIRST_V1
+  const safe = payload || {};
+  return novaRealtimeUserRpc_(token, 'nova_room_operation_flags_update_v1', {
+    p_business_date: String(safe.businessDate || '').trim(),
+    p_site: String(safe.site || '').trim(),
+    p_room_no: String(safe.roomNo || '').trim(),
+    p_preassigned: Boolean(safe.preassigned),
+    p_vip: Boolean(safe.vip),
+    p_important_room: Boolean(safe.importantRoom),
     p_request_id: String(safe.requestId || '').trim()
   });
 }
