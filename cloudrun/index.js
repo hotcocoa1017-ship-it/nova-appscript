@@ -2988,10 +2988,8 @@ app.post(
         if (!requestedRoomStatus) {
           throw httpError(400, 'ROOM_STATUS_REQUIRED', '변경할 객실상태를 선택하세요.');
         }
-        if (requestedRoomStatus === 'CHECKED_OUT') {
-          throw httpError(400, 'CHECKOUT_LEGACY_ONLY', '퇴실은 기존 전용 저장경로를 사용합니다.');
-        }
-
+        // CHECKOUT_DB_FIRST_V1 · 일반 퇴실도 기존 CHANGE_ROOM_STATUS DB 트랜잭션을 사용합니다.
+        // R/C·H/U와 동일하게 room_status + 정비상태 patch + event를 한 트랜잭션으로 확정합니다.
         const rawPatch = body.realtimeRoomPatch && typeof body.realtimeRoomPatch === 'object'
           ? body.realtimeRoomPatch
           : {};
