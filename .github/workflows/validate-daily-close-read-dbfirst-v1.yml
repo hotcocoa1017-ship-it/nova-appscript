@@ -16,8 +16,16 @@ jobs:
       - name: Checkout feature branch
         uses: actions/checkout@v4
 
-      - name: Apply DB-first close read patch
-        run: python3 scripts/patch_daily_close_read_dbfirst_v1.py
+      - name: Apply DB-first close read patch when needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q 'ROOMMAID_CLOSE_HISTORY_DB_FIRST_V1' 19_RoommaidCloseJournal.js \
+             && grep -q 'DAILY_CLOSE_READ_DB_FIRST_V1' 14_DailyClose.js; then
+            echo 'Newer DB-first close/history sources already persisted; legacy patch not required.'
+          else
+            python3 scripts/patch_daily_close_read_dbfirst_v1.py
+          fi
 
       - name: Validate markers and source priority
         shell: bash
@@ -27,7 +35,9 @@ jobs:
           grep -q 'readDailyCloseDbSnapshots_' 14_DailyClose.js
           grep -q 'mergeDailyCloseSnapshots_' 14_DailyClose.js
           grep -q "buildDailyCloseOverviewForRequest_(request, token)" 11_Monthly.js
-          grep -q "const saved = dbSaved || historyBundle.saved" 19_RoommaidCloseJournal.js
+          grep -q 'ROOMMAID_CLOSE_HISTORY_DB_FIRST_V1' 19_RoommaidCloseJournal.js
+          grep -q "const dbSaved = historyBundle.dbSaved || null" 19_RoommaidCloseJournal.js
+          grep -q "const saved = historyBundle.saved" 19_RoommaidCloseJournal.js
           grep -q "savedSource: dbSaved ? 'REALTIME_DB'" 19_RoommaidCloseJournal.js
           grep -q 'nova_daily_close_read_v1' RealtimeDbFirstServer.js
           python3 - <<'PY'
@@ -37,7 +47,11 @@ jobs:
           assert daily.index('readDailyCloseDbSnapshots_') < daily.index('readCurrentRowsForClose_')
           merge = close[close.index('function mergeDailyCloseSnapshots_'):close.index('function readDailyCloseSummaries_')]
           assert merge.index('(Array.isArray(sheetItems)') < merge.index('(Array.isArray(dbItems)')
-          print('DB close snapshot priority OK')
+          roommaid = Path('19_RoommaidCloseJournal.js').read_text(encoding='utf-8')
+          assert roommaid.index('readRoommaidCloseHistoryBundleDbFirst_') < roommaid.index('const historyRows = historyBundle.historyRows')
+          assert 'const dbSaved = historyBundle.dbSaved || null' in roommaid
+          assert 'const saved = historyBundle.saved' in roommaid
+          print('DB close snapshot priority and newer roommaid history bundle OK')
           PY
 
       - name: Validate JavaScript syntax
@@ -46,24 +60,27 @@ jobs:
           node --check 11_Monthly.js
           node --check 19_RoommaidCloseJournal.js
           node --check RealtimeDbFirstServer.js
+          node --check RoommaidCloseDbFirstServer.js
 
       - name: Validate NOVA regression gate
         run: python3 scripts/validate_nova_release.py
 
-      - name: Validate patch idempotence
+      - name: Validate current source stability
         shell: bash
         run: |
           set -euo pipefail
-          before="$(sha256sum 14_DailyClose.js 11_Monthly.js 19_RoommaidCloseJournal.js | sha256sum | awk '{print $1}')"
-          python3 scripts/patch_daily_close_read_dbfirst_v1.py
-          after="$(sha256sum 14_DailyClose.js 11_Monthly.js 19_RoommaidCloseJournal.js | sha256sum | awk '{print $1}')"
+          before="$(sha256sum 14_DailyClose.js 11_Monthly.js 19_RoommaidCloseJournal.js RoommaidCloseDbFirstServer.js | sha256sum | awk '{print $1}')"
+          if ! grep -q 'ROOMMAID_CLOSE_HISTORY_DB_FIRST_V1' 19_RoommaidCloseJournal.js; then
+            python3 scripts/patch_daily_close_read_dbfirst_v1.py
+          fi
+          after="$(sha256sum 14_DailyClose.js 11_Monthly.js 19_RoommaidCloseJournal.js RoommaidCloseDbFirstServer.js | sha256sum | awk '{print $1}')"
           test "$before" = "$after"
 
       - name: Persist validated DB-first close reads
         shell: bash
         run: |
           set -euo pipefail
-          files=(14_DailyClose.js 11_Monthly.js 19_RoommaidCloseJournal.js)
+          files=(14_DailyClose.js 11_Monthly.js 19_RoommaidCloseJournal.js RoommaidCloseDbFirstServer.js)
           if git diff --quiet -- "${files[@]}"; then
             echo 'Validated sources already persisted.'
             exit 0
