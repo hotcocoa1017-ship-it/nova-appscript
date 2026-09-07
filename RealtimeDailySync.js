@@ -645,6 +645,71 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
         continue;
       }
 
+      if (action === 'QM_CLEAR') { // QM_CLEAR_EVENT_MIRROR_V2
+        const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const previousQmEmployeeNo = String(eventDetail.previousQmEmployeeNo || qmNo || '').trim();
+        const previousCleaningStatus = String(eventDetail.previousCleaningStatus || beforeStatus || 'QM_WAITING').trim().toUpperCase();
+        const mirroredCleaningType = String(eventDetail.cleaningType || cleaningType || NOVA.CLEANING_TYPES.NORMAL).trim().toUpperCase();
+        const mirroredAssignmentType = String(eventDetail.assignmentType || assignmentType || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO).trim().toUpperCase();
+        const mirroredPrimaryNo = String(eventDetail.primaryEmployeeNo || roommaidNo || '').trim();
+        const mirroredSecondaryNo = String(eventDetail.secondaryEmployeeNo || secondaryRoommaidNo || '').trim();
+
+        // 같은 이벤트 배치에 QM_ASSIGN -> QM_CLEAR가 연속으로 있어도 마지막 이벤트가 이기도록
+        // 기존 roomUpdates 병합 큐를 사용합니다. 직접 Sheet 쓰기는 앞선 큐가 뒤에서 덮을 수 있습니다.
+        roomUpdates.push({
+          rowNumber: rowInfo.rowNumber,
+          cleaningStatus: 'COMPLETED',
+          qmEmployeeNo: '',
+          version,
+          updatedAt: nowText_()
+        });
+        rowInfo.data['QM사번'] = '';
+        rowInfo.data['청소상태'] = 'COMPLETED';
+        rowInfo.data['마지막변경버전'] = version;
+
+        historyPayloads.push({
+          recordType: NOVA.RECORD_TYPES.QM,
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          targetEmployeeNo: previousQmEmployeeNo,
+          status: 'QM_CLEAR',
+          detail: {
+            requestId,
+            realtime: true,
+            action: 'QM_CLEAR',
+            role: String(eventDetail.role || 'ORDER').trim().toUpperCase(),
+            previousRoomStatus: String(rowInfo.data['객실상태'] || '').trim().toUpperCase(),
+            roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+            previousCleaningStatus,
+            cleaningStatus: 'COMPLETED',
+            cleaningType: mirroredCleaningType,
+            assignmentType: mirroredAssignmentType,
+            primaryEmployeeNo: mirroredPrimaryNo,
+            secondaryEmployeeNo: mirroredSecondaryNo,
+            previousQmEmployeeNo,
+            qmEmployeeNo: '',
+            preassigned: Object.prototype.hasOwnProperty.call(eventDetail, 'preassigned')
+              ? eventDetail.preassigned === true
+              : normalizeYesNo_(rowInfo.data['선배정여부']) === 'Y',
+            vip: Object.prototype.hasOwnProperty.call(eventDetail, 'vip')
+              ? eventDetail.vip === true
+              : normalizeYesNo_(rowInfo.data['VIP여부']) === 'Y',
+            importantRoom: Object.prototype.hasOwnProperty.call(eventDetail, 'importantRoom')
+              ? eventDetail.importantRoom === true
+              : normalizeYesNo_(rowInfo.data['중요객실여부']) === 'Y',
+            dbRoomVersion: Number(event.roomVersion || 0),
+            dbEventTime: String(event.eventTime || '')
+          },
+          registeredBy: employeeNo,
+          version
+        });
+
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
       if (action === 'UPDATE_OPERATION_FLAGS') {
         const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
         const preassigned = eventDetail.preassigned === true;
@@ -1189,6 +1254,10 @@ function novaRealtimeFinalBuildRooms_(businessDate, site, roomNo) {
       roommaidEmployeeNo: String(row[map['룸메이드사번']] || '').trim(),
       secondaryRoommaidEmployeeNo: String(row[map['보조룸메이드사번']] || '').trim(),
       qmEmployeeNo: String(row[map['QM사번']] || '').trim(),
+      // ROOM_OPERATION_FLAGS_FORWARD_SYNC_V2 · DB-first 운영표시가 5분 정방향 동기화에서 유실되지 않게 명시합니다.
+      preassigned: map['선배정여부'] !== undefined && normalizeYesNo_(row[map['선배정여부']]) === 'Y',
+      vip: map['VIP여부'] !== undefined && normalizeYesNo_(row[map['VIP여부']]) === 'Y',
+      importantRoom: map['중요객실여부'] !== undefined && normalizeYesNo_(row[map['중요객실여부']]) === 'Y',
       // 통합 인디게이터의 고장/객실확인 원본 열은 '객실운영상태'입니다.
       // '하우스맨상태'는 오더 처리상태이므로 절대 대체값으로 사용하지 않습니다.
       operationalStatus: typeof normalizeIndicatorRoomOperationalStatus_ === 'function'

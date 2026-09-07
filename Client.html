@@ -1224,6 +1224,86 @@
     return null;
   }
 
+  // QM_CLEAR_DB_FIRST_V2
+  // 관리자 QM 배정 초기화는 DB를 먼저 확정합니다. 네트워크 결과가 불명확할 때는
+  // 동일 requestId로만 재확인하며 Sheet-first 경로를 병행하지 않습니다.
+  async function novaQmClearDbFirst_(payload) {
+    const safe = Object.assign({}, payload || {});
+    const requestId = String(safe.requestId || novaRealtimeRequestId_('QM_CLEAR', safe.roomNo || '')).trim();
+    const businessDate = String(safe.businessDate || state.indicator.businessDate || state.bootstrap?.app?.businessDate || '').trim();
+    const site = String(safe.site || state.indicator.site || '').trim();
+    const roomNo = String(safe.roomNo || '').trim();
+    if (!businessDate || !site || !roomNo) throw new Error('QM 배정 초기화에 업무일자·사업장·객실번호가 필요합니다.');
+
+    let auth;
+    try {
+      auth = await novaQmDraftAuthBundle_();
+    } catch (error) {
+      // 아직 DB 요청을 전송하지 않은 단계이므로 기존 경로 fallback이 안전합니다.
+      console.warn('[NOVA QM] QM_CLEAR DB 인증 준비 실패 · 기존 경로 사용:', error?.message || error);
+      return { ok: false, legacyFallback: true, reason: 'AUTH_PREP_FAILED' };
+    }
+
+    const body = {
+      p_business_date: businessDate,
+      p_site: site,
+      p_room_no: roomNo,
+      p_request_id: requestId
+    };
+
+    const send = async attempt => {
+      const endpoint = `${String(auth.supabaseUrl || '').replace(/\/+$/, '')}/rest/v1/rpc/nova_qm_clear_v1`;
+      let response;
+      try {
+        response = await novaRealtimeBoundedFetch_(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': String(auth.publishableKey || ''),
+            'Authorization': `Bearer ${String(auth.token || '')}`
+          },
+          body: JSON.stringify(body)
+        }, 5500);
+      } catch (networkError) {
+        if (attempt < 2) {
+          await novaRealtimeSleep_([160, 420, 900][attempt] || 900);
+          return send(attempt + 1);
+        }
+        const error = new Error('QM 배정 초기화 결과를 확인하지 못했습니다. 객실 상태를 다시 확인해 주세요.');
+        error.code = 'QM_CLEAR_DB_RESULT_UNKNOWN';
+        error.cause = networkError;
+        throw error;
+      }
+
+      let data = {};
+      try { data = await response.json(); } catch (ignore) {}
+      if (response.ok && data?.ok) return data;
+
+      const code = String(data?.code || '').trim().toUpperCase();
+      if (response.status === 401 && attempt < 2) {
+        novaRealtime_.qmDraftAuthBundle = null;
+        auth = await novaQmDraftAuthBundle_();
+        await novaRealtimeSleep_(140);
+        return send(attempt + 1);
+      }
+      if ((response.status === 429 || response.status >= 500) && attempt < 2) {
+        await novaRealtimeSleep_([160, 420, 900][attempt] || 900);
+        return send(attempt + 1);
+      }
+      if (response.status === 404 || ['PGRST202', 'PGRST205'].includes(code)) {
+        // RPC 자체가 없는 경우에는 DB 변경이 없으므로 기존 Sheet 경로가 안전합니다.
+        return { ok: false, legacyFallback: true, reason: 'RPC_MISSING' };
+      }
+
+      const error = new Error(data?.message || data?.details || data?.hint || `QM 배정 초기화 DB 오류 (${response.status})`);
+      error.status = Number(response.status || 0);
+      error.code = data?.code || '';
+      throw error;
+    };
+
+    return send(0);
+  }
+
   async function saveRoomActionRealtimeOrLegacy_(legacyMethod, payload) {
     const safe = Object.assign({}, payload || {});
     const rawAction = String(safe.action || '').trim().toUpperCase();
@@ -1275,7 +1355,7 @@
       return Object.assign({}, directResult, { reworkOperationalSafePath: true });
     }
 
-    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
+    const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_CLEAR', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
       || (mappedAction === 'CHANGE_ROOM_STATUS'
         && String(safe.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT');
 
@@ -1319,6 +1399,16 @@
         return callServer('updateRoomOperationalStatusSafe', state.token, safeOperationalPayload);
       }
       return callServer(legacyMethod, state.token, legacySafe);
+    }
+
+    if (mappedAction === 'QM_CLEAR') { // QM_CLEAR_DB_FIRST_V2
+      const directResult = await novaQmClearDbFirst_(safe);
+      if (directResult?.legacyFallback) {
+        return callServer(legacyMethod, state.token, legacySafe);
+      }
+      directResult.version = Number(directResult.version || directResult.room?.version || 0);
+      directResult.message = directResult.message || 'QM 배정을 초기화했습니다.';
+      return directResult;
     }
 
     const operationalStatusReworkDirect = mappedAction === 'UPDATE_ROOM_OPERATION_STATUS'
