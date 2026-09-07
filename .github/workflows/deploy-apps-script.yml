@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: 'Deploy validated sources to the existing Apps Script web app'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -95,6 +101,9 @@ jobs:
       - name: Apply QM clear DB-first and operation flags preservation
         run: python3 scripts/patch_qm_clear_dbfirst_operation_flags_20260907.py
 
+      - name: Apply previous-cycle DB authority
+        run: python3 scripts/patch_room_previous_cycle_db_authority_20260907.py
+
       - name: Apply CHECKED_OUT DB-first client patch
         run: python3 scripts/patch_checkout_dbfirst_20260907.py
 
@@ -109,6 +118,12 @@ jobs:
 
       - name: Validate QM clear DB-first and operation flags preservation
         run: python3 scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
+
+      - name: Validate previous-cycle DB authority
+        run: python3 scripts/validate_room_previous_cycle_db_authority_20260907.py
+
+      - name: Validate staged room upload state V3 and apply V4
+        run: python3 scripts/validate_room_upload_db_first_v4_20260907.py
 
       - name: Validate CHECKED_OUT DB-first client path
         run: python3 scripts/validate_checkout_dbfirst_20260907.py
@@ -131,6 +146,8 @@ jobs:
           grep -q "QM_CLEAR_DB_FIRST_V2" Client.html
           grep -q "QM_CLEAR_EVENT_MIRROR_V2" RealtimeDailySync.js
           grep -q "ROOM_OPERATION_FLAGS_FORWARD_SYNC_V2" RealtimeDailySync.js
+          grep -q "ROOM_PREVIOUS_CYCLE_DB_AUTHORITY_V1" Client.html
+          grep -q "ROOM_PREVIOUS_CYCLE_DB_AUTHORITY_V1" RealtimeDailySync.js
           grep -q "CHECKOUT_DB_FIRST_CLIENT_V1" Client.html
           grep -Fq "|| mappedAction === 'CHANGE_ROOM_STATUS';" Client.html
           grep -q "ROOM_UPLOAD_REALTIME_CONVERGENCE_V1" Client.html
@@ -261,6 +278,7 @@ jobs:
           python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
           python3 scripts/patch_qm_end_to_end_accel_20260906.py
           python3 scripts/patch_qm_clear_dbfirst_operation_flags_20260907.py
+          python3 scripts/patch_room_previous_cycle_db_authority_20260907.py
           python3 scripts/patch_checkout_dbfirst_20260907.py
           python3 scripts/patch_room_upload_realtime_sync_20260907.py
           python3 scripts/validate_site_scope_indicator_close_v2.py
@@ -268,12 +286,15 @@ jobs:
           python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
           python3 scripts/validate_qm_end_to_end_accel_20260906.py
           python3 scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
+          python3 scripts/validate_room_previous_cycle_db_authority_20260907.py
+          python3 scripts/validate_room_upload_db_first_v4_20260907.py
           python3 scripts/validate_checkout_dbfirst_20260907.py
           python3 scripts/validate_room_upload_realtime_sync_20260907.py
           after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
           test "$before" = "$after"
 
       - name: Persist generated production sources to main
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
         shell: bash
         run: |
           set -euo pipefail
@@ -291,14 +312,17 @@ jobs:
           fi
 
       - name: Setup Node
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Install clasp
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
         run: npm install --global @google/clasp
 
       - name: Configure Apps Script authentication
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
         shell: bash
         env:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
@@ -317,6 +341,7 @@ jobs:
           clasp show-authorized-user --json
 
       - name: Check Apps Script version capacity
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
         shell: bash
         run: |
           set -euo pipefail
@@ -330,9 +355,11 @@ jobs:
           fi
 
       - name: Push source to Apps Script
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
         run: clasp push --force
 
       - name: Update existing web app deployment
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
         shell: bash
         run: |
           set -euo pipefail
@@ -341,6 +368,13 @@ jobs:
             --description "NOVA automated deploy ${GITHUB_SHA::12}"
 
       - name: Deployment summary
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
         run: |
           echo "NOVA Apps Script source pushed and existing web app deployment updated."
+          echo "Commit: $GITHUB_SHA"
+
+      - name: Validation-only summary
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.deploy == true) }}
+        run: |
+          echo "NOVA validation completed. Deployment was intentionally skipped."
           echo "Commit: $GITHUB_SHA"
