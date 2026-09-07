@@ -135,6 +135,10 @@ function novaOperationSettingsDbSave_(token, values, requestId) { // OPERATION_S
   });
 }
 
+function novaOperationSettingsDbRead_(token) { // OPERATION_SETTINGS_READ_DB_FIRST_V1
+  return novaRealtimeUserRpc_(token, 'nova_operation_settings_read_v1', {});
+}
+
 function novaDailyCloseDbCancel_(token, payload) { // DAILY_CLOSE_CANCEL_DB_FIRST_V1
   const safe = payload || {};
   return novaRealtimeUserRpc_(token, 'nova_daily_close_cancel_v1', {
