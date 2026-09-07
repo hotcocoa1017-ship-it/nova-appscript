@@ -14,7 +14,7 @@ function getRoommaidPerformance(token, filters) { // (룸메이드 개인별 일
     const role = String(auth.user.role || '').trim().toUpperCase();
     if (!['ADMIN', 'ORDER', 'ROOMMAID'].includes(role)) throw new Error('룸메이드 실적 조회 권한이 없습니다.');
     const request = normalizeRoommaidPerformanceFilters_(filters, auth.user);
-    const rows = readMonthlyHistoryRows_(request, [NOVA.RECORD_TYPES.CLEANING]).map(row => row && row.data ? row.data : row);
+    const rows = readMonthlyHistoryRowsDbFirst_(request, [NOVA.RECORD_TYPES.CLEANING], token).map(row => row && row.data ? row.data : row); // ROOMMAID_PERFORMANCE_DB_FIRST_V1
     const result = buildRoommaidPerformanceBundle_(rows, request);
     return Object.assign({ ok: true, filters: request, serverTime: nowText_() }, result);
   });
