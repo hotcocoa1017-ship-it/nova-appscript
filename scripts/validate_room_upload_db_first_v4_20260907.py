@@ -18,6 +18,29 @@ def forbid(needle: str, label: str):
 
 
 require('NOVA_ROOM_UPLOAD_DB_FIRST_V4', 'migration marker')
+
+# State V3 is the exact DB snapshot used to prepare the legacy-equivalent upload result.
+require('create or replace function public.nova_room_upload_state_v3(', 'state V3 RPC')
+require("'stateRpcVersion','V3'", 'state V3 response marker')
+require("'expectedVersions',v_versions", 'per-room version snapshot')
+for field in [
+    "'마지막객실상태',r.last_room_status",
+    "'이전객실상태',r.previous_room_status",
+    "'이전청소상태',r.previous_cleaning_status",
+    "'이전룸메이드사번',coalesce(r.previous_roommaid_employee_no,'')",
+    "'이전보조룸메이드사번',coalesce(r.previous_secondary_roommaid_employee_no,'')",
+    "'선배정여부',case when coalesce(r.preassigned,false) then 'Y' else 'N' end",
+    "'VIP여부',case when coalesce(r.vip,false) then 'Y' else 'N' end",
+    "'중요객실여부',case when coalesce(r.important_room,false) then 'Y' else 'N' end",
+    "'마지막변경버전',r.version",
+]:
+    require(field, f'state V3 field {field}')
+require('revoke all on function public.nova_room_upload_state_v3(text,text) from public;', 'state V3 PUBLIC revoke')
+require('revoke all on function public.nova_room_upload_state_v3(text,text) from anon;', 'state V3 anon revoke')
+require('grant execute on function public.nova_room_upload_state_v3(text,text) to authenticated;', 'state V3 authenticated grant')
+require('grant execute on function public.nova_room_upload_state_v3(text,text) to service_role;', 'state V3 service_role grant')
+
+# Apply V4 performs the atomic write using every room's preview-time version.
 require('create or replace function public.nova_room_upload_apply_v4(', 'V4 RPC')
 require('p_expected_versions jsonb', 'per-room expected-version map')
 require("jsonb_typeof(coalesce(p_expected_versions,'{}'::jsonb)) <> 'object'", 'expected-version object validation')
@@ -58,11 +81,13 @@ forbid('nova_room_upload_apply_v3(', 'V3 delegation')
 forbid('p_expected_version bigint', 'single max-version precondition')
 
 # Basic structural sanity checks for accidental truncation.
+if SQL.count('create or replace function public.nova_room_upload_state_v3(') != 1:
+    raise SystemExit('ERROR: state V3 function definition must occur exactly once')
 if SQL.count('create or replace function public.nova_room_upload_apply_v4(') != 1:
     raise SystemExit('ERROR: V4 function definition must occur exactly once')
-if SQL.count('$function$') != 2:
-    raise SystemExit('ERROR: V4 function body delimiter is incomplete')
+if SQL.count('$function$') != 4:
+    raise SystemExit('ERROR: SQL function body delimiters are incomplete')
 if not re.search(r'insert into public\.nova_rooms_current\([\s\S]*?on conflict\(business_date,site,room_no\) do update set', SQL):
     raise SystemExit('ERROR: complete rooms_current UPSERT block not found')
 
-print('PASS: room upload DB-first V4 migration is staged with per-room optimistic concurrency, atomic scope locking, complete room-state preservation, dedup, and least-privilege grants.')
+print('PASS: room upload state V3 + DB-first V4 are staged with full metadata, per-room optimistic concurrency, atomic scope locking, complete room-state preservation, dedup, and least-privilege grants.')
