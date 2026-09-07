@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 
+# ROOM_STATUS_DB_READ_AUTHORITY_V1 is included in this canonical upload-convergence gate.
 client = Path('Client.html').read_text(encoding='utf-8')
 sync = Path('RealtimeDailySync.js').read_text(encoding='utf-8')
 upload = Path('09_RoomStatusUpload.js').read_text(encoding='utf-8')
