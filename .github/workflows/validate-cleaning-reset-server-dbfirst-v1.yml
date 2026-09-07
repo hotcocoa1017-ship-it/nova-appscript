@@ -1,0 +1,104 @@
+name: Validate Cleaning Reset Server DB First V1
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+    paths:
+      - scripts/patch_cleaning_reset_server_dbfirst_v1.py
+      - .github/workflows/validate-cleaning-reset-server-dbfirst-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply patch
+        run: python scripts/patch_cleaning_reset_server_dbfirst_v1.py
+      - name: Validate server DB-first guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'CLEANING_RESET_SERVER_DB_FIRST_V1' 06_Indicator.js
+          grep -q 'resetIndicatorRoomCleaningDbFirst_' 06_Indicator.js
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('06_Indicator.js').read_text(encoding='utf-8')
+          branch=s.index("if (action === 'CLEANING_RESET')")
+          helper=s.index('function resetIndicatorRoomCleaningDbFirst_')
+          legacy=s.index('function resetIndicatorRoomCleaningFast_')
+          assert branch < helper < legacy
+          segment=s[branch:helper]
+          assert 'novaMobileRealtimeEnabled_()' in segment
+          assert 'resetIndicatorRoomCleaningDbFirst_(token' in segment
+          helper_text=s[helper:legacy]
+          assert "action: 'CLEANING_RESET'" in helper_text
+          assert 'novaMobileRealtimeActionFetch_' in helper_text
+          assert 'expectedVersion: 0' in helper_text
+          assert 'mirrorPending: true' in helper_text
+          assert 'updateRowByHeaders_' not in helper_text
+          assert 'markIndicatorRoomCleaningCompletionsDeleted_' not in helper_text
+          print('cleaning reset server DB-first guard validated')
+          PY
+      - name: Validate existing DB event mirror completeness
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          r=Path('RealtimeDailySync.js').read_text(encoding='utf-8')
+          start=r.index("if (action === 'CLEANING_RESET')")
+          end=r.index("if (action === 'CLEAR_ASSIGNMENT')", start)
+          block=r[start:end]
+          required=[
+            'findIndicatorRoomActiveCleaningCompletions_',
+            'markIndicatorRoomCleaningCompletionsDeleted_',
+            'pendingCompletions',
+            'qmNotifications.splice',
+            "cleaningStatus: 'WAITING'",
+            "cleaningType: ''",
+            "assignmentType: ''",
+            "roommaidEmployeeNo: ''",
+            "secondaryRoommaidEmployeeNo: ''",
+            "qmEmployeeNo: ''",
+            "status: 'CLEANING_RESET'",
+          ]
+          missing=[x for x in required if x not in block]
+          assert not missing, missing
+          print('existing CLEANING_RESET DB event mirror is complete')
+          PY
+      - name: JavaScript syntax checks
+        run: node --check 06_Indicator.js && node --check RealtimeDailySync.js
+      - name: NOVA regression validation
+        run: python scripts/validate_nova_release.py
+      - name: Patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- 06_Indicator.js > /tmp/first.diff
+          python scripts/patch_cleaning_reset_server_dbfirst_v1.py
+          git diff -- 06_Indicator.js > /tmp/second.diff
+          diff -u /tmp/first.diff /tmp/second.diff
+      - name: Persist generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 06_Indicator.js; then
+            echo 'No generated source changes.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 06_Indicator.js
+          git commit -m 'Persist cleaning reset server DB-first v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
