@@ -46,10 +46,11 @@ require_order(
 
 # ROOM_STATUS_DB_READ_AUTHORITY_V1 · DB hydrate/reconcile is now the read authority for roomStatus.
 require(client, 'ROOM_STATUS_DB_READ_AUTHORITY_V1', 'roomStatus DB read-authority marker')
+# Expansion-safe: additional DB-owned metadata may legally sit between roomStatus and cleaningStatus.
 require_regex(
     client,
-    r"const NOVA_REALTIME_ROOM_FIELDS_ = Object\.freeze\(\[.*?'roomStatus',\s*'cleaningStatus'",
-    'roomStatus is owned by the Realtime merge field list'
+    r"const NOVA_REALTIME_ROOM_FIELDS_ = Object\.freeze\(\[.*?'roomStatus'.*?'cleaningStatus'",
+    'roomStatus and cleaningStatus remain owned by the Realtime merge field list'
 )
 require(client, "roomStatus: String(row.room_status ?? row.roomStatus ?? '')", 'full DB row maps roomStatus')
 require(client, "putText('roomStatus', 'room_status', 'roomStatus');", 'partial DB row maps roomStatus')
