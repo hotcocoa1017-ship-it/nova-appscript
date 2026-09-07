@@ -96,14 +96,24 @@ function novaHousemanMonthlyDbCancelIfPresent_(token, orderId, requestId) { // M
 
 def patch_cancel_function(text):
     start, end, part = function_slice(text, 'cancelMonthlyManagedHousemanOrder', 'deleteMonthlyHousemanOrder')
-    if 'const dbRequestId = Utilities.getUuid(); // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1' not in part:
-        part = sub_once(
+    marker = 'const dbRequestId = Utilities.getUuid(); // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1'
+    if marker not in part:
+        pattern = re.compile(
             r"(try\s*\{\s*detail\s*=\s*JSON\.parse\(String\(found\.data\['세부내용JSON'\]\s*\|\|\s*'\{\}'\)\);\s*\}\s*catch\s*\(error\)\s*\{\s*detail\s*=\s*\{\};\s*\})\s*(const\s+version\s*=\s*reserveDataVersion_\(\{\s*lockHeld:\s*true\s*\}\);)",
-            r"\1\n\n      const dbRequestId = Utilities.getUuid(); // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1\n      const dbResult = typeof novaHousemanMonthlyDbCancelIfPresent_ === 'function'\n        ? novaHousemanMonthlyDbCancelIfPresent_(token, orderId, dbRequestId)\n        : { ok: true, dbFirst: false, dbChecked: false, skipped: true };\n\n      \2",
-            part,
-            'cancel DB precommit',
             re.S,
         )
+        match = pattern.search(part)
+        if not match:
+            raise SystemExit('cancel DB precommit replacement count=0')
+        insert = (
+            match.group(1)
+            + "\n\n      const dbRequestId = Utilities.getUuid(); // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1\n"
+            + "      const dbResult = typeof novaHousemanMonthlyDbCancelIfPresent_ === 'function'\n"
+            + "        ? novaHousemanMonthlyDbCancelIfPresent_(token, orderId, dbRequestId)\n"
+            + "        : { ok: true, dbFirst: false, dbChecked: false, skipped: true };\n\n"
+            + "      " + match.group(2)
+        )
+        part = part[:match.start()] + insert + part[match.end():]
 
         part = sub_once(
             r"cancelSource:\s*'MONTHLY_HISTORY'\s*\n\s*\}\);",
@@ -112,25 +122,40 @@ def patch_cancel_function(text):
             'cancel audit metadata',
         )
 
-        part = sub_once(
+        pattern = re.compile(
             r"(\n\s*orderId,\s*\n\s*version,\s*\n\s*order,)\s*\n(\s*message:\s*`\$\{String\(found\.data\['객실번호'\]\s*\|\|\s*''\)\.trim\(\)\}호 오더를 취소했습니다\.`)",
-            r"\1\n        dbFirst: Boolean(dbResult && dbResult.dbFirst),\n        dbChecked: Boolean(dbResult && dbResult.dbChecked),\n        dbRequestId: String(dbResult && dbResult.requestId || dbRequestId),\n\2",
-            part,
-            'cancel return metadata',
             re.S,
         )
+        match = pattern.search(part)
+        if not match:
+            raise SystemExit('cancel return metadata replacement count=0')
+        insert = (
+            match.group(1)
+            + "\n        dbFirst: Boolean(dbResult && dbResult.dbFirst),"
+            + "\n        dbChecked: Boolean(dbResult && dbResult.dbChecked),"
+            + "\n        dbRequestId: String(dbResult && dbResult.requestId || dbRequestId),\n"
+            + match.group(2)
+        )
+        part = part[:match.start()] + insert + part[match.end():]
     return text[:start] + part + text[end:]
 
 
 def patch_delete_function(text):
     start, end, part = function_slice(text, 'deleteMonthlyHousemanOrder', 'getMonthlyHousemanAutoAssignment')
-    if 'const dbRequestId = Utilities.getUuid(); // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1' not in part:
-        part = sub_once(
-            r"(\n\s*const\s+users\s*=\s*getUserIndex_\(\)\.byEmployeeNo;)",
-            "\n      const dbRequestId = Utilities.getUuid(); // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1\n      const dbResult = typeof novaHousemanMonthlyDbCancelIfPresent_ === 'function'\n        ? novaHousemanMonthlyDbCancelIfPresent_(token, orderId, dbRequestId)\n        : { ok: true, dbFirst: false, dbChecked: false, skipped: true };\n\1",
-            part,
-            'delete DB precommit',
+    marker = 'const dbRequestId = Utilities.getUuid(); // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1'
+    if marker not in part:
+        pattern = re.compile(r"(\n\s*const\s+users\s*=\s*getUserIndex_\(\)\.byEmployeeNo;)")
+        match = pattern.search(part)
+        if not match:
+            raise SystemExit('delete DB precommit replacement count=0')
+        insert = (
+            "\n      const dbRequestId = Utilities.getUuid(); // MONTHLY_HOUSEMAN_DB_FIRST_CANCEL_V1\n"
+            + "      const dbResult = typeof novaHousemanMonthlyDbCancelIfPresent_ === 'function'\n"
+            + "        ? novaHousemanMonthlyDbCancelIfPresent_(token, orderId, dbRequestId)\n"
+            + "        : { ok: true, dbFirst: false, dbChecked: false, skipped: true };"
+            + match.group(1)
         )
+        part = part[:match.start()] + insert + part[match.end():]
 
         part = sub_once(
             r"previousStatus:\s*statusCode\s*\n\s*\}\);",
@@ -139,13 +164,21 @@ def patch_delete_function(text):
             'delete audit metadata',
         )
 
-        part = sub_once(
+        pattern = re.compile(
             r"(\n\s*orderId,\s*\n\s*version,)\s*\n(\s*message:\s*`\$\{String\(found\.data\['객실번호'\]\s*\|\|\s*''\)\.trim\(\)\}호 오더를 삭제했습니다\.`)",
-            r"\1\n        dbFirst: Boolean(dbResult && dbResult.dbFirst),\n        dbChecked: Boolean(dbResult && dbResult.dbChecked),\n        dbRequestId: String(dbResult && dbResult.requestId || dbRequestId),\n\2",
-            part,
-            'delete return metadata',
             re.S,
         )
+        match = pattern.search(part)
+        if not match:
+            raise SystemExit('delete return metadata replacement count=0')
+        insert = (
+            match.group(1)
+            + "\n        dbFirst: Boolean(dbResult && dbResult.dbFirst),"
+            + "\n        dbChecked: Boolean(dbResult && dbResult.dbChecked),"
+            + "\n        dbRequestId: String(dbResult && dbResult.requestId || dbRequestId),\n"
+            + match.group(2)
+        )
+        part = part[:match.start()] + insert + part[match.end():]
     return text[:start] + part + text[end:]
 
 
