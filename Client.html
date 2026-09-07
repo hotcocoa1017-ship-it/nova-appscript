@@ -464,8 +464,8 @@
       }
     }
 
-    // 일반 객실상태 Realtime 저장 직후 Sheet 미러가 따라올 때까지만 상태를 보호한다.
-    // CHECKED_OUT은 이 보호맵을 사용하지 않으므로 기존 Apps Script 퇴실 결과가 stale DB에 의해 되돌아가지 않는다.
+    // CHECKOUT_DB_FIRST_CLIENT_V1 · 일반 퇴실을 포함한 Realtime 객실상태 저장 직후
+    // DB 이벤트의 Sheet 미러가 따라올 때까지만 확정 상태를 보호한다.
     const protectionKey = `${String(merged.site || '').trim()}|${String(merged.roomNo || '').trim()}`;
     const statusProtection = novaRealtime_.roomStatusProtections.get(protectionKey);
     if (statusProtection) {
@@ -1356,8 +1356,7 @@
     }
 
     const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_CLEAR', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
-      || (mappedAction === 'CHANGE_ROOM_STATUS'
-        && String(safe.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT');
+      || mappedAction === 'CHANGE_ROOM_STATUS';
 
     if (!realtimeAction) {
       const retryableLegacyAction = mappedAction === 'UPDATE_ROOM_OPERATION_STATUS'
@@ -7263,9 +7262,7 @@
     const index = rooms.findIndex(item => item.roomNo === room.roomNo && item.site === room.site);
     const beforeRoom = index >= 0 ? Object.assign({}, rooms[index]) : null;
     const optimisticPatch = buildOptimisticRoomPatch_(room, payload);
-    if (action === 'CHANGE_ROOM_STATUS'
-        && String(payload.roomStatus || '').trim().toUpperCase() !== 'CHECKED_OUT'
-        && optimisticPatch) {
+    if (action === 'CHANGE_ROOM_STATUS' && optimisticPatch) {
       const realtimeRoomPatch = {};
       [
         'cleaningStatus', 'cleaningType', 'assignmentType',
