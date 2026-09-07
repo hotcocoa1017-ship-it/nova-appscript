@@ -1,0 +1,232 @@
+name: Validate NOVA DB Full - No Deploy
+
+on:
+  push:
+    branches:
+      - verify/nova-db-full-20260907
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-db-full-validation-no-deploy
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply canonical production patches in release order
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_sync_status_autohide.py
+          python3 scripts/patch_telegram_self_connect.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          python3 scripts/patch_roommaid_performance_attribution.py
+          python3 scripts/patch_roommaid_close_read_acceleration.py
+          python3 scripts/fix_patch_site_scope_v2.py
+          python3 scripts/patch_site_scope_indicator_close_v2.py
+          python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
+          python3 scripts/patch_houseman_realtime_push.py
+          python3 scripts/patch_concurrent_write_resilience_v1.py
+          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
+          python3 scripts/patch_mobile_view_state_persistence_20260904.py
+          python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
+          python3 scripts/patch_qm_end_to_end_accel_20260906.py
+          python3 scripts/patch_qm_clear_dbfirst_operation_flags_20260907.py
+          python3 scripts/patch_checkout_dbfirst_20260907.py
+          python3 scripts/patch_room_upload_realtime_sync_20260907.py
+          python3 scripts/patch_room_previous_cycle_db_authority_20260907.py
+
+      - name: Validate DB-first feature gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
+          python3 scripts/validate_qm_end_to_end_accel_20260906.py
+          python3 scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
+          python3 scripts/validate_checkout_dbfirst_20260907.py
+          python3 scripts/validate_room_upload_realtime_sync_20260907.py
+          python3 scripts/validate_room_previous_cycle_db_authority_20260907.py
+
+      - name: Validate full Realtime routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "API 설정과 보조 Realtime 연결을 분리해 고속 API 유지" Client.html
+          grep -q "SYNC_STATUS_AUTO_HIDE_V1" Client.html
+          grep -q "TELEGRAM_SELF_CONNECT_V1" Client.html
+          grep -q "function prepareMyTelegramConnection" TelegramSelfConnect.js
+          grep -q "function getMyTelegramConnectionStatus" TelegramSelfConnect.js
+          grep -q "REALTIME_SUBSCRIPTION_RESILIENCE_V1" Client.html
+          grep -q "await novaRealtime_.supabase.realtime.setAuth(auth.token)" Client.html
+          grep -q "'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_CLEAR', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'" Client.html
+          grep -q "QM_CLEAR_DB_FIRST_V2" Client.html
+          grep -q "QM_CLEAR_EVENT_MIRROR_V2" RealtimeDailySync.js
+          grep -q "ROOM_OPERATION_FLAGS_FORWARD_SYNC_V2" RealtimeDailySync.js
+          grep -q "ROOM_PREVIOUS_CYCLE_DB_AUTHORITY_V1" Client.html
+          grep -q "ROOM_PREVIOUS_CYCLE_DB_AUTHORITY_V1" RealtimeDailySync.js
+          grep -q "CHECKOUT_DB_FIRST_CLIENT_V1" Client.html
+          grep -Fq "|| mappedAction === 'CHANGE_ROOM_STATUS';" Client.html
+          grep -q "ROOM_UPLOAD_REALTIME_CONVERGENCE_V1" Client.html
+          grep -q "ROOM_UPLOAD_REALTIME_CONVERGENCE_V1" RealtimeDailySync.js
+          grep -q "function syncRoomStatusUploadRealtimeNow" RealtimeDailySync.js
+          grep -q "updateRoomOperationalStatusSafe" Client.html
+          grep -q "action === 'ASSIGN_ROOMMAID'" RealtimeDailySync.js
+          grep -q "action === 'UPDATE_ROOM_OPERATION_STATUS'" RealtimeDailySync.js
+          grep -q "action === 'QM_ASSIGN'" RealtimeDailySync.js
+          grep -q "action === 'QM_CLEAR'" RealtimeDailySync.js
+          grep -q "action === 'CHANGE_ROOM_STATUS'" RealtimeDailySync.js
+          grep -q "REALTIME_ASSIGNMENT_BATCH_MERGE_V1" RealtimeDailySync.js
+          grep -q "ROOMMAID_PERFORMANCE_ATTRIBUTION_V1" RealtimeDailySync.js
+          grep -q "ROOMMAID_PERFORMANCE_ATTRIBUTION_V1" 17_RoommaidPerformance.js
+          grep -q "roommaidPerformanceEligibleEmployeeNo_" 17_RoommaidPerformance.js
+          grep -q "ROOMMAID_CLOSE_READ_ACCEL_V2" 19_RoommaidCloseJournal.js
+          grep -q "function readRoommaidCloseRealtimeCurrentRows_" 19_RoommaidCloseJournal.js
+          grep -q "function readRoommaidCloseHistoryBundleFast_" 19_RoommaidCloseJournal.js
+          grep -q "SITE_SCOPE_INDICATOR_CLOSE_V2" Index.html
+          grep -q "SITE_SCOPE_INDICATOR_CLOSE_V2" 03_Auth.js
+          grep -q "SITE_SCOPE_INDICATOR_CLOSE_V2" Client.html
+          grep -q "ORDER_SHARED_SITE_CONTEXT_V1" Client.html
+          grep -q "ORDER_SHARED_SITE_CONTEXT_V2" Client.html
+          grep -q "HOUSEMAN_REALTIME_PUSH_V1" Client.html
+          grep -q "CONCURRENT_WRITE_RESILIENCE_V1" 05_Performance.js
+          grep -q "CONCURRENT_WRITE_RESILIENCE_V1" 16_QmChecklist.js
+          grep -q "function acquireUserWriteLock_" 05_Performance.js
+          grep -q "QM 추가조회 탭 · 기존 점검대상 화면 보존" Client.html
+          grep -q "QM 추가탭 동·층 필터 + 안전 즉시점검" Client.html
+          grep -q "QM 추가탭 체크리스트 즉시노출 v1" Client.html
+          grep -q "QM 점검대상 정비자 이름 보존 v1" Client.html
+          grep -q "function getQmMobileBrowseRooms" QmMobileBrowse.js
+          grep -q "function startQmMobileBrowseInspection" QmMobileBrowse.js
+          grep -q "data-qm-browse-inspect" Client.html
+          grep -q "qmBrowseLocationFilters" Client.html
+          grep -q "QM_NOTIFICATION_BELL_V1" HousemanUiPerformancePatch.html
+          grep -q "ROOMMAID_NOTIFICATION_BELL_V1" HousemanUiPerformancePatch.html
+          grep -q "S.mode==='QM'" HousemanUiPerformancePatch.html
+          grep -q "S.mode==='ROOMMAID'" HousemanUiPerformancePatch.html
+          grep -q "function qmItem" HousemanUiPerformancePatch.html
+          grep -q "function roommaidItem" HousemanUiPerformancePatch.html
+          grep -q "MOBILE_LOCATION_FILTER_PERSIST_V1" Client.html
+          grep -q "function restoreMobileLocationPreference_" Client.html
+          grep -q "function restoreQmBrowseLocationPreference_" Client.html
+          grep -q "role === 'PUBLIC' || role === 'ROOMMAID' || (role === 'QM'" Client.html
+          grep -q "MOBILE_VIEW_STATE_PERSIST_V2" Client.html
+          grep -q "function restoreMobileViewPreference_" Client.html
+          grep -q "function saveMobileViewPreference_" Client.html
+          grep -q "await loadQmMobileBrowse_({ force: Boolean(options.force) })" Client.html
+          grep -q "restoreScrollPending: true" Client.html
+          grep -q "새 업무범위의 기존 동·층 저장값은 삭제하지 않습니다" Client.html
+          grep -q "QM_END_TO_END_ACCEL_V1" Client.html
+          grep -q "NOVA_QM_PHOTO_EDGE_SLUG_ = 'nova-qm-photo-v1'" Client.html
+          if grep -q "include_('OperationalStatusHotfix')" Index.html; then
+            echo "::error::OperationalStatusHotfix must not intercept the Realtime path."
+            exit 2
+          fi
+          if grep -q "addEventListener('click',onOperationalStatusClickCapture,true)" HousemanUiPerformancePatch.html; then
+            echo "::error::Houseman UI patch must not intercept operational-status clicks."
+            exit 2
+          fi
+
+      - name: Validate simulations and release regression gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_order_site_context_v1.py
+          python3 scripts/validate_nova_release.py
+
+      - name: Validate generated JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check 03_Auth.js
+          node --check 05_Performance.js
+          node --check 10_Mobile.js
+          node --check 16_QmChecklist.js
+          node --check QmMobileBrowse.js
+          node --check RealtimeDailySync.js
+          node --check 17_RoommaidPerformance.js
+          node --check 19_RoommaidCloseJournal.js
+          node --check TelegramSelfConnect.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for source, target in [
+              ('Client.html', '/tmp/NovaClient.js'),
+              ('HousemanUiPerformancePatch.html', '/tmp/NovaNotification.js'),
+          ]:
+              text = Path(source).read_text(encoding='utf-8')
+              scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+              if not scripts:
+                  raise SystemExit(f'No script block found in {source}')
+              Path(target).write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+          node --check /tmp/NovaNotification.js
+
+      - name: Validate patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          tracked=(Index.html 02_Repository.js 03_Auth.js 05_Performance.js 10_Mobile.js 16_QmChecklist.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js)
+          before="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
+          python3 scripts/patch_realtime_client.py
+          python3 scripts/patch_sync_status_autohide.py
+          python3 scripts/patch_telegram_self_connect.py
+          python3 scripts/patch_realtime_subscription_resilience.py
+          python3 scripts/patch_qm_mobile_browse.py
+          python3 scripts/patch_qm_mobile_browse_v2.py
+          python3 scripts/patch_qm_immediate_checklist.py
+          python3 scripts/patch_qm_roommaid_name_display.py
+          python3 scripts/patch_qm_notification_bell.py
+          python3 scripts/patch_roommaid_notification_bell.py
+          python3 scripts/patch_realtime_assignment_batch_merge.py
+          python3 scripts/patch_roommaid_performance_attribution.py
+          python3 scripts/patch_roommaid_close_read_acceleration.py
+          python3 scripts/fix_patch_site_scope_v2.py
+          python3 scripts/patch_site_scope_indicator_close_v2.py
+          python3 scripts/patch_order_site_context_v1.py
+          python3 scripts/patch_order_site_context_v2.py
+          python3 scripts/patch_houseman_realtime_push.py
+          python3 scripts/patch_concurrent_write_resilience_v1.py
+          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
+          python3 scripts/patch_mobile_view_state_persistence_20260904.py
+          python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
+          python3 scripts/patch_qm_end_to_end_accel_20260906.py
+          python3 scripts/patch_qm_clear_dbfirst_operation_flags_20260907.py
+          python3 scripts/patch_checkout_dbfirst_20260907.py
+          python3 scripts/patch_room_upload_realtime_sync_20260907.py
+          python3 scripts/patch_room_previous_cycle_db_authority_20260907.py
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_order_site_context_v1.py
+          python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
+          python3 scripts/validate_qm_end_to_end_accel_20260906.py
+          python3 scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
+          python3 scripts/validate_checkout_dbfirst_20260907.py
+          python3 scripts/validate_room_upload_realtime_sync_20260907.py
+          python3 scripts/validate_room_previous_cycle_db_authority_20260907.py
+          after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Validate clean patch output
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          echo "PASS: validation-only workflow completed. No Apps Script or Cloud Run deployment commands are present in this workflow."
