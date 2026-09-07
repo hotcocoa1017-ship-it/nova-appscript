@@ -83,6 +83,22 @@ function novaRoomUploadDbApply_(token, payload) { // ROOM_UPLOAD_DB_FIRST_V2
   });
 }
 
+function novaQmClearDbFirstEnabled_() { // QM_CLEAR_SERVER_DB_FIRST_V1
+  const props = PropertiesService.getScriptProperties();
+  if (String(props.getProperty('NOVA_REALTIME_ENABLED') || 'N').trim().toUpperCase() !== 'Y') return false;
+  return String(props.getProperty('NOVA_QM_CLEAR_DB_FIRST_ENABLED') || 'Y').trim().toUpperCase() !== 'N';
+}
+
+function novaQmClearDbApply_(token, payload) { // QM_CLEAR_SERVER_DB_FIRST_V1
+  const safe = payload || {};
+  return novaRealtimeUserRpc_(token, 'nova_qm_clear_v1', {
+    p_business_date: String(safe.businessDate || '').trim(),
+    p_site: String(safe.site || '').trim(),
+    p_room_no: String(safe.roomNo || '').trim(),
+    p_request_id: String(safe.requestId || '').trim()
+  });
+}
+
 function novaQmInspectionDbFirstEnabled_() { // QM_INSPECTION_FINALIZE_DB_FIRST_V1
   const props = PropertiesService.getScriptProperties();
   if (String(props.getProperty('NOVA_REALTIME_ENABLED') || 'N').trim().toUpperCase() !== 'Y') return false;

@@ -409,6 +409,62 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
         continue;
       }
 
+      if (action === 'QM_CLEAR') { // QM_CLEAR_SERVER_DB_FIRST_V1
+        const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
+        const previousQmNo = String(
+          eventDetail.previousQmEmployeeNo || rowInfo.data['QM사번'] || ''
+        ).trim();
+        const previousCleaningStatus = String(
+          eventDetail.previousCleaningStatus || rowInfo.data['청소상태'] || ''
+        ).trim().toUpperCase();
+        const nextCleaningStatus = String(
+          event.afterStatus || eventDetail.cleaningStatus || previousCleaningStatus || 'COMPLETED'
+        ).trim().toUpperCase();
+
+        roomUpdates.push({
+          rowNumber: rowInfo.rowNumber,
+          cleaningStatus: nextCleaningStatus,
+          qmEmployeeNo: '',
+          version,
+          updatedAt: nowText_()
+        });
+        rowInfo.data['청소상태'] = nextCleaningStatus;
+        rowInfo.data['QM사번'] = '';
+
+        historyPayloads.push({
+          recordType: NOVA.RECORD_TYPES.QM,
+          businessDate: eventBusinessDate,
+          site: eventSite,
+          roomNo: eventRoomNo,
+          targetEmployeeNo: previousQmNo,
+          status: 'QM_CLEAR',
+          detail: {
+            requestId,
+            realtime: true,
+            action: 'QM_CLEAR',
+            role: String(eventDetail.role || 'ORDER').trim().toUpperCase(),
+            previousRoomStatus: String(rowInfo.data['객실상태'] || '').trim().toUpperCase(),
+            roomStatus: String(rowInfo.data['객실상태'] || '').trim(),
+            previousCleaningStatus,
+            cleaningStatus: nextCleaningStatus,
+            cleaningType,
+            assignmentType,
+            primaryEmployeeNo: roommaidNo,
+            secondaryEmployeeNo: secondaryRoommaidNo,
+            previousQmEmployeeNo: previousQmNo,
+            qmEmployeeNo: '',
+            dbRoomVersion: Number(event.roomVersion || 0),
+            dbEventTime: String(event.eventTime || '')
+          },
+          registeredBy: employeeNo,
+          version
+        });
+
+        alreadyApplied.add(requestId);
+        mirrored += 1;
+        continue;
+      }
+
       if (action === 'QM_ASSIGN') {
         const eventDetail = event.detail && typeof event.detail === 'object' ? event.detail : {};
         const assignedQmNo = String(eventDetail.qmEmployeeNo || '').trim();
