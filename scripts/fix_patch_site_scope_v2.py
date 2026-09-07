@@ -45,3 +45,12 @@ subprocess.run([sys.executable, 'scripts/patch_qm_finalize_dbfirst_v2_20260907.p
 subprocess.run([sys.executable, 'scripts/patch_qm_finalize_preflight_v2_20260907.py'], check=True)
 subprocess.run([sys.executable, 'scripts/validate_qm_finalize_dbfirst_v2_20260907.py'], check=True)
 subprocess.run([sys.executable, 'scripts/validate_qm_finalize_preflight_v2_20260907.py'], check=True)
+
+# Whole-DB 전환: 근무조/담당동, 퇴실지연, 일마감, 월별조회, 룸메이드 리포팅.
+# DB 원본 확정 전에는 legacy를 보존하고, DB write 결과가 불명확한 경우에는 Sheet 이중쓰기를 금지합니다.
+subprocess.run([sys.executable, 'scripts/patch_shift_zone_dbfirst_v3_20260907.py'], check=True)
+subprocess.run([sys.executable, 'scripts/patch_departure_delay_dbfirst_v3_20260907.py'], check=True)
+subprocess.run([sys.executable, 'scripts/patch_daily_close_dbfirst_fallback_v1_20260908.py'], check=True)
+subprocess.run([sys.executable, 'scripts/patch_monthly_daily_dbfirst_v2_20260907.py'], check=True)
+subprocess.run([sys.executable, 'scripts/patch_roommaid_reporting_dbfirst_v2_20260907.py'], check=True)
+subprocess.run([sys.executable, 'scripts/validate_whole_db_transition_v1_20260908.py'], check=True)
