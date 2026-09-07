@@ -7609,6 +7609,26 @@
         resetExisting: resetMode
       });
       if (!result?.ok) throw new Error(result?.message || '객실현황 반영에 실패했습니다.');
+      // ROOM_UPLOAD_REALTIME_CONVERGENCE_V1 · Sheet 잠금이 해제된 뒤 별도 요청으로 DB를 즉시 수렴시킵니다.
+      // 서버가 먼저 pending DB 이벤트를 미러하므로 라이브 배정/QM 상태를 stale 업로드값으로 덮지 않습니다.
+      if (novaRealtimeIsEnabled_()) {
+        void callServer('syncRoomStatusUploadRealtimeNow', state.token, result.businessDate, result.site)
+          .then(syncResult => {
+            if (syncResult?.deferred) {
+              console.warn('[NOVA Realtime] 객실현황 즉시 DB 동기화 보류 · 이벤트 backlog', syncResult);
+              setSyncStatus('객실현황 DB 동기화 대기 · 예약동기화로 계속 반영');
+              return;
+            }
+            if (syncResult?.ok) {
+              console.log('[NOVA Realtime] 객실현황 즉시 DB 동기화 완료', syncResult);
+              setSyncStatus('객실현황 DB 동기화 완료');
+            }
+          })
+          .catch(error => {
+            console.warn('[NOVA Realtime] 객실현황 즉시 DB 동기화 실패 · 예약동기화 유지', error);
+            setSyncStatus('객실현황 DB 동기화 지연 · 예약동기화로 재반영');
+          });
+      }
       closeModal();
       state.indicator.version = Number(result.version || 0);
       state.indicator.businessDate = result.businessDate || state.indicator.businessDate;

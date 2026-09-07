@@ -42,6 +42,46 @@ function syncNovaRealtimeCurrentBusinessDate(businessDate, site, options) { // (
   });
 }
 
+function syncRoomStatusUploadRealtimeNow(token, businessDate, site) { // ROOM_UPLOAD_REALTIME_CONVERGENCE_V1 · 업로드 직후 잠금 밖 DB 수렴
+  const user = requireRole_(token, ['ADMIN', 'ORDER']);
+  const dateText = novaRealtimeFinalBusinessDate_(businessDate);
+  const siteText = String(site || '').trim();
+  if (!siteText) throw new Error('객실현황 DB 즉시동기화에 사업장이 필요합니다.');
+  if (!novaRealtimeFinalEnabled_()) {
+    return { ok: true, skipped: true, reason: 'REALTIME_DISABLED', businessDate: dateText, site: siteText };
+  }
+
+  // 업로드 직후 stale Sheet가 최신 DB 액션을 덮지 않도록 반드시 DB→Sheet 이벤트를 먼저 비웁니다.
+  // backlog가 남으면 즉시 정방향 동기화를 포기하고 기존 1분 통합트리거에 맡깁니다.
+  const mirror = mirrorNovaRealtimeEventsDrain_({ maxBatches: 2, timeBudgetMs: 45000 });
+  if (mirror && mirror.hasMore) {
+    return {
+      ok: true,
+      deferred: true,
+      reason: 'REALTIME_EVENT_BACKLOG',
+      businessDate: dateText,
+      site: siteText,
+      mirror
+    };
+  }
+
+  const current = syncNovaRealtimeCurrentBusinessDate(dateText, siteText, {});
+  PropertiesService.getScriptProperties().setProperty(
+    NOVA_REALTIME_FINAL.LAST_FORWARD_SYNC_MS,
+    String(Date.now())
+  );
+  return {
+    ok: true,
+    immediate: true,
+    businessDate: dateText,
+    site: siteText,
+    mirror,
+    current,
+    requestedBy: String(user.employeeNo || '')
+  };
+}
+
+
 function syncNovaRealtimeRoomForAction(token, payload) { // (룸메이드 작업 직전 누락객실 JIT 동기화)
   const auth = verifyNovaToken(token);
   if (!auth.ok) throw new Error('로그인이 필요합니다.');
