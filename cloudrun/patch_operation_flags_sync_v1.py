@@ -3,7 +3,6 @@ import sys
 
 PATH = Path('cloudrun/index.js')
 text = PATH.read_text(encoding='utf-8')
-original = text
 MARKER = 'ROOM_OPERATION_FLAGS_SYNC_V1'
 
 
@@ -51,14 +50,15 @@ replace_once(
 )
 
 # 3) Bootstrap and incremental room value tuples expand from 12 -> 15 params.
+#    The two blocks use different indentation, so patch them separately.
 replace_exact_count(
-    "        const n = i * 12;",
-    "        const n = i * 15;",
+    "const n = i * 12;",
+    "const n = i * 15;",
     2,
     'room tuple parameter width'
 )
 
-replace_exact_count(
+replace_once(
     "          r.qmEmployeeNo || null,\n          r.operationalStatus\n        );",
     "          r.qmEmployeeNo || null,\n"
     "          r.operationalStatus,\n"
@@ -66,11 +66,20 @@ replace_exact_count(
     "          r.vip,\n"
     "          r.importantRoom\n"
     "        );",
-    2,
-    'room tuple operation flag params'
+    'bootstrap room operation flag params'
+)
+replace_once(
+    "              r.qmEmployeeNo || null,\n              r.operationalStatus\n            );",
+    "              r.qmEmployeeNo || null,\n"
+    "              r.operationalStatus,\n"
+    "              r.preassigned,\n"
+    "              r.vip,\n"
+    "              r.importantRoom\n"
+    "            );",
+    'sync room operation flag params'
 )
 
-replace_exact_count(
+replace_once(
     "          $${n + 11},\n          $${n + 12}\n        )`;",
     "          $${n + 11},\n"
     "          $${n + 12},\n"
@@ -78,11 +87,20 @@ replace_exact_count(
     "          $${n + 14}::boolean,\n"
     "          $${n + 15}::boolean\n"
     "        )`;",
-    2,
-    'room tuple operation flag placeholders'
+    'bootstrap operation flag placeholders'
+)
+replace_once(
+    "              $${n + 11},\n              $${n + 12}\n            )`;",
+    "              $${n + 11},\n"
+    "              $${n + 12},\n"
+    "              $${n + 13}::boolean,\n"
+    "              $${n + 14}::boolean,\n"
+    "              $${n + 15}::boolean\n"
+    "            )`;",
+    'sync operation flag placeholders'
 )
 
-replace_exact_count(
+replace_once(
     "          qm_employee_no,\n          operational_status\n        )",
     "          qm_employee_no,\n"
     "          operational_status,\n"
@@ -90,8 +108,17 @@ replace_exact_count(
     "          vip,\n"
     "          important_room\n"
     "        )",
-    2,
-    'room insert operation flag columns'
+    'bootstrap operation flag columns'
+)
+replace_once(
+    "            qm_employee_no,\n            operational_status\n          )",
+    "            qm_employee_no,\n"
+    "            operational_status,\n"
+    "            preassigned,\n"
+    "            vip,\n"
+    "            important_room\n"
+    "          )",
+    'sync operation flag columns'
 )
 
 # 4) Incremental sync updates flags from the signed Sheet payload without touching
