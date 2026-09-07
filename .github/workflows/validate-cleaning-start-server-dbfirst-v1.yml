@@ -1,0 +1,103 @@
+name: Validate Cleaning Start Server DB First V1
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+    paths:
+      - scripts/patch_cleaning_start_server_dbfirst_v1.py
+      - .github/workflows/validate-cleaning-start-server-dbfirst-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply patch
+        run: python scripts/patch_cleaning_start_server_dbfirst_v1.py
+      - name: Validate server DB-first guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'CLEANING_START_SERVER_DB_FIRST_V1' 06_Indicator.js
+          grep -q 'startIndicatorRoomCleaningDbFirst_' 06_Indicator.js
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('06_Indicator.js').read_text(encoding='utf-8')
+          branch=s.index("if (action === 'CLEANING_START'\n")
+          helper=s.index('function startIndicatorRoomCleaningDbFirst_')
+          complete=s.index('function completeIndicatorRoomCleaningDbFirst_')
+          assert branch < helper < complete
+          segment=s[branch:s.index("if (action === 'CLEANING_COMPLETE')", branch)]
+          assert 'novaMobileRealtimeEnabled_()' in segment
+          assert 'startIndicatorRoomCleaningDbFirst_(token' in segment
+          helper_text=s[helper:complete]
+          required=[
+            "action: 'CLEANING_START'",
+            'novaMobileRealtimeActionFetch_',
+            'expectedVersion: 0',
+            'expectedState',
+            'mirrorPending: true',
+            'alreadyStarted:',
+          ]
+          missing=[x for x in required if x not in helper_text]
+          assert not missing, missing
+          forbidden=['getRequiredSheet_', 'updateRowByHeaders_', 'appendUnifiedHistory_', 'reserveDataVersion_']
+          present=[x for x in forbidden if x in helper_text]
+          assert not present, present
+          print('cleaning start server DB-first guard validated')
+          PY
+      - name: Validate DB event mirror owns start history
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          r=Path('RealtimeDailySync.js').read_text(encoding='utf-8')
+          start=r.index("status: action === 'CLEANING_START' ? 'ROOMMAID_START' : 'ROOMMAID_COMPLETE'")
+          block=r[start-1800:start+1800]
+          required=[
+            "status: action === 'CLEANING_START' ? 'ROOMMAID_START' : 'ROOMMAID_COMPLETE'",
+            'primaryEmployeeNo: performancePrimaryEmployeeNo',
+            'secondaryEmployeeNo: performanceSecondaryEmployeeNo',
+            'creditUnit: getRoommaidCleaningCreditUnit_(cleaningType)',
+          ]
+          missing=[x for x in required if x not in block]
+          assert not missing, missing
+          print('CLEANING_START DB event mirror owns Sheet history')
+          PY
+      - name: JavaScript syntax checks
+        run: node --check 06_Indicator.js && node --check RealtimeDailySync.js
+      - name: NOVA regression validation
+        run: python scripts/validate_nova_release.py
+      - name: Patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- 06_Indicator.js > /tmp/first.diff
+          python scripts/patch_cleaning_start_server_dbfirst_v1.py
+          git diff -- 06_Indicator.js > /tmp/second.diff
+          diff -u /tmp/first.diff /tmp/second.diff
+      - name: Persist generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 06_Indicator.js; then
+            echo 'No generated source changes.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 06_Indicator.js
+          git commit -m 'Persist cleaning start server DB-first v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
