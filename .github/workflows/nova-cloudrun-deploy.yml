@@ -38,7 +38,9 @@ jobs:
           grep -Fq "preassigned: raw?.preassigned === true" cloudrun/index.js
           grep -Fq "vip: raw?.vip === true" cloudrun/index.js
           grep -Fq "importantRoom: raw?.importantRoom === true" cloudrun/index.js
-          test "$(grep -Fc 'const n = i * 15;' cloudrun/index.js)" -eq 2
+          tuple15="$(grep -Fc 'const n = i * 15;' cloudrun/index.js || true)"
+          tuple20="$(grep -Fc 'const n = i * 20;' cloudrun/index.js || true)"
+          test "$((tuple15 + tuple20))" -eq 2
           if grep -Fq 'const n = i * 12;' cloudrun/index.js; then
             echo '::error::Legacy 12-column room tuple remains.'
             exit 2
@@ -51,6 +53,35 @@ jobs:
           grep -Fq 'important_room=$6' cloudrun/index.js
           grep -Fq 'preassigned: r.preassigned === true' cloudrun/index.js
           grep -Fq 'importantRoom: r.important_room === true' cloudrun/index.js
+
+      - name: Apply previous-cycle metadata DB sync patch
+        run: python3 cloudrun/patch_room_previous_cycle_metadata_v1.py
+
+      - name: Validate previous-cycle metadata DB sync patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "ROOM_PREVIOUS_CYCLE_METADATA_SYNC_V1" cloudrun/index.js
+          grep -Fq "lastRoomStatus: r.last_room_status || ''" cloudrun/index.js
+          grep -Fq "previousRoomStatus: r.previous_room_status || ''" cloudrun/index.js
+          grep -Fq "previousCleaningStatus: r.previous_cleaning_status || ''" cloudrun/index.js
+          grep -Fq "previousRoommaidEmployeeNo: r.previous_roommaid_employee_no || ''" cloudrun/index.js
+          grep -Fq "previousSecondaryRoommaidEmployeeNo: r.previous_secondary_roommaid_employee_no || ''" cloudrun/index.js
+          grep -Fq "lastRoomStatus:" cloudrun/index.js
+          grep -Fq "cleanText_(raw?.lastRoomStatus, 40).toUpperCase()" cloudrun/index.js
+          grep -Fq "cleanText_(raw?.previousRoomStatus, 40).toUpperCase()" cloudrun/index.js
+          grep -Fq "cleanText_(raw?.previousCleaningStatus, 40).toUpperCase()" cloudrun/index.js
+          test "$(grep -Fc 'const n = i * 20;' cloudrun/index.js)" -eq 2
+          if grep -Fq 'const n = i * 15;' cloudrun/index.js; then
+            echo '::error::Legacy 15-column room tuple remains after metadata patch.'
+            exit 2
+          fi
+          test "$(grep -Fc 'last_room_status,' cloudrun/index.js)" -ge 2
+          grep -Fq 'last_room_status=excluded.last_room_status' cloudrun/index.js
+          grep -Fq 'previous_room_status=excluded.previous_room_status' cloudrun/index.js
+          grep -Fq 'previous_cleaning_status=excluded.previous_cleaning_status' cloudrun/index.js
+          grep -Fq 'previous_roommaid_employee_no=excluded.previous_roommaid_employee_no' cloudrun/index.js
+          grep -Fq 'previous_secondary_roommaid_employee_no=excluded.previous_secondary_roommaid_employee_no' cloudrun/index.js
 
       - name: Apply CHECKED_OUT DB-first patch
         run: python3 cloudrun/patch_checkout_dbfirst_v1.py
@@ -187,6 +218,7 @@ jobs:
           echo '- Service: nova-realtime-api' >> "$GITHUB_STEP_SUMMARY"
           echo '- Region: asia-southeast1' >> "$GITHUB_STEP_SUMMARY"
           echo '- Operation flags DB sync patch: PASS' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Previous-cycle metadata DB sync patch: PASS' >> "$GITHUB_STEP_SUMMARY"
           echo '- CHECKED_OUT DB-first patch: PASS' >> "$GITHUB_STEP_SUMMARY"
           echo '- Source validation: PASS' >> "$GITHUB_STEP_SUMMARY"
           echo '- Production health check: PASS' >> "$GITHUB_STEP_SUMMARY"
