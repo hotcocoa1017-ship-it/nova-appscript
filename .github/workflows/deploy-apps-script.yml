@@ -295,6 +295,19 @@ jobs:
           chmod 600 "$HOME/.clasprc.json"
           clasp show-authorized-user --json
 
+      - name: Check Apps Script version capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          versions="$(clasp versions)"
+          printf '%s\n' "$versions"
+          version_count="$(printf '%s\n' "$versions" | grep -Ec '^[[:space:]]*[0-9]+[[:space:]]*-' || true)"
+          echo "Apps Script versions: ${version_count}/200"
+          if [ "$version_count" -ge 200 ]; then
+            echo "::error::Apps Script version limit reached (${version_count}/200). Delete unused versions in Project history before deploying. Source push has not started."
+            exit 4
+          fi
+
       - name: Push source to Apps Script
         run: clasp push --force
 
