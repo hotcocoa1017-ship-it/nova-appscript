@@ -31,3 +31,9 @@ jobs:
         run: |
           echo '--- REVIEW_PRIMARY ---'
           awk '/^\[REVIEW_PRIMARY\]/{flag=1;next}/^\[ALLOW_MIRROR_FALLBACK\]/{flag=0}flag' db_cutover_residual_audit.txt
+      - name: Upload audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-cutover-residual-audit-v1
+          path: db_cutover_residual_audit.txt
+          if-no-files-found: error
