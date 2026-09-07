@@ -30,6 +30,14 @@ jobs:
           grep -q "readRoommaidCloseHistoryBundleDbFirst_(token, businessDate, preferredSite)" 19_RoommaidCloseJournal.js
           grep -q "historyLookup: historyBundle.dbFirst ? 'REALTIME_DB' : 'DATE_TEXTFINDER'" 19_RoommaidCloseJournal.js
           grep -q "function novaRoommaidCloseHistoryDbRead_" RoommaidCloseDbFirstServer.js
+          grep -q "ROOMMAID_CLOSE_HISTORY_DB_FIRST_V2" RoommaidCloseDbFirstServer.js
+          grep -q "tryNovaDailyCloseDbSource_" RoommaidCloseDbFirstServer.js
+      - name: JavaScript syntax checks
+        run: |
+          node --check RoommaidCloseDbFirstServer.js
+          node --check 19_RoommaidCloseJournal.js
+      - name: NOVA regression validation
+        run: python scripts/validate_nova_release.py
       - name: Verify idempotence
         run: |
           cp 19_RoommaidCloseJournal.js /tmp/before.js
