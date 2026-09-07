@@ -33,7 +33,7 @@ if MARKER not in api:
     anchor = "function include_(filename) { // (HTML 부분파일 포함)\n"
     helper = """function getNovaPwaRouteJson_(e) { // (PWA Push 딥링크 파라미터를 안전한 JSON으로 제한)
   const p = e && e.parameter ? e.parameter : {};
-  const allowedRoutes = ['cleaning', 'qm', 'houseman', 'archive'];
+  const allowedRoutes = ['cleaning', 'qm', 'houseman', 'archive', 'indicator'];
   const routeValue = String(p.route || '').trim().toLowerCase();
   const siteValue = String(p.site || '').trim();
   const roomValue = String(p.roomNo || '').trim().replace(/[^0-9A-Za-z가-힣_-]/g, '').slice(0, 24);
@@ -126,7 +126,7 @@ index = index_path.read_text(encoding='utf-8')
 center = center_path.read_text(encoding='utf-8')
 requirements = [
     (api, MARKER, 'API marker'),
-    (api, "allowedRoutes = ['cleaning', 'qm', 'houseman', 'archive']", 'route allowlist'),
+    (api, "allowedRoutes = ['cleaning', 'qm', 'houseman', 'archive', 'indicator']", 'route allowlist'),
     (index, 'window.__NOVA_PWA_ROUTE_V2__', 'Index route bootstrap'),
     (center, "const PWA_ORIGIN='https://nova-pwa-hotcocoa1017-3826.vercel.app'", 'exact PWA origin'),
     (center, "type:'NOVA_PUSH_BRIDGE_V2'", 'push bridge message'),
