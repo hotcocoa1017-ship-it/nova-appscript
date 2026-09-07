@@ -56,4 +56,5 @@ require(INDICATOR, "if (previousCleaningStatus !== 'QM_WAITING')", 'legacy QM_CL
 require(INDICATOR, "updates['QM사번'] = ''", 'legacy QM clear assignment behavior')
 require(INDICATOR, "updates['청소상태'] = 'COMPLETED'", 'legacy QM clear completion state')
 
+# Release trigger: 2026-09-07 DB-first cutover gate.
 print('QM_CLEAR DB-first + operation flags regression gate passed.')
