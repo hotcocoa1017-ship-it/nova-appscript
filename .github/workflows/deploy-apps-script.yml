@@ -98,6 +98,9 @@ jobs:
       - name: Apply CHECKED_OUT DB-first client patch
         run: python3 scripts/patch_checkout_dbfirst_20260907.py
 
+      - name: Apply room upload immediate DB convergence
+        run: python3 scripts/patch_room_upload_realtime_sync_20260907.py
+
       - name: Validate QM direct DB-first start
         run: python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
 
@@ -109,6 +112,9 @@ jobs:
 
       - name: Validate CHECKED_OUT DB-first client path
         run: python3 scripts/validate_checkout_dbfirst_20260907.py
+
+      - name: Validate room upload immediate DB convergence
+        run: python3 scripts/validate_room_upload_realtime_sync_20260907.py
 
       - name: Validate full Realtime routing
         shell: bash
@@ -127,6 +133,9 @@ jobs:
           grep -q "ROOM_OPERATION_FLAGS_FORWARD_SYNC_V2" RealtimeDailySync.js
           grep -q "CHECKOUT_DB_FIRST_CLIENT_V1" Client.html
           grep -Fq "|| mappedAction === 'CHANGE_ROOM_STATUS';" Client.html
+          grep -q "ROOM_UPLOAD_REALTIME_CONVERGENCE_V1" Client.html
+          grep -q "ROOM_UPLOAD_REALTIME_CONVERGENCE_V1" RealtimeDailySync.js
+          grep -q "function syncRoomStatusUploadRealtimeNow" RealtimeDailySync.js
           grep -q "updateRoomOperationalStatusSafe" Client.html
           grep -q "action === 'ASSIGN_ROOMMAID'" RealtimeDailySync.js
           grep -q "action === 'UPDATE_ROOM_OPERATION_STATUS'" RealtimeDailySync.js
@@ -253,12 +262,14 @@ jobs:
           python3 scripts/patch_qm_end_to_end_accel_20260906.py
           python3 scripts/patch_qm_clear_dbfirst_operation_flags_20260907.py
           python3 scripts/patch_checkout_dbfirst_20260907.py
+          python3 scripts/patch_room_upload_realtime_sync_20260907.py
           python3 scripts/validate_site_scope_indicator_close_v2.py
           python3 scripts/validate_order_site_context_v1.py
           python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
           python3 scripts/validate_qm_end_to_end_accel_20260906.py
           python3 scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
           python3 scripts/validate_checkout_dbfirst_20260907.py
+          python3 scripts/validate_room_upload_realtime_sync_20260907.py
           after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
           test "$before" = "$after"
 
