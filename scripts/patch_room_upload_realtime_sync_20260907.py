@@ -1,4 +1,5 @@
 from pathlib import Path
+import runpy
 
 CLIENT_PATH = Path('Client.html')
 SYNC_PATH = Path('RealtimeDailySync.js')
@@ -41,3 +42,7 @@ if changed:
     print(f'Applied {MARKER} + {READ_MARKER}: upload convergence preserved and roomStatus now follows DB hydrate/reconcile authority.')
 else:
     print(f'{MARKER} + {READ_MARKER} already applied.')
+
+# Canonical room-upload patch chain: repair the staged generator, then apply DB-first V4.
+runpy.run_path('scripts/fix_room_upload_db_first_app_v4_generator_20260907.py', run_name='__main__')
+runpy.run_path('scripts/patch_room_upload_db_first_app_v4_20260907.py', run_name='__main__')
