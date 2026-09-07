@@ -1,0 +1,48 @@
+name: Validate Roommaid Close History DB First V1
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+    paths:
+      - scripts/patch_roommaid_close_history_dbfirst_v1.py
+      - RoommaidCloseDbFirstServer.js
+      - .github/workflows/validate-roommaid-close-history-dbfirst-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Patch source
+        run: python scripts/patch_roommaid_close_history_dbfirst_v1.py
+      - name: Verify markers
+        run: |
+          grep -q "readRoommaidCloseHistoryBundleDbFirst_(token, businessDate, preferredSite)" 19_RoommaidCloseJournal.js
+          grep -q "historyLookup: historyBundle.dbFirst ? 'REALTIME_DB' : 'DATE_TEXTFINDER'" 19_RoommaidCloseJournal.js
+          grep -q "function novaRoommaidCloseHistoryDbRead_" RoommaidCloseDbFirstServer.js
+      - name: Verify idempotence
+        run: |
+          cp 19_RoommaidCloseJournal.js /tmp/before.js
+          python scripts/patch_roommaid_close_history_dbfirst_v1.py
+          cmp /tmp/before.js 19_RoommaidCloseJournal.js
+      - name: Persist generated source
+        run: |
+          if git diff --quiet -- 19_RoommaidCloseJournal.js; then
+            echo "No generated change"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add 19_RoommaidCloseJournal.js
+          git commit -m "Persist roommaid close history DB-first v1 [skip ci]"
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
