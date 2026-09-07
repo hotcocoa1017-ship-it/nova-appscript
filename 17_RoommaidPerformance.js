@@ -7,14 +7,14 @@ const NOVA_ROOMMAID_PERFORMANCE = Object.freeze({
   MAINTENANCE_CREDIT: Object.freeze({ F: 1, T: 1.5, R: 1.5, G: 2 })
 });
 
-function getRoommaidPerformance(token, filters) { // (룸메이드 개인별 일·월 정비실적 조회)
+function getRoommaidPerformance(token, filters) { // (룸메이드 개인별 일·월 정비실적 조회 · ROOMMAID_PERFORMANCE_DB_FIRST_V1)
   return measureResponse_('getRoommaidPerformance', () => {
     const auth = verifyNovaToken(token);
     if (!auth.ok) throw new Error('로그인이 필요합니다.');
     const role = String(auth.user.role || '').trim().toUpperCase();
     if (!['ADMIN', 'ORDER', 'ROOMMAID'].includes(role)) throw new Error('룸메이드 실적 조회 권한이 없습니다.');
     const request = normalizeRoommaidPerformanceFilters_(filters, auth.user);
-    const rows = readMonthlyHistoryRowsDbFirst_(request, [NOVA.RECORD_TYPES.CLEANING], token).map(row => row && row.data ? row.data : row); // ROOMMAID_PERFORMANCE_DB_FIRST_V1
+    const rows = readRoommaidPerformanceHistoryDbFirst_(request, token).map(row => row && row.data ? row.data : row);
     const result = buildRoommaidPerformanceBundle_(rows, request);
     return Object.assign({ ok: true, filters: request, serverTime: nowText_() }, result);
   });
@@ -182,7 +182,11 @@ function buildRoommaidPerformanceBundle_(historyRows, request) { // (개인별 �
     const assignmentType = String(detail.assignmentType || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO).trim().toUpperCase();
     const maintenanceType = resolveRoommaidPerformanceMaintenanceType_(roomMasterIndex, site, roomNo, detail, data);
     const maintenanceCredit = roommaidPerformanceMaintenanceCredit_(maintenanceType);
-    const cleaningCredit = getRoommaidCleaningCreditUnit_(cleaningType);
+    const snapshotCreditText = detail.creditUnit == null ? '' : String(detail.creditUnit).trim();
+    const snapshotCredit = Number(snapshotCreditText);
+    const cleaningCredit = snapshotCreditText !== '' && Number.isFinite(snapshotCredit)
+      ? snapshotCredit
+      : getRoommaidCleaningCreditUnit_(cleaningType);
     const unit = maintenanceCredit * cleaningCredit;
     // 명시적으로 저장된 배정 스냅샷은 과거 직무변경과 무관하게 그대로 보존합니다.
     // 배정 스냅샷이 비어 있을 때만 대상사번을 fallback하며, 이 경우 현재 ROOMMAID 권한을 검증합니다.
