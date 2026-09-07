@@ -14,7 +14,7 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 server = SERVER.read_text(encoding='utf-8')
 if MARKER not in server:
-    anchor = "function submitQmChecklistInspection(token, payload) { // (최종 점검결과 저장·불량 성과 연계)\n"
+    anchor = "function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 최종제출·완료·재정비·실적저장)\n"
     block = r'''// QM_FINALIZE_PREFLIGHT_V2
 // DB 최종확정 전에 기존 Apps Script 체크리스트 revision/필수값/사진/하자 규칙을 그대로 검증합니다.
 // 이 함수는 운영 상태·이력·초안을 쓰지 않는 순수 preflight 입니다.
