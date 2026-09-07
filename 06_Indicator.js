@@ -132,10 +132,21 @@ function updateRoomOperation(token, payload) { // (객실 청소배정·상태�
       });
     }
 
-    // 퇴실 버튼은 사용자 전체 인덱스·일반 작업분기 로딩을 건너뛰고 핵심 저장만 수행한다. 잠금은 450ms 이내 확보하고 실패 시 Client가 자동 재시도한다.
-    // 화면은 Client 낙관적 반영으로 즉시 바뀌며, 서버는 동일 이력·버전·후속알림을 보존한다.
+    // 일반 퇴실도 PostgreSQL을 원본으로 사용합니다. // CHECKOUT_DB_FIRST_V1
+    // Realtime=Y이면 Cloud Run 객실 action을 먼저 확정하고 Sheets는 DB 이벤트 미러가 후행 반영합니다.
+    // Realtime=N에서만 기존 Sheet 고속경로를 유지합니다.
     if (action === 'CHANGE_ROOM_STATUS'
         && String(safe.roomStatus || '').trim().toUpperCase() === 'CHECKED_OUT') {
+      if (typeof novaMobileRealtimeEnabled_ === 'function'
+          && novaMobileRealtimeEnabled_()
+          && typeof novaMobileRealtimeActionFetch_ === 'function') {
+        return changeIndicatorRoomCheckoutDbFirst_(token, user, safe, {
+          startedMs,
+          businessDate,
+          site,
+          roomNo
+        });
+      }
       return changeIndicatorRoomCheckoutFast_(user, safe, {
         startedMs,
         businessDate,
@@ -581,6 +592,73 @@ function assertIndicatorCheckoutExpectedState_(safe, rowData, roomNo) {
   }
 
   assertExpectedVersion_(expectedVersion, actualVersion, `${roomNo}호 객실`);
+}
+
+function changeIndicatorRoomCheckoutDbFirst_(token, user, payload, context) { // (일반 퇴실 PostgreSQL 원본 경로) // CHECKOUT_DB_FIRST_V1
+  const safe = payload || {};
+  const info = context || {};
+  const businessDate = info.businessDate;
+  const site = String(info.site || '').trim();
+  const roomNo = String(info.roomNo || '').trim();
+  const startedMs = Number(info.startedMs || Date.now());
+  if (!site || !roomNo) throw new Error('퇴실 처리에 사업장과 객실번호가 필요합니다.');
+
+  const requestId = String(safe.requestId || '').trim() || `CHECKOUT:${Utilities.getUuid()}`;
+  const expectedState = safe.expectedState && typeof safe.expectedState === 'object'
+    ? Object.assign({}, safe.expectedState)
+    : {};
+  const dbPayload = {
+    businessDate,
+    site,
+    action: 'CHANGE_ROOM_STATUS',
+    roomStatus: 'CHECKED_OUT',
+    requestId,
+    // Sheet 마지막변경버전과 PostgreSQL version은 다른 도메인이므로 서버 fallback에서는 전달하지 않습니다.
+    expectedVersion: 0,
+    expectedState
+  };
+  const dbResult = novaMobileRealtimeActionFetch_(token, roomNo, dbPayload);
+  if (!dbResult || !dbResult.ok) {
+    const error = new Error(String(dbResult && (dbResult.message || dbResult.code) || `Realtime API 오류 (${dbResult && dbResult.__httpStatus || '-'})`));
+    error.code = String(dbResult && dbResult.code || 'CHECKOUT_DB_WRITE_FAILED');
+    throw error;
+  }
+
+  const dbRoom = dbResult.room && typeof dbResult.room === 'object' ? dbResult.room : {};
+  const version = Number(dbResult.version || dbRoom.version || 0);
+  const finishedMs = Date.now();
+  return {
+    ok: true,
+    dbFirst: true,
+    alreadySet: Boolean(dbResult.idempotent || dbResult.alreadySet),
+    version,
+    requestId: String(dbResult.requestId || requestId),
+    room: {
+      rowNumber: Number(safe.rowNumber || 0),
+      businessDate: String(dbRoom.businessDate || businessDate),
+      site: String(dbRoom.site || site),
+      roomNo: String(dbRoom.roomNo || roomNo),
+      roomStatus: String(dbRoom.roomStatus || 'CHECKED_OUT'),
+      cleaningStatus: String(dbRoom.cleaningStatus || 'WAITING'),
+      cleaningType: String(dbRoom.cleaningType || expectedState.cleaningType || NOVA.CLEANING_TYPES.NORMAL),
+      assignmentType: String(dbRoom.assignmentType || expectedState.assignmentType || NOVA.ROOMMAID_ASSIGNMENT_TYPES.SOLO),
+      roommaidEmployeeNo: String(dbRoom.roommaidEmployeeNo || expectedState.roommaidEmployeeNo || ''),
+      secondaryRoommaidEmployeeNo: String(dbRoom.secondaryRoommaidEmployeeNo || expectedState.secondaryRoommaidEmployeeNo || ''),
+      qmEmployeeNo: String(dbRoom.qmEmployeeNo || expectedState.qmEmployeeNo || ''),
+      operationalStatus: String(dbRoom.operationalStatus || expectedState.operationalStatus || ''),
+      updatedAt: String(dbRoom.updatedAt || ''),
+      version
+    },
+    mirrorPending: true,
+    notificationQueued: false,
+    notificationDeferred: false,
+    deferredNotification: null,
+    timing: {
+      checkout: true,
+      dbFirst: true,
+      totalMs: Math.max(0, finishedMs - startedMs)
+    }
+  };
 }
 
 function changeIndicatorRoomCheckoutFast_(user, payload, context) { // (퇴실 상태변경 핵심저장 고속경로)

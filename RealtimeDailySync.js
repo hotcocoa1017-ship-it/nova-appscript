@@ -286,6 +286,7 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
   const qmNotifications = [];
   const assignmentNotifications = [];
   const qmAssignmentNotifications = [];
+  const departureConfirmedNotifications = []; // CHECKOUT_DB_FIRST_V1_MIRROR
   let finalCursorTime = cursorTime;
   let finalCursorRequestId = cursorRequestId;
 
@@ -790,6 +791,29 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
         }
         Object.assign(updates, resolveManualRoomStatusState_(requestedRoomStatus, rowInfo.data));
 
+        // DB 이벤트가 DUE_OUT -> CHECKED_OUT을 확정한 경우 기존 룸메이드 퇴실확인 알림도 같은 이벤트 기준으로 1회 후행 처리합니다. // CHECKOUT_DB_FIRST_V1_MIRROR
+        if (previousRoomStatus === 'DUE_OUT' && requestedRoomStatus === 'CHECKED_OUT') {
+          const departureTargetUsers = uniqueRoomOperationEmployeeNos_([
+            rowInfo.data['룸메이드사번'], rowInfo.data['보조룸메이드사번']
+          ])
+            .map(targetEmployeeNo => usersByEmployeeNo[targetEmployeeNo] || null)
+            .filter(target => target && target.enabled && String(target.role || '').trim().toUpperCase() === 'ROOMMAID');
+          if (departureTargetUsers.length) {
+            departureConfirmedNotifications.push({
+              businessDate: eventBusinessDate,
+              site: eventSite,
+              roomNo: eventRoomNo,
+              targetUsers: departureTargetUsers,
+              cleaningType: String(rowInfo.data['정비유형'] || NOVA.CLEANING_TYPES.NORMAL).trim().toUpperCase(),
+              preassigned: normalizeYesNo_(rowInfo.data['선배정여부']) === 'Y',
+              vip: normalizeYesNo_(rowInfo.data['VIP여부']) === 'Y',
+              importantRoom: normalizeYesNo_(rowInfo.data['중요객실여부']) === 'Y',
+              registeredBy: employeeNo,
+              version
+            });
+          }
+        }
+
         updateRowByHeaders_(sheet, rowInfo.rowNumber, updates);
         Object.assign(rowInfo.data, updates);
 
@@ -942,6 +966,7 @@ function mirrorNovaRealtimeEventsToSheets_() { // (DB 이벤트를 기존 NOVA �
     qmNotifications.forEach(payload => queueQmReadyTelegram_(payload));
     assignmentNotifications.forEach(payload => queueCleaningAssignmentTelegram_(payload));
     qmAssignmentNotifications.forEach(payload => queueQmAssignmentTelegram_(payload));
+    departureConfirmedNotifications.forEach(payload => queueRoommaidDepartureConfirmedTelegram_(payload)); // CHECKOUT_DB_FIRST_V1_MIRROR
 
     if (version) {
       const affectedDates = Array.from(new Set(historyPayloads.map(item => item.businessDate).filter(Boolean)));
