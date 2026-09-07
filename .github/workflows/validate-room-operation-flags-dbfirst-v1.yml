@@ -1,0 +1,92 @@
+name: Validate Room Operation Flags DB First V1
+
+on:
+  push:
+    branches: [feat/full-db-houseman-ui-20260907]
+    paths:
+      - 'db/room_operation_flags_db_first_v1.sql'
+      - 'scripts/patch_room_operation_flags_dbfirst_v1.py'
+      - '.github/workflows/validate-room-operation-flags-dbfirst-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply patch
+        run: python3 scripts/patch_room_operation_flags_dbfirst_v1.py
+
+      - name: Validate DB-first routing and upload parity
+        run: |
+          set -euo pipefail
+          grep -q 'ROOM_OPERATION_FLAGS_DB_FIRST_V1' 06_Indicator.js
+          grep -q 'novaRoomOperationFlagsDbApply_' 06_Indicator.js
+          grep -q 'nova_room_operation_flags_update_v1' RealtimeDbFirstServer.js
+          grep -q 'nova_room_upload_state_v2' RealtimeDbFirstServer.js
+          grep -q 'nova_room_upload_apply_v3' RealtimeDbFirstServer.js
+          grep -q "'선배정여부': resetExisting ? 'N'" 09_RoomStatusUpload.js
+          grep -q 'importantRoom: normalizeYesNo_' 09_RoomStatusUpload.js
+          grep -q 'ROOM_OPERATION_FLAGS_DB_FIRST_V1: server RPC owns flag mutation' Client.html
+          python3 - <<'PY'
+          from pathlib import Path
+          indicator = Path('06_Indicator.js').read_text(encoding='utf-8')
+          start = indicator.index('function updateIndicatorRoomOperationFlagsDbFirst_')
+          body = indicator[start:]
+          # Dedicated DB-first helper must not touch Sheet/history directly.
+          forbidden = ['getRequiredSheet_', 'updateRowByHeaders_', 'appendUnifiedHistory_', 'reserveDataVersion_']
+          for token in forbidden:
+              assert token not in body[:body.find('\nfunction ', 20) if body.find('\nfunction ', 20) >= 0 else len(body)], token
+          client = Path('Client.html').read_text(encoding='utf-8')
+          line = next(x for x in client.splitlines() if 'const realtimeAction = [' in x)
+          assert "'UPDATE_OPERATION_FLAGS'" not in line, line
+          sql = Path('db/room_operation_flags_db_first_v1.sql').read_text(encoding='utf-8')
+          for token in ['preassigned boolean not null default false', 'vip boolean not null default false', 'important_room boolean not null default false', 'nova_room_operation_flags_update_v1', 'nova_room_upload_state_v2', 'nova_room_upload_apply_v3']:
+              assert token in sql, token
+          print('room operation flags structural gates OK')
+          PY
+
+      - name: JavaScript syntax checks
+        run: |
+          set -euo pipefail
+          for f in 06_Indicator.js 09_RoomStatusUpload.js RealtimeDbFirstServer.js; do
+            cp "$f" /tmp/check.js
+            node --check /tmp/check.js
+          done
+
+      - name: NOVA regression validation
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Patch idempotence
+        run: |
+          set -euo pipefail
+          sha256sum 06_Indicator.js 09_RoomStatusUpload.js RealtimeDbFirstServer.js Client.html > /tmp/before.sha
+          python3 scripts/patch_room_operation_flags_dbfirst_v1.py
+          sha256sum 06_Indicator.js 09_RoomStatusUpload.js RealtimeDbFirstServer.js Client.html > /tmp/after.sha
+          diff -u /tmp/before.sha /tmp/after.sha
+
+      - name: Persist generated source
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 06_Indicator.js 09_RoomStatusUpload.js RealtimeDbFirstServer.js Client.html
+          if git diff --cached --quiet; then
+            echo 'No generated source changes to persist.'
+            exit 0
+          fi
+          git commit -m 'Persist room operation flags DB-first v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
