@@ -1,0 +1,110 @@
+name: Validate Clear Assignment Server DB First V1
+
+on:
+  push:
+    branches:
+      - feat/full-db-houseman-ui-20260907
+    paths:
+      - scripts/patch_clear_assignment_server_dbfirst_v1.py
+      - .github/workflows/validate-clear-assignment-server-dbfirst-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/full-db-houseman-ui-20260907
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply patch
+        run: python scripts/patch_clear_assignment_server_dbfirst_v1.py
+      - name: Validate server DB-first guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'CLEAR_ASSIGNMENT_SERVER_DB_FIRST_V1' 06_Indicator.js
+          grep -q 'clearIndicatorRoomAssignmentDbFirst_' 06_Indicator.js
+          python - <<'PY'
+          from pathlib import Path
+          s=Path('06_Indicator.js').read_text(encoding='utf-8')
+          branch=s.index("if (action === 'CLEAR_ASSIGNMENT'\n")
+          helper=s.index('function clearIndicatorRoomAssignmentDbFirst_')
+          assign=s.index('function assignIndicatorRoommaidDbFirst_')
+          assert branch < helper < assign
+          segment=s[branch:s.index("if (action === 'ASSIGN_ROOMMAID'", branch)]
+          assert 'novaMobileRealtimeEnabled_()' in segment
+          assert 'clearIndicatorRoomAssignmentDbFirst_(token' in segment
+          helper_text=s[helper:assign]
+          required=[
+            "action: 'CLEAR_ASSIGNMENT'",
+            'novaMobileRealtimeActionFetch_',
+            'expectedVersion: 0',
+            'expectedState',
+            "cleaningStatus: String(dbRoom.cleaningStatus || 'WAITING')",
+            "roommaidEmployeeNo: String(dbRoom.roommaidEmployeeNo || '')",
+            "secondaryRoommaidEmployeeNo: String(dbRoom.secondaryRoommaidEmployeeNo || '')",
+            "qmEmployeeNo: String(dbRoom.qmEmployeeNo || '')",
+            'mirrorPending: true',
+          ]
+          missing=[x for x in required if x not in helper_text]
+          assert not missing, missing
+          forbidden=['getRequiredSheet_', 'getUserIndex_', 'updateRowByHeaders_', 'appendUnifiedHistory_', 'reserveDataVersion_']
+          present=[x for x in forbidden if x in helper_text]
+          assert not present, present
+          print('clear assignment server DB-first guard validated')
+          PY
+      - name: Validate DB event mirror owns clear assignment Sheet and history
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          r=Path('RealtimeDailySync.js').read_text(encoding='utf-8')
+          start=r.index("if (action === 'CLEAR_ASSIGNMENT')")
+          end=r.index("if (action === 'UPDATE_OPERATION_FLAGS')", start)
+          block=r[start:end]
+          required=[
+            "'정비유형': ''",
+            "'배정유형': ''",
+            "'룸메이드사번': ''",
+            "'보조룸메이드사번': ''",
+            "'QM사번': ''",
+            "'청소상태': 'WAITING'",
+            "status: 'CLEAR_ASSIGNMENT'",
+          ]
+          missing=[x for x in required if x not in block]
+          assert not missing, missing
+          print('CLEAR_ASSIGNMENT DB event mirror owns Sheet/history')
+          PY
+      - name: JavaScript syntax checks
+        run: node --check 06_Indicator.js && node --check RealtimeDailySync.js
+      - name: NOVA regression validation
+        run: python scripts/validate_nova_release.py
+      - name: Patch idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff -- 06_Indicator.js > /tmp/first.diff
+          python scripts/patch_clear_assignment_server_dbfirst_v1.py
+          git diff -- 06_Indicator.js > /tmp/second.diff
+          diff -u /tmp/first.diff /tmp/second.diff
+      - name: Persist generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 06_Indicator.js; then
+            echo 'No generated source changes.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 06_Indicator.js
+          git commit -m 'Persist clear assignment server DB-first v1 [skip ci]'
+          git push origin HEAD:feat/full-db-houseman-ui-20260907
