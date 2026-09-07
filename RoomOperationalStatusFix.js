@@ -23,6 +23,64 @@ function updateRoomOperationalStatusSafe(token, payload) {
     const expectedStatus = normalizeIndicatorRoomOperationalStatus_(rawExpectedStatus);
     if (rawExpectedStatus && !expectedStatus) throw new Error('현재 객실 조치상태를 확인하지 못했습니다.');
 
+    // PostgreSQL이 원본인 동안에는 Sheet를 먼저 수정하지 않습니다. // OPERATION_STATUS_DB_FIRST_V2
+    // 기존 Cloud Run 객실 action API가 권한·row lock·상태검증·이벤트 생성을 담당하고,
+    // Sheets/업무이력은 RealtimeDailySync의 DB -> Sheet 이벤트 미러가 후행 반영합니다.
+    if (typeof novaMobileRealtimeEnabled_ === 'function' && novaMobileRealtimeEnabled_()) {
+      if (!requestedSite) throw new Error('사업장을 선택한 뒤 다시 처리하세요.');
+      if (typeof novaMobileRealtimeActionFetch_ !== 'function') throw new Error('Realtime 객실 작업 기능을 찾을 수 없습니다.');
+
+      const requestId = String(safe.requestId || '').trim() || `OPSTATUS:${Utilities.getUuid()}`;
+      const dbPayload = {
+        businessDate,
+        site: requestedSite,
+        action: 'UPDATE_ROOM_OPERATION_STATUS',
+        operationalStatus: requestedStatus,
+        requestId,
+        expectedVersion: 0,
+        expectedState: {
+          operationalStatus: hasExpectedStatus ? expectedStatus : ''
+        }
+      };
+      const dbResult = novaMobileRealtimeActionFetch_(token, roomNo, dbPayload);
+      if (!dbResult || !dbResult.ok) {
+        const error = new Error(String(dbResult && (dbResult.message || dbResult.code) || `Realtime API 오류 (${dbResult && dbResult.__httpStatus || '-'})`));
+        error.code = String(dbResult && dbResult.code || 'OPERATION_STATUS_DB_WRITE_FAILED');
+        throw error;
+      }
+
+      const dbRoom = dbResult.room && typeof dbResult.room === 'object' ? dbResult.room : {};
+      const dbVersion = Number(dbResult.version || dbRoom.version || 0);
+      const finishedMs = Date.now();
+      return {
+        ok: true,
+        dbFirst: true,
+        alreadySet: Boolean(dbResult.idempotent || dbResult.alreadySet),
+        version: dbVersion,
+        requestId: String(dbResult.requestId || requestId),
+        room: {
+          rowNumber: Number(safe.rowNumber || 0),
+          businessDate: String(dbRoom.businessDate || businessDate),
+          site: String(dbRoom.site || requestedSite),
+          roomNo: String(dbRoom.roomNo || roomNo),
+          roomStatus: String(dbRoom.roomStatus || ''),
+          cleaningStatus: String(dbRoom.cleaningStatus || ''),
+          operationalStatus: Object.prototype.hasOwnProperty.call(dbRoom, 'operationalStatus')
+            ? String(dbRoom.operationalStatus || '')
+            : requestedStatus,
+          updatedAt: String(dbRoom.updatedAt || ''),
+          version: dbVersion
+        },
+        mirrorPending: true,
+        timing: {
+          safeOperationalStatus: true,
+          dbFirst: true,
+          durableWriteVerified: true,
+          totalMs: Math.max(0, finishedMs - startedMs)
+        }
+      };
+    }
+
     ensureIndicatorRoomOperationalStatusHeader_();
     const lockRequestedMs = Date.now();
     const writeLock = acquireIndicatorFastWriteLock_();

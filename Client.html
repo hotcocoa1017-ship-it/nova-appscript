@@ -1266,15 +1266,8 @@
     if (mappedAction === 'QM_REWORK') { // QM_REWORK_OPERATIONAL_STATUS_V1 · Cloud Run 청소상태 REWORK 경로 우회
       const directResult = await callServer(legacyMethod, state.token, legacySafe);
       if (!directResult?.ok) throw new Error(directResult?.message || '재정비 상태를 저장하지 못했습니다.');
-      void callServer('syncNovaRealtimeRoomForAction', state.token, {
-        businessDate: safe.businessDate,
-        site: safe.site,
-        roomNo: safe.roomNo,
-        action: 'UPDATE_ROOM_OPERATION_STATUS'
-      }).catch(syncError => {
-        console.warn('[NOVA Realtime] 재정비 객실조치 DB 단건 동기화는 정기 동기화로 넘깁니다.', syncError);
-      });
-      return Object.assign({}, directResult, { reworkOperationalSafePath: true });
+      // updateRoomOperationalStatusSafe 자체가 DB-first이므로 Sheet->DB JIT는 호출하지 않습니다. // OPERATION_STATUS_DB_FIRST_V2_CLIENT
+      return Object.assign({}, directResult, { reworkOperationalSafePath: true, dbFirst: directResult.dbFirst === true });
     }
 
     const realtimeAction = ['CLEANING_START', 'CLEANING_COMPLETE', 'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'].includes(mappedAction)
@@ -1360,15 +1353,8 @@
       delete directPayload.sheetExpectedVersion;
       const directResult = await callServer('updateRoomOperationalStatusSafe', state.token, directPayload);
       if (!directResult?.ok) throw new Error(directResult?.message || '객실조치 완료를 저장하지 못했습니다.');
-      void callServer('syncNovaRealtimeRoomForAction', state.token, {
-        businessDate: safe.businessDate,
-        site: safe.site,
-        roomNo: safe.roomNo,
-        action: 'UPDATE_ROOM_OPERATION_STATUS'
-      }).catch(syncError => {
-        console.warn('[NOVA Realtime] 객실조치 완료 후 DB 단건 재동기화는 정기 동기화로 넘깁니다.', syncError);
-      });
-      return Object.assign({}, directResult, { realtimeDirectSafePath: true });
+      // updateRoomOperationalStatusSafe 자체가 DB-first이므로 Sheet->DB JIT는 호출하지 않습니다. // OPERATION_STATUS_DB_FIRST_V2_CLIENT
+      return Object.assign({}, directResult, { realtimeDirectSafePath: true, dbFirst: directResult.dbFirst === true });
     }
 
     delete safe.sheetExpectedVersion;
