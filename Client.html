@@ -241,7 +241,7 @@
     // 기존 Sheet snapshot/version은 이력·fallback 용도로 유지하되 DB hydrate/reconcile 이후에는
     // Sheet delta가 최신 DB 상태를 되돌리지 못하도록 동일 merge 경로에서 보호합니다.
     'roomStatus', 'lastRoomStatus', 'previousRoomStatus', 'previousCleaningStatus', 'previousRoommaidEmployeeNo', 'previousSecondaryRoommaidEmployeeNo',
-    'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo', 'operationalStatus', 'preassigned', 'vip', 'importantRoom', 'version', 'updatedAt'
+    'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo', 'cleaningStartedAt', 'cleaningCompletedAt', 'operationalStatus', 'preassigned', 'vip', 'importantRoom', 'version', 'updatedAt'
   ]);
   const NOVA_REALTIME_CLEANING_TARGET_ROOM_STATUSES_ = Object.freeze([
     'CHECKED_OUT', 'CHECKED_OUT_RC', 'CHECKED_OUT_HU', 'STOCK', 'STOCK_RC', 'STOCK_HU'
@@ -399,6 +399,8 @@
       roommaidEmployeeNo: String(row.roommaid_employee_no ?? row.roommaidEmployeeNo ?? ''),
       secondaryRoommaidEmployeeNo: String(row.secondary_roommaid_employee_no ?? row.secondaryRoommaidEmployeeNo ?? ''),
       qmEmployeeNo: String(row.qm_employee_no ?? row.qmEmployeeNo ?? ''),
+      cleaningStartedAt: row.cleaning_started_at || row.cleaningStartedAt || '',
+      cleaningCompletedAt: row.cleaning_completed_at || row.cleaningCompletedAt || '',
       operationalStatus: String(row.operational_status ?? row.operationalStatus ?? ''),
       version: Number(row.version || 0),
       updatedAt: row.updated_at || row.updatedAt || ''
@@ -424,6 +426,8 @@
     putText('roommaidEmployeeNo', 'roommaid_employee_no', 'roommaidEmployeeNo');
     putText('secondaryRoommaidEmployeeNo', 'secondary_roommaid_employee_no', 'secondaryRoommaidEmployeeNo');
     putText('qmEmployeeNo', 'qm_employee_no', 'qmEmployeeNo');
+    putText('cleaningStartedAt', 'cleaning_started_at', 'cleaningStartedAt');
+    putText('cleaningCompletedAt', 'cleaning_completed_at', 'cleaningCompletedAt');
     putText('operationalStatus', 'operational_status', 'operationalStatus');
     if (hasOwn('preassigned')) mapped.preassigned = row.preassigned === true;
     if (hasOwn('vip')) mapped.vip = row.vip === true;
@@ -2017,18 +2021,19 @@
   function menuWithLostFoundShortcut_(menu) { // (오더테이커 사용자계정 설정·외부 Web App 바로가기 추가)
     const items = Array.isArray(menu) ? menu.slice() : [];
     const role = String(state.bootstrap?.user?.role || '').trim().toUpperCase();
-    if (!['ADMIN', 'ORDER', 'HOUSEMAN'].includes(role)) return items; // HOUSEMAN_LOST_FOUND_SHORTCUT_V1
+    const hrShortcutRoles = new Set(['ADMIN', 'ORDER', 'HOUSEMAN', 'ROOMMAID', 'QM', 'PUBLIC']); // NOVA_HR_SHORTCUT_ROLES_V1
+    const lostFoundShortcutRoles = new Set(['ADMIN', 'ORDER', 'HOUSEMAN']);
+    if (!hrShortcutRoles.has(role)) return items;
     if (role === 'ORDER' && !items.some(item => item && item.id === 'settings')) {
       items.push({ id: 'settings', label: '설정' });
     }
-    if (!items.some(item => item && item.id === 'lostFoundShortcut')) {
+    if (lostFoundShortcutRoles.has(role) && !items.some(item => item && item.id === 'lostFoundShortcut')) {
       items.push({
         id: 'lostFoundShortcut',
         label: '습득물 관리 ↗',
         externalUrl: NOVA_LOST_FOUND_WEBAPP_URL_
       });
     }
-    if (role === 'HOUSEMAN') return items; // HOUSEMAN은 습득물 관리 바로가지만 추가
     if (!items.some(item => item && item.id === 'salesShortcut')) {
       items.push({
         id: 'salesShortcut',
@@ -7079,7 +7084,11 @@
     const cleaningStatusCode = codeValue_(state.indicator.data.codes?.cleaningStatuses, room.cleaningStatus || 'WAITING');
     const cleaningCompletionLocked = isIndicatorCleaningCompletionLocked_(cleaningStatusCode);
     const cleaningResetAvailable = cleaningCompletionLocked
-      && Boolean(room.cleaningType || room.roommaidEmployeeNo || room.secondaryRoommaidEmployeeNo || room.qmEmployeeNo);
+      && Boolean(
+        String(room.cleaningCompletedAt || '').trim()
+        || String(room.roommaidEmployeeNo || '').trim()
+        || String(room.secondaryRoommaidEmployeeNo || '').trim()
+      ); // INDICATOR_RESET_BUTTON_AUTHORITY_V2
     const qmClearAvailable = Boolean(String(room.qmEmployeeNo || '').trim()); // QM_CLEAR_REWORK_CONTROLS_V1
     const operationalStatus = normalizeIndicatorRoomOperationalStatus_(room.operationalStatus);
     const operationalStatusLabel = indicatorRoomOperationalStatusLabel_(operationalStatus);
