@@ -32,3 +32,4 @@ jobs:
             head -c 400 /tmp/nova.html | tr '\n' ' ' || true
             echo
           fi
+          echo 'VERIFY_ONCE_TRIGGERED=1'
