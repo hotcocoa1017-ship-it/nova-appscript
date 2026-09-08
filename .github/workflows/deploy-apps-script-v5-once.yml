@@ -1,0 +1,94 @@
+name: Deploy NOVA Roommaid Close V5 Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/deploy-apps-script-v5-once.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-apps-script-production
+  cancel-in-progress: false
+
+env:
+  APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
+
+jobs:
+  deploy-v5:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate V5 regression gate
+        run: python3 scripts/validate_roommaid_close_single_bundle_v5_20260909.py
+
+      - name: Validate production release regression gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            node --check "$file"
+          done < <(find . -maxdepth 1 -type f -name '*.js' -print0)
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp
+
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo "::error::Apps Script OAuth secret is missing."
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+
+      - name: Check Apps Script version capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          versions="$(clasp versions)"
+          printf '%s\n' "$versions"
+          version_count="$(printf '%s\n' "$versions" | grep -Ec '^[[:space:]]*[0-9]+[[:space:]]*-' || true)"
+          echo "Apps Script versions: ${version_count}/200"
+          if [ "$version_count" -ge 200 ]; then
+            echo "::error::Apps Script version limit reached (${version_count}/200)."
+            exit 4
+          fi
+
+      - name: Push source to Apps Script
+        run: clasp push --force
+
+      - name: Update existing web app deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp create-deployment \
+            --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" \
+            --description "NOVA ROOMMAID_CLOSE_SINGLE_BUNDLE_V5 ${GITHUB_SHA::12}"
+
+      - name: Deployment summary
+        run: |
+          echo "ROOMMAID_CLOSE_SINGLE_BUNDLE_V5 production deployment updated."
+          echo "Commit: $GITHUB_SHA"
