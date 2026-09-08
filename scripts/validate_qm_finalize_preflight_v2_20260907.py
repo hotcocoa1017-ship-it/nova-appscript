@@ -27,7 +27,14 @@ def require_order(text, first, second, label):
 require(SERVER, 'QM_FINALIZE_PREFLIGHT_V2', 'server preflight marker')
 require(SERVER, 'function prepareQmInspectionFinalizeDbFirst(token, payload)', 'preflight function')
 require(SERVER, "requireRole_(token, ['QM'])", 'QM role guard')
-require(SERVER, 'const checklist = getQmChecklistForSubmit_();', 'current checklist read')
+# QM checklist code-master DB-first may supply the same current revision through the DB-first helper.
+# Accept either route, but still require that preflight reads the current checklist before any mutation.
+legacy_checklist_read = 'const checklist = getQmChecklistForSubmit_();'
+dbfirst_checklist_read = 'const checklist = getQmChecklistForSubmitDbFirst_(token);'
+if legacy_checklist_read not in SERVER and dbfirst_checklist_read not in SERVER:
+    raise SystemExit(f'ERROR: missing current checklist read: {legacy_checklist_read} OR {dbfirst_checklist_read}')
+if dbfirst_checklist_read in SERVER:
+    require(SERVER, 'function getQmChecklistForSubmitDbFirst_(token)', 'DB-first current checklist helper')
 require(SERVER, 'requestedRevision !== checklist.revision', 'revision mismatch guard')
 require(SERVER, 'normalizeQmDraftPayload_', 'legacy payload normalizer reuse')
 require(SERVER, 'validateFinalQmAnswers_', 'legacy final answer validator reuse')
