@@ -18,12 +18,15 @@ def replace_once(text, old, new, label):
     fail(f'{label}: expected 1 anchor, found {count}')
 
 
-# 1) RPC allowlist.
+# 1) RPC allowlist. Other DB-first cutovers may insert RPCs next to this entry later,
+# so idempotence is based on the target RPC itself rather than exact neighboring lines.
 p = Path('DbFirstBridge.js')
 s = p.read_text(encoding='utf-8')
-old = "    'nova_daily_close_cancel_many_v1',\n    'nova_monthly_history_v1',"
-new = "    'nova_daily_close_cancel_many_v1',\n    'nova_roommaid_close_cancel_v1', // ROOMMAID_CLOSE_SAVE_DB_FIRST_V1\n    'nova_monthly_history_v1',"
-s = replace_once(s, old, new, 'roommaid close cancel RPC allowlist')
+if "'nova_roommaid_close_cancel_v1'" not in s:
+    anchor = "    'nova_daily_close_cancel_many_v1',\n"
+    if s.count(anchor) != 1:
+        fail(f'roommaid close cancel RPC allowlist anchor: expected 1 anchor, found {s.count(anchor)}')
+    s = s.replace(anchor, anchor + "    'nova_roommaid_close_cancel_v1', // ROOMMAID_CLOSE_SAVE_DB_FIRST_V1\n", 1)
 p.write_text(s, encoding='utf-8')
 
 # 2) Daily-close bridge: legacy upload metadata compatibility only for pre-V4 roommaid-close days.
