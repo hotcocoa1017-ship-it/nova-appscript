@@ -111,7 +111,7 @@ begin
   limit 1;
   if coalesce(v_private,'')='' then raise exception 'VAPID private key unavailable'; end if;
   return jsonb_build_object(
-    'publicKey','BIcs42B7cfuzFyx_-h0Ji8G8TfsU7CvoX8RBZo65MZe-J1VQvP9VrFOL_o2VCHQo0Y01zxN4vDbkcbcvspg3Hr8',
+    'publicKey','BKjiczDO9sG0qlh0rJDduCzQqT9tURU69oKN7mKmlyU4mnjx05x1FkUy-4Kaeqy40DReDmnQ1DR2s0ELu-SAgYM',
     'privateKey',v_private,
     'subject','https://evoetxfjmkkjptucwxsv.supabase.co'
   );
