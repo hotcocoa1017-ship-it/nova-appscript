@@ -3009,7 +3009,7 @@
   async function executeCodeSave_(payload, button) { // (코드 저장 공통)
     button.disabled = true;
     try {
-      const result = await callServer('saveAdminCodeRow', state.token, payload);
+      const result = await callServer('saveAdminCodeRowDbFirst', state.token, Object.assign({}, payload, { requestId: novaRealtimeRequestId_('ADMIN_CODE_SAVE_V1', 'ADMIN') })) // NOVA_ADMIN_CODE_SETTINGS_DB_FIRST_V1;
       if (!result?.ok) throw new Error(result?.message || '코드를 저장하지 못했습니다.');
       showToast(result.message || '코드를 저장했습니다.');
       await loadAdminSettingsForce_();
@@ -3024,7 +3024,7 @@
     if (!window.confirm(`${code} 항목을 사용중지할까요? 기존 이력은 유지됩니다.`)) return;
     button.disabled = true;
     try {
-      const result = await callServer('disableAdminCodeRow', state.token, { group: state.settings.selectedGroup, code });
+      const result = await callServer('disableAdminCodeRowDbFirst', state.token, { group: state.settings.selectedGroup, code, requestId: novaRealtimeRequestId_('ADMIN_CODE_DISABLE_V1', 'ADMIN') }) // NOVA_ADMIN_CODE_SETTINGS_DB_FIRST_V1;
       if (!result?.ok) throw new Error(result?.message || '코드를 사용중지하지 못했습니다.');
       showToast(result.message || '코드를 사용중지했습니다.');
       await loadAdminSettingsForce_();
