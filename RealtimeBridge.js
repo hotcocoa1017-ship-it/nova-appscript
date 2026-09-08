@@ -9,34 +9,39 @@
  *   NOVA_REALTIME_ENABLED = N 또는 Y
  *   NOVA_REALTIME_API_BASE = https://xxxx.run.app
  */
-function getNovaRealtimeClientConfig(token) { // QM_DRAFT_DB_FIRST_V1 · QM_DRAFT_PROMOTE_ALL_20260905
-  const props = PropertiesService.getScriptProperties();
+function buildNovaRealtimeClientConfig_(user, properties) { // BOOTSTRAP_REALTIME_CONFIG_PERF_V1 · 이미 검증된 사용자 재사용
+  const props = properties || PropertiesService.getScriptProperties();
   const apiBase = String(props.getProperty('NOVA_REALTIME_API_BASE') || '')
     .trim()
     .replace(/\/+$/, '');
   const enabled = String(props.getProperty('NOVA_REALTIME_ENABLED') || 'N')
     .trim()
     .toUpperCase() === 'Y';
-
-  let qmDraftDbFirstEnabled = false;
   const qmDraftMode = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED') || 'Y').trim().toUpperCase();
   const qmDraftMasterEnabled = qmDraftMode === 'CANARY' || qmDraftMode === 'Y';
-  if (qmDraftMasterEnabled && token) {
-    const verified = verifyNovaToken(token);
-    const user = verified && verified.ok ? verified.user : null;
-    // 2026-09-05 100→300→500→1,000 동시쓰기 검증 통과 후 전체 QM으로 승격합니다.
-    // NOVA_QM_DRAFT_DB_FIRST_ENABLED=N은 즉시 중단용 kill switch로 그대로 유지합니다.
-    qmDraftDbFirstEnabled = Boolean(user
-      && String(user.role || '').trim().toUpperCase() === 'QM');
-  }
+  const qmDraftDbFirstEnabled = Boolean(qmDraftMasterEnabled
+    && user
+    && String(user.role || '').trim().toUpperCase() === 'QM');
 
   return {
     ok: true,
     enabled: Boolean(enabled && apiBase),
-    apiBase: apiBase,
+    apiBase,
     mode: enabled && apiBase ? 'REALTIME' : 'LEGACY',
     qmDraftDbFirstEnabled // QM_DRAFT_DB_FIRST_V1
   };
+}
+
+function getNovaRealtimeClientConfig(token) { // QM_DRAFT_DB_FIRST_V1 · QM_DRAFT_PROMOTE_ALL_20260905
+  const props = PropertiesService.getScriptProperties();
+  const qmDraftMode = String(props.getProperty('NOVA_QM_DRAFT_DB_FIRST_ENABLED') || 'Y').trim().toUpperCase();
+  const qmDraftMasterEnabled = qmDraftMode === 'CANARY' || qmDraftMode === 'Y';
+  let user = null;
+  if (qmDraftMasterEnabled && token) {
+    const verified = verifyNovaToken(token);
+    user = verified && verified.ok ? verified.user : null;
+  }
+  return buildNovaRealtimeClientConfig_(user, props);
 }
 
 /**
