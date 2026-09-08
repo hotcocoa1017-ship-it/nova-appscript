@@ -1,0 +1,207 @@
+name: Apply Roommaid Close Tail Scan V4
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/.apply_roommaid_close_tail_scan_v4_20260908'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nova-apps-script-production
+  cancel-in-progress: false
+
+env:
+  APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply exact today-tail read patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          journal = Path('19_RoommaidCloseJournal.js')
+          text = journal.read_text(encoding='utf-8')
+          marker = 'ROOMMAID_CLOSE_TODAY_TAIL_SCAN_V4'
+          if marker not in text:
+              old = """  let matches = [];
+  try {
+    matches = sheet.getRange(2, dateColumn, lastRow - 1, 1)
+      .createTextFinder(String(businessDate || ''))
+      .matchEntireCell(true)
+      .findAll();
+  } catch (error) {
+    return readRoommaidCloseHistoryBundle_(businessDate, site);
+  }
+  const rowNumbers = matches.map(range => range.getRow()).filter(row => row >= 2);
+  if (!rowNumbers.length) return { historyRows: [], saved: null };
+  const rows = readRowsByNumbersForClose_(sheet, headerMap, rowNumbers);
+"""
+              new = """  let rowNumbers = [];
+  let readPath = 'DATE_TEXTFINDER';
+  if (String(businessDate || '').trim() === businessDateText_()) {
+    const tail = findRoommaidCloseTodayTailRange_(sheet, dateColumn, lastRow, businessDate);
+    if (tail && tail.complete && tail.startRow >= 2) {
+      rowNumbers = Array.from({ length: lastRow - tail.startRow + 1 }, (_, index) => tail.startRow + index);
+      readPath = 'SHEET_TODAY_TAIL_V4';
+    }
+  }
+  if (!rowNumbers.length) {
+    let matches = [];
+    try {
+      matches = sheet.getRange(2, dateColumn, lastRow - 1, 1)
+        .createTextFinder(String(businessDate || ''))
+        .matchEntireCell(true)
+        .findAll();
+    } catch (error) {
+      return readRoommaidCloseHistoryBundle_(businessDate, site);
+    }
+    rowNumbers = matches.map(range => range.getRow()).filter(row => row >= 2);
+  }
+  if (!rowNumbers.length) return { historyRows: [], saved: null, readPath };
+  const rows = readRowsByNumbersForClose_(sheet, headerMap, rowNumbers);
+"""
+              if old not in text:
+                  raise SystemExit('History TextFinder anchor not found')
+              text = text.replace(old, new, 1)
+              old_return = "  return { historyRows, saved };\n}\n\nfunction readRoommaidCloseCurrentSelection_"
+              new_return = "  return { historyRows, saved, readPath };\n}\n\nfunction findRoommaidCloseTodayTailRange_(sheet, dateColumn, lastRow, businessDate) { // ROOMMAID_CLOSE_TODAY_TAIL_SCAN_V4\n  const tailRows = 20000;\n  const guardRows = 2000;\n  const startRow = Math.max(2, lastRow - tailRows + 1);\n  const rowCount = lastRow - startRow + 1;\n  if (rowCount <= 0) return null;\n  let values = [];\n  try {\n    values = sheet.getRange(startRow, dateColumn, rowCount, 1).getDisplayValues();\n  } catch (error) {\n    return null;\n  }\n  const target = String(businessDate || '').trim();\n  let firstMatchOffset = -1;\n  for (let index = 0; index < values.length; index += 1) {\n    if (String(values[index][0] || '').trim() !== target) continue;\n    firstMatchOffset = index;\n    break;\n  }\n  if (firstMatchOffset < 0) return null;\n  if (startRow > 2 && firstMatchOffset < guardRows) return null;\n  return { complete: true, startRow: startRow + firstMatchOffset };\n}\n\nfunction readRoommaidCloseCurrentSelection_"
+              if old_return not in text:
+                  raise SystemExit('History return anchor not found')
+              text = text.replace(old_return, new_return, 1)
+              journal.write_text(text, encoding='utf-8')
+
+          bridge = Path('RoommaidReportingDbFirstBridge.js')
+          b = bridge.read_text(encoding='utf-8')
+          old_bridge = "      readPath: 'SHEET_TODAY_DIRECT'\n"
+          new_bridge = "      readPath: String(fast && fast.readPath || 'SHEET_TODAY_DIRECT') // ROOMMAID_CLOSE_TODAY_TAIL_SCAN_V4\n"
+          if old_bridge in b:
+              b = b.replace(old_bridge, new_bridge, 1)
+              bridge.write_text(b, encoding='utf-8')
+          elif marker not in b:
+              raise SystemExit('Bridge readPath anchor not found')
+          PY
+
+      - name: Validate exact V4 safety markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'ROOMMAID_CLOSE_TODAY_TAIL_SCAN_V4' 19_RoommaidCloseJournal.js
+          grep -q 'tailRows = 20000' 19_RoommaidCloseJournal.js
+          grep -q 'guardRows = 2000' 19_RoommaidCloseJournal.js
+          grep -q "readPath = 'SHEET_TODAY_TAIL_V4'" 19_RoommaidCloseJournal.js
+          grep -q 'createTextFinder' 19_RoommaidCloseJournal.js
+          grep -q 'ROOMMAID_CLOSE_TODAY_TAIL_SCAN_V4' RoommaidReportingDbFirstBridge.js
+
+      - name: Validate canonical operational invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          validators=(
+            scripts/validate_qm_start_dbfirst_direct_20260905.py
+            scripts/validate_qm_end_to_end_accel_20260906.py
+            scripts/validate_qm_houseman_dbfirst_20260906.py
+            scripts/validate_room_state_sync_hardening_20260906.py
+            scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
+            scripts/validate_room_previous_cycle_db_authority_20260907.py
+            scripts/validate_room_upload_db_first_v4_20260907.py
+            scripts/validate_checkout_dbfirst_20260907.py
+            scripts/validate_room_upload_realtime_sync_20260907.py
+            scripts/validate_qm_finalize_dbfirst_v2_20260907.py
+            scripts/validate_qm_finalize_preflight_v2_20260907.py
+            scripts/validate_site_scope_indicator_close_v2.py
+            scripts/validate_order_site_context_v1.py
+            scripts/validate_whole_db_transition_v2_20260908.py
+            scripts/validate_admin_operation_settings_dbfirst_v1_20260908.py
+            scripts/validate_admin_code_settings_dbfirst_v1_20260908.py
+            scripts/validate_qm_checklist_definition_shape_v1_20260908.py
+            scripts/validate_qm_checklist_codes_dbfirst_v1_20260908.py
+            scripts/validate_indicator_houseman_order_ui_20260908.py
+          )
+          for validator in "${validators[@]}"; do
+            python3 "$validator"
+          done
+          python3 scripts/validate_nova_release.py
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            node --check "$file"
+          done < <(find . -maxdepth 1 -type f -name '*.js' -print0)
+
+      - name: Persist minimal V4 source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 19_RoommaidCloseJournal.js RoommaidReportingDbFirstBridge.js
+          if git diff --cached --quiet; then
+            echo 'V4 source already present.'
+          else
+            git commit -m 'Optimize roommaid close cold read V4'
+            git push origin HEAD:main
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp
+
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo '::error::Apps Script OAuth secret is missing.'
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+
+      - name: Check Apps Script version capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          versions="$(clasp versions)"
+          version_count="$(printf '%s\n' "$versions" | grep -Ec '^[[:space:]]*[0-9]+[[:space:]]*-' || true)"
+          echo "Apps Script versions: ${version_count}/200"
+          if [ "$version_count" -ge 200 ]; then
+            echo "::error::Apps Script version limit reached (${version_count}/200)."
+            exit 4
+          fi
+
+      - name: Deploy existing NOVA web app
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp push --force
+          clasp create-deployment --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" --description "NOVA roommaid close tail V4 ${GITHUB_SHA::12}"
+
+      - name: Summary
+        run: echo 'Roommaid close today-tail V4 validated and deployed to existing NOVA web app.'
