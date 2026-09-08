@@ -1,4 +1,4 @@
-// deploy-trigger: NOVA Push recovery V4 2026-09-08 rev3 key-guard
+// deploy-trigger: NOVA Push recovery V5 2026-09-08 rev1 mature-key
 const CACHE='nova-pwa-v2-vercel-8'; // NOVA_PUSH_VAPID_RECOVERY_V5_KEY_GUARD_V1
 const ICON='https://evoetxfjmkkjptucwxsv.supabase.co/storage/v1/object/public/nova-pwa-v2/icon-192.png';
 const BADGE='https://evoetxfjmkkjptucwxsv.supabase.co/storage/v1/object/public/nova-pwa-v2/badge-96.png';
