@@ -124,7 +124,7 @@ function prepareRoomStatusUploadDbFirst(token, previewId, options) {
 
     const planId = `RUP4-${Utilities.getUuid()}`;
     const plan = {
-      kind: MARKER,
+      kind: 'ROOM_UPLOAD_DB_FIRST_APP_V4',
       employeeNo: user.employeeNo,
       previewId,
       businessDate: preview.businessDate,
@@ -183,7 +183,7 @@ function mirrorRoomStatusUploadDbFirst(token, previewId, planId, payload) {
     }
 
     const plan = loadRoomUploadPreview_(planId);
-    if (!plan || plan.kind !== MARKER) {
+    if (!plan || plan.kind !== 'ROOM_UPLOAD_DB_FIRST_APP_V4') {
       throw new Error('DB 반영은 완료되었을 수 있으나 Sheet 미러 계획을 찾지 못했습니다. 현재 상태를 다시 확인해 주세요.');
     }
     if (plan.employeeNo !== user.employeeNo || plan.previewId !== previewId) {
@@ -332,7 +332,7 @@ function mirrorRoomStatusUploadDbFirst(token, previewId, planId, payload) {
         targetEmployeeNo: '',
         status: 'APPLIED',
         detail: {
-          source: MARKER,
+          source: 'ROOM_UPLOAD_DB_FIRST_APP_V4',
           fileName: plan.fileName,
           extension: plan.extension,
           counts: plan.counts,
