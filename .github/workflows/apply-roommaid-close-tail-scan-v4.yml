@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: nova-apps-script-production
+  group: nova-roommaid-close-tail-v4
   cancel-in-progress: false
 
 env:
