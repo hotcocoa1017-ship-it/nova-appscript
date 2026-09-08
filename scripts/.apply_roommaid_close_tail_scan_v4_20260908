@@ -1,1 +1,2 @@
 trigger roommaid close today-tail scan v4
+retrigger 1
