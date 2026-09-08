@@ -1,0 +1,34 @@
+name: Verify NOVA Apps Script Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/verify-apps-script-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify production web app endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://script.google.com/macros/s/AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf/exec'
+          curl -L --fail --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            -o /tmp/nova.html \
+            -w 'HTTP_STATUS=%{http_code}\nTIME_TOTAL=%{time_total}\nSIZE_DOWNLOAD=%{size_download}\nEFFECTIVE_URL=%{url_effective}\n' \
+            "$URL"
+          echo "HTML_BYTES=$(wc -c < /tmp/nova.html)"
+          if grep -Eqi 'NOVA|객실|로그인|login' /tmp/nova.html; then
+            echo 'NOVA_PAGE_MARKER=PASS'
+          else
+            echo 'NOVA_PAGE_MARKER=UNKNOWN'
+            head -c 400 /tmp/nova.html | tr '\n' ' ' || true
+            echo
+          fi
