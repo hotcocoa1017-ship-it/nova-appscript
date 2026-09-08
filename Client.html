@@ -8041,7 +8041,7 @@
     if (state.qmChecklist.loading && !options.force) return;
     state.qmChecklist.loading = true;
     try {
-      const result = await callServer('getQmChecklistManagementData', state.token);
+      const result = await callServer('getQmChecklistManagementDataDbFirst', state.token) // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1;
       if (!result?.ok) throw new Error(result?.message || '체크리스트를 불러오지 못했습니다.');
       state.qmChecklist.data = result;
       state.qmChecklist.loaded = true;
@@ -8103,7 +8103,7 @@
     if (!window.confirm(`${place?.label || '선택 장소'}를 삭제하시겠습니까?`)) return;
     remove.disabled = true;
     try {
-      const result = await callServer('deleteQmChecklistPlace', state.token, { code });
+      const result = await callServer('deleteQmChecklistPlaceDbFirst', state.token, { code, requestId: novaRealtimeRequestId_('QM_PLACE_DISABLE_V1', 'CONFIG') }) // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1;
       if (!result?.ok) throw new Error(result?.message || '삭제하지 못했습니다.');
       showToast(result.message || '삭제했습니다.');
       await loadQmChecklistManagement_({ force: true });
@@ -8118,7 +8118,7 @@
     if (!payload.label) return showToast('점검 장소명을 입력하세요.');
     if (button) button.disabled = true;
     try {
-      const result = await callServer('saveQmChecklistPlace', state.token, payload);
+      const result = await callServer('saveQmChecklistPlaceDbFirst', state.token, Object.assign({}, payload, { requestId: novaRealtimeRequestId_('QM_PLACE_SAVE_V1', 'CONFIG') })) // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1;
       if (!result?.ok) throw new Error(result?.message || '저장하지 못했습니다.');
       showToast(result.message || '저장했습니다.');
       if (!code && $('qmPlaceNewLabel')) $('qmPlaceNewLabel').value = '';
@@ -8136,7 +8136,7 @@
     if (!window.confirm(`${item?.label || '선택 항목'}을 삭제하시겠습니까?\n과거 점검이력은 유지됩니다.`)) return;
     deleteButton.disabled = true;
     try {
-      const result = await callServer('deleteQmChecklistItem', state.token, { code });
+      const result = await callServer('deleteQmChecklistItemDbFirst', state.token, { code, requestId: novaRealtimeRequestId_('QM_ITEM_DISABLE_V1', 'CONFIG') }) // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1;
       if (!result?.ok) throw new Error(result?.message || '삭제하지 못했습니다.');
       showToast(result.message || '삭제했습니다.');
       await loadQmChecklistManagement_({ force: true });
@@ -8163,7 +8163,7 @@
     if (!payload.label) return showToast('점검 항목명을 입력하세요.');
     if (button) button.disabled = true;
     try {
-      const result = await callServer('saveQmChecklistItem', state.token, payload);
+      const result = await callServer('saveQmChecklistItemDbFirst', state.token, Object.assign({}, payload, { requestId: novaRealtimeRequestId_('QM_ITEM_SAVE_V1', 'CONFIG') })) // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1;
       if (!result?.ok) throw new Error(result?.message || '저장하지 못했습니다.');
       showToast(result.message || '저장했습니다.');
       if (!code && $('qmChecklistNewLabel')) $('qmChecklistNewLabel').value = '';

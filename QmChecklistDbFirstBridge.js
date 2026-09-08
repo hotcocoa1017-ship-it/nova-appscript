@@ -32,23 +32,29 @@ function novaQmChecklistDefinitionFromDb_(db) {
     }))
     .filter(place => place.code && place.label)
     .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label, 'ko'));
+  const placeMap = {};
+  places.forEach(place => { placeMap[place.code] = place; });
   const placeSet = new Set(places.map(place => place.code));
   const items = rows
     .filter(row => String(row && row.group || '').trim() === NOVA_QM_CHECKLIST.GROUP)
     .filter(row => String(row && row.enabled || 'N').trim().toUpperCase() === 'Y')
     .map(row => {
       const meta = novaQmChecklistParseNote_(row.note);
+      const placeCode = String(meta.placeCode || '').trim().toUpperCase();
+      const place = placeMap[placeCode] || { code: placeCode, label: '객실 전체', order: 9999 };
       return {
         code: String(row.code || '').trim(),
         label: String(row.label || '').trim(),
-        placeCode: String(meta.placeCode || '').trim().toUpperCase(),
+        placeCode: place.code,
+        placeLabel: place.label,
+        placeOrder: Number(place.order || 9999),
         order: Number(row.order || 9999),
         required: meta.required !== false,
         photoRequired: meta.photoRequired === true
       };
     })
     .filter(item => item.code && item.label && placeSet.has(item.placeCode))
-    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label, 'ko'));
+    .sort((a, b) => a.placeOrder - b.placeOrder || a.order - b.order || a.label.localeCompare(b.label, 'ko'));
   return {
     places,
     items,

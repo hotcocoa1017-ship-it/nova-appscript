@@ -230,7 +230,7 @@ function startQmInspection(token, payload) { // (QM 점검 시작·Realtime 상�
           }
         });
       }
-      const checklist = realtimeStarted ? getQmChecklistForSubmit_() : getQmChecklistForMobile_();
+      const checklist = realtimeStarted ? getQmChecklistForSubmitDbFirst_(token) : getQmChecklistForMobileDbFirst_(token); // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
       const draft = ensureQmInspectionDraft_(user, businessDate, String(rowInfo.data['사업장'] || site).trim(), roomNo, rowInfo.data, checklist);
       const refreshed = Object.assign({}, rowInfo.data, { '청소상태': 'QM_CHECKING', '마지막변경버전': version });
       return {
@@ -261,7 +261,7 @@ function saveQmInspectionDraft(token, payload) { // (QM 점검 실시간 자동�
   return measureResponse_('saveQmInspectionDraft', () => {
     const user = requireRole_(token, ['QM']);
     const safe = payload || {};
-    const checklist = getQmChecklistForSubmit_();
+    const checklist = getQmChecklistForSubmitDbFirst_(token); // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
     const writeLock = acquireUserWriteLock_(); // CONCURRENT_WRITE_RESILIENCE_V1
     try {
       const draftInfo = getQmInspectionRecordById_(String(safe.draftId || '').trim(), safe.draftRowNumber);
@@ -310,7 +310,7 @@ function uploadQmInspectionPhoto(token, payload) { // (QM 점검 하자사진 �
       validateQmDraftOwnership_(draftInfo, user);
       if (String(draftInfo.data['처리상태'] || '').trim().toUpperCase() !== 'IN_PROGRESS') throw new Error('점검이 이미 완료되어 사진을 연결할 수 없습니다.');
       const detail = parseQmHistoryDetail_(draftInfo.data);
-      const targetPhotos = getQmDraftTargetPhotos_(detail, targetType, targetCode, true);
+      const targetPhotos = getQmDraftTargetPhotos_(detail, targetType, targetCode, true, getQmChecklistForSubmitDbFirst_(token).items); // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
       if (targetPhotos.length >= NOVA_QM_CHECKLIST.MAX_PHOTOS_PER_TARGET) throw new Error(`항목별 사진은 최대 ${NOVA_QM_CHECKLIST.MAX_PHOTOS_PER_TARGET}장입니다.`);
       targetPhotos.push(photo);
       detail.savedAt = nowText_();
@@ -391,7 +391,7 @@ function prepareQmInspectionFinalizeDbFirst(token, payload) {
     const roomNo = String(safe.roomNo || '').trim();
     if (!site || !roomNo) throw new Error('QM 최종점검 식별정보가 없습니다.');
 
-    const checklist = getQmChecklistForSubmit_();
+    const checklist = getQmChecklistForSubmitDbFirst_(token); // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
     if (!checklist.items.length) throw new Error('사용 가능한 QM 체크리스트가 없습니다.');
     const requestedRevision = String(safe.revision || '').trim();
     if (requestedRevision && requestedRevision !== checklist.revision) {
@@ -435,7 +435,7 @@ function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 �
     if (!roomNo) throw new Error('객실번호가 없습니다.');
     // 체크리스트 조회는 읽기 작업이므로 전역 쓰기잠금 밖에서 처리한다.
     // 점검완료의 잠금 대기시간을 줄이고 다른 객실 작업을 불필요하게 막지 않는다.
-    const checklist = getQmChecklistForSubmit_();
+    const checklist = getQmChecklistForSubmitDbFirst_(token); // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
     if (!checklist.items.length) throw new Error('사용 중인 QM 체크리스트가 없습니다. 관리자 또는 오더테이커가 체크리스트를 등록해야 합니다.');
     if (safe.revision && String(safe.revision) !== checklist.revision) throw new Error('체크리스트가 변경되었습니다. 화면을 새로고침한 뒤 다시 작성하세요.');
 
@@ -968,13 +968,13 @@ function sanitizeQmPhotos_(photos) { // (사진 메타정보 안전 정리)
   })).filter(photo => photo.fileId);
 }
 
-function getQmDraftTargetPhotos_(detail, targetType, targetCode, createMissing) { // (초안 대상 사진배열 조회)
+function getQmDraftTargetPhotos_(detail, targetType, targetCode, createMissing, checklistItems) { // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1 // (초안 대상 사진배열 조회)
   if (!Array.isArray(detail.answers)) detail.answers = [];
   if (!Array.isArray(detail.defects)) detail.defects = [];
   if (targetType === 'ITEM') {
     let answer = detail.answers.find(item => String(item.code || '') === targetCode);
     if (!answer && createMissing) {
-      const checklistItem = getActiveQmChecklistItems_().find(item => item.code === targetCode);
+      const checklistItem = (Array.isArray(checklistItems) ? checklistItems : getActiveQmChecklistItems_()).find(item => item.code === targetCode); // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
       if (!checklistItem) throw new Error('체크리스트 항목을 찾을 수 없습니다.');
       answer = Object.assign({}, checklistItem, { result: '', note: '', photos: [] });
       detail.answers.push(answer);

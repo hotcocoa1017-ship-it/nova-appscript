@@ -25,6 +25,11 @@ const NOVA_DB_FIRST_BRIDGE_V1 = Object.freeze({
     'nova_admin_code_settings_read_v1', // NOVA_ADMIN_CODE_SETTINGS_DB_FIRST_V1
     'nova_admin_code_settings_save_v1', // NOVA_ADMIN_CODE_SETTINGS_DB_FIRST_V1
     'nova_admin_code_settings_disable_v1', // NOVA_ADMIN_CODE_SETTINGS_DB_FIRST_V1
+    'nova_qm_checklist_codes_read_v1', // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
+    'nova_qm_checklist_place_save_v1', // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
+    'nova_qm_checklist_item_save_v1', // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
+    'nova_qm_checklist_item_disable_v1', // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
+    'nova_qm_checklist_place_disable_v1', // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
     'nova_monthly_history_v1',
     'nova_roommaid_performance_history_v1',
     'nova_roommaid_close_history_v1'

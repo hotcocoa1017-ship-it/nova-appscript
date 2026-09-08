@@ -66,6 +66,13 @@ subprocess.run([sys.executable, 'scripts/validate_admin_operation_settings_dbfir
 subprocess.run([sys.executable, 'scripts/patch_admin_code_settings_dbfirst_v1_20260908.py'], check=True)
 subprocess.run([sys.executable, 'scripts/validate_admin_code_settings_dbfirst_v1_20260908.py'], check=True)
 
+# QM 체크리스트/점검장소 정의도 동일 code master의 DB authority를 사용합니다.
+# ADMIN/ORDER 관리권한과 QM 읽기권한을 보존하며 Sheet는 DB 확정 후 호환 미러입니다.
+subprocess.run([sys.executable, 'scripts/patch_qm_checklist_codes_dbfirst_v1_20260908.py'], check=True)
+subprocess.run([sys.executable, 'scripts/patch_qm_checklist_definition_shape_v1_20260908.py'], check=True)
+subprocess.run([sys.executable, 'scripts/validate_qm_checklist_definition_shape_v1_20260908.py'], check=True)
+subprocess.run([sys.executable, 'scripts/validate_qm_checklist_codes_dbfirst_v1_20260908.py'], check=True)
+
 # 통합 인디게이터 하우스맨 오더 UI: 객실카드 숫자뱃지는 실제 미완료 오더내용을 tooltip으로 표시하고,
 # 객실/미완료/전체 요약 pill은 처리현황 목록 필터 버튼으로 동작하도록 보장합니다.
 subprocess.run([sys.executable, 'scripts/patch_indicator_houseman_order_ui_20260908.py'], check=True)
