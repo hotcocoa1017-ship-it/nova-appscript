@@ -235,7 +235,8 @@ for secret_name in ['NOVA_TOKEN_SECRET', 'X-NOVA-Archive-Admin-Key', 'SUPABASE_S
     forbid(archive_realtime, secret_name, f'Archive realtime browser hides {secret_name}')
 
 # 8) Deployment repeatability / source-of-truth protection
-require(workflow, 'python3 scripts/patch_realtime_subscription_resilience.py', 'Deploy applies Realtime subscription resilience patch')
+forbid(workflow, 'python3 scripts/patch_realtime_subscription_resilience.py', 'Obsolete Realtime/PWA patch execution removed from deploy')
+require(workflow, 'grep -q "REALTIME_SUBSCRIPTION_RESILIENCE_V1" Client.html', 'Deploy validates Realtime subscription resilience marker')
 require(workflow, 'python3 scripts/patch_roommaid_notification_bell.py', 'Deploy applies roommaid notification patch')
 require(workflow, 'python3 scripts/validate_nova_release.py', 'Deploy runs release regression gate')
 require(workflow, 'HousemanUiPerformancePatch.html', 'Generated notification source persisted')
