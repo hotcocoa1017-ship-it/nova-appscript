@@ -4,7 +4,7 @@
 <script>
 (()=>{'use strict';
 const U={auth:null,client:null,channel:null,employee:'',token:'',items:[],known:new Set(),unread:0,legacy:0,writing:false,badgeObs:null,badge:null,audio:null,audioReady:false,sound:localStorage.getItem('novaNotificationSound')!=='0',soundType:String(localStorage.getItem('novaNotificationSoundType')||'CHIME').toUpperCase(),soundVolume:Math.max(0,Math.min(100,Number(localStorage.getItem('novaNotificationSoundVolume')||70))),busy:false,authBusy:false,authTimer:null,pollTimer:null,toastTimer:null,pwaRouteDone:false};
-const PWA_ORIGIN='https://nova-pwa-hotcocoa1017-3826.vercel.app'; // NOVA_PWA_WEB_PUSH_V2
+const PWA_ORIGINS=Object.freeze(['https://nova-pwa-hotcocoa1017-3826.vercel.app','https://nova-pwa-orpin.vercel.app']); // NOVA_PWA_WEB_PUSH_V2_ALIAS_COMPAT_V1
 const tok=()=>String(localStorage.getItem('novaToken')||'').trim();
 const esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
 const logged=()=>{const m=document.getElementById('mainView');return!!(tok()&&m&&!m.classList.contains('hidden'))};
@@ -17,16 +17,15 @@ const ago=v=>{const ms=Date.now()-new Date(v||'').getTime();if(!Number.isFinite(
 function render(){if(!shell())return;const root=document.getElementById('novaUnifiedList'),snd=document.getElementById('novaUnifiedSound');if(snd)snd.textContent=U.sound?'🔊 알림음':'🔇 알림음';if(!U.items.length){root.innerHTML='<div class="nova-unified-empty">새 알림이 없습니다.</div>';paintBadge();return}root.innerHTML=U.items.slice(0,30).map(x=>`<button class="nova-unified-item ${x.read_at?'':'unread'} ${String(x.priority||'').toUpperCase()==='HIGH'?'high':''}" type="button" data-nid="${esc(x.notification_id)}"><span class="nova-unified-top"><strong class="nova-unified-title">${esc(x.title||'NOVA 알림')}</strong><span class="nova-unified-time">${esc(ago(x.created_at))}</span></span><span class="nova-unified-body">${esc(x.body||'')}</span><span class="nova-unified-meta">${esc([x.site,x.room_no?`${x.room_no}호`:''].filter(Boolean).join(' · '))}</span></button>`).join('');root.querySelectorAll('[data-nid]').forEach(b=>b.onclick=()=>openItem(String(b.dataset.nid||'')));paintBadge()}
 function pushBridge(){
   if(!U.auth||!U.employee||window.top===window)return;
-  try{
-    window.top.postMessage({
-      type:'NOVA_PUSH_BRIDGE_V2',
-      supabaseUrl:String(U.auth.supabaseUrl||''),
-      publishableKey:String(U.auth.publishableKey||''),
-      token:String(U.auth.token||''),
-      employeeNo:String(U.employee||''),
-      unread:Number(U.unread||0)
-    },PWA_ORIGIN);
-  }catch(_){ }
+  const payload={
+    type:'NOVA_PUSH_BRIDGE_V2',
+    supabaseUrl:String(U.auth.supabaseUrl||''),
+    publishableKey:String(U.auth.publishableKey||''),
+    token:String(U.auth.token||''),
+    employeeNo:String(U.employee||''),
+    unread:Number(U.unread||0)
+  };
+  PWA_ORIGINS.forEach(origin=>{try{window.top.postMessage(payload,origin)}catch(_){ }});
 }
 function applyPwaRoute(){
   if(U.pwaRouteDone)return;
