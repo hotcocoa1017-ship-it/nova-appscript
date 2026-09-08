@@ -25,9 +25,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Remove obsolete Push patch execution from CI
-        run: python3 scripts/patch_deploy_ci_remove_obsolete_push_patch_20260908.py
-
       - name: Apply admin code settings DB-first patch
         run: python3 scripts/patch_admin_code_settings_dbfirst_v1_20260908.py
 
@@ -40,7 +37,7 @@ jobs:
       - name: Validate NOVA release
         run: python3 scripts/validate_nova_release.py
 
-      - name: Validate touched JavaScript and workflow cleanup
+      - name: Validate touched JavaScript and canonical CI cleanup
         shell: bash
         run: |
           set -euo pipefail
@@ -62,15 +59,15 @@ jobs:
           PY
           git diff --check
 
-      - name: Persist generated sources and CI cleanup
+      - name: Persist generated Apps Script sources
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add DbFirstBridge.js Client.html .github/workflows/deploy-apps-script.yml scripts/fix_patch_site_scope_v2.py scripts/validate_nova_release.py
+          git add DbFirstBridge.js Client.html
           if ! git diff --cached --quiet; then
-            git commit -m 'Route admin code settings DB-first and clean obsolete Push CI [skip ci]'
+            git commit -m 'Route admin code settings DB-first [skip ci]'
             git push origin HEAD:main
           fi
 
