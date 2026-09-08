@@ -28,9 +28,13 @@ const NOVA_ROOMMAID_CLOSE = Object.freeze({
   ])
 });
 
-function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지 조회 · ROOMMAID_CLOSE_READ_ACCEL_V3)
+function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지 조회 · ROOMMAID_CLOSE_READ_ACCEL_V6)
   return measureResponse_('getRoommaidCloseJournal', () => {
+    const traceStartedAt = Date.now(); // ROOMMAID_CLOSE_COLD_TIMING_V6
+    const timingsMs = {};
+    let stageStartedAt = Date.now();
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
+    timingsMs.auth = Date.now() - stageStartedAt;
     const safe = filters || {};
     const businessDate = normalizeBusinessDate_(safe.businessDate || safe.date);
     const requestedSite = String(safe.site || '').trim();
@@ -43,23 +47,27 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
     if (!sites.includes(preferredSite)) throw new Error(`${preferredSite} 사업장을 확인할 수 없습니다.`);
 
     const sourceVersion = getSyncVersion_(['ROOM', 'ORDER', 'REPORT'], businessDate, preferredSite);
-    const cacheKey = buildDeltaCacheKey_('ROOMMAID_CLOSE_READ_V3', [
+    const cacheKey = buildDeltaCacheKey_('ROOMMAID_CLOSE_READ_V4', [ // ROOMMAID_CLOSE_SHARED_CACHE_V6
       NOVA_ROOMMAID_CLOSE.SCHEMA_VERSION,
       businessDate,
       preferredSite,
-      String(user.employeeNo || ''),
       sourceVersion,
       hasAttendanceOverride ? requestedAttendance.slice().sort().join(',') : 'AUTO'
     ]);
     const cached = getCachedJson_(cacheKey);
     if (cached && cached.ok) {
       return Object.assign({}, cached, {
-        optimization: Object.assign({}, cached.optimization || {}, { cacheHit: true })
+        optimization: Object.assign({}, cached.optimization || {}, {
+          cacheHit: true,
+          cacheReturnMs: Date.now() - traceStartedAt
+        })
       });
     }
 
     // 업무이력은 날짜 TextFinder로 후보행만 읽습니다. 전체 업무이력 열 스캔을 제거합니다.
-    const historyBundle = readRoommaidCloseHistoryBundleDbFirst_(token, businessDate, preferredSite); // ROOMMAID_REPORTING_DB_FIRST_APP_V2
+    stageStartedAt = Date.now();
+    const historyBundle = readRoommaidCloseHistoryBundleDbFirst_(token, businessDate, preferredSite);
+    timingsMs.history = Date.now() - stageStartedAt; // ROOMMAID_REPORTING_DB_FIRST_APP_V2
     const historyRows = historyBundle.historyRows;
     const saved = historyBundle.saved;
 
@@ -67,6 +75,7 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
     // 그대로 비교해야 과거 저장서명과 DB updated_at 차이로 false stale이 생기지 않습니다.
     let currentRows = [];
     let currentSource = 'SHEET';
+    stageStartedAt = Date.now();
     if (!saved) {
       try {
         currentRows = readRoommaidCloseRealtimeCurrentRows_(token, businessDate, preferredSite);
@@ -81,8 +90,11 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
       currentSource = 'SHEET';
     }
     if (!currentRows.length) throw new Error(`${businessDate} ${preferredSite} 현재객실현황이 없습니다.`);
+    timingsMs.current = Date.now() - stageStartedAt;
 
+    stageStartedAt = Date.now();
     const users = getUserIndex_().byEmployeeNo;
+    timingsMs.users = Date.now() - stageStartedAt;
     const employmentIndex = readRoommaidCloseEmploymentIndex_();
     const inferredAttendance = inferRoommaidCloseAttendance_(currentRows, historyRows);
     const savedAttendance = saved && Array.isArray(saved.attendanceEmployeeNos) ? saved.attendanceEmployeeNos : [];
@@ -90,6 +102,7 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
       hasAttendanceOverride ? requestedAttendance : (savedAttendance.length ? savedAttendance : inferredAttendance)
     );
 
+    stageStartedAt = Date.now();
     const liveSnapshot = buildRoommaidCloseLiveSnapshotFast_(businessDate, preferredSite, {
       closedBy: saved ? saved.closedBy : '',
       closedByName: saved ? saved.closedByName : '',
@@ -99,6 +112,7 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
       users,
       attendanceEmployeeNos
     }); // ROOMMAID_CLOSE_COLD_READ_V5
+    timingsMs.build = Date.now() - stageStartedAt;
     const latestSourceAt = latestRoommaidCloseSourceAt_(currentRows, historyRows);
     const savedHasJournal = Boolean(saved && saved.roommaidCloseJournal);
     const savedJournalSchemaChanged = Boolean(
@@ -133,16 +147,21 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
         ? (isStale ? '마감 이후 객실 또는 정비실적이 수정되었습니다. 수정 후 재마감이 필요합니다.' : '저장된 마감자료입니다.')
         : '실시간 미마감 자료입니다.',
       optimization: {
-        marker: 'ROOMMAID_CLOSE_READ_ACCEL_V3',
+        marker: 'ROOMMAID_CLOSE_READ_ACCEL_V6',
         cacheHit: false,
         sourceVersion,
         currentSource,
         currentRowCount: currentRows.length,
         historyRowCount: historyRows.length,
-        historyLookup: String(historyBundle.readPath || (historyBundle.dbFirst ? 'DB_NATIVE' : 'DATE_TEXTFINDER'))
+        historyLookup: String(historyBundle.readPath || (historyBundle.dbFirst ? 'DB_NATIVE' : 'DATE_TEXTFINDER')),
+        timingsMs
       }
     };
-    putCachedJson_(cacheKey, result, 120); // ROOMMAID_CLOSE_RESULT_CACHE_120S_V1
+    timingsMs.totalBeforeCachePut = Date.now() - traceStartedAt;
+    const cachePutStartedAt = Date.now();
+    putCachedJson_(cacheKey, result, 120); // ROOMMAID_CLOSE_RESULT_CACHE_120S_V1 · ROOMMAID_CLOSE_SHARED_CACHE_V6
+    timingsMs.cachePut = Date.now() - cachePutStartedAt;
+    timingsMs.total = Date.now() - traceStartedAt;
     return result;
   });
 }

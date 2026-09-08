@@ -5,39 +5,113 @@ var NOVA_RUNTIME_CACHE_ = typeof NOVA_RUNTIME_CACHE_ !== 'undefined'
   ? NOVA_RUNTIME_CACHE_
   : { spreadsheet: null, sheets: {}, headerMaps: {}, userIndex: null }; // NOVA_USER_INDEX_RUNTIME_CACHE_V1 · 동일 실행 내 사용자 인덱스 재사용
 
-function getUserIndex_() { // (사용자계정 인덱스 조회)
+const NOVA_USER_INDEX_CACHE_META_V3_ = 'NOVA_USER_INDEX_V3_META'; // USER_INDEX_CHUNK_CACHE_V3
+const NOVA_USER_INDEX_CACHE_CHUNK_PREFIX_V3_ = 'NOVA_USER_INDEX_V3_CHUNK_';
+const NOVA_USER_INDEX_CACHE_CHUNK_SIZE_V3_ = 25;
+
+function getUserIndex_() { // (사용자계정 인덱스 조회 · USER_INDEX_CHUNK_CACHE_V3)
   if (NOVA_RUNTIME_CACHE_.userIndex) return NOVA_RUNTIME_CACHE_.userIndex; // NOVA_USER_INDEX_RUNTIME_CACHE_V1
   const cache = CacheService.getScriptCache();
-  const cached = cache.get('NOVA_USER_INDEX_V2');
-  if (cached) {
-    const parsed = JSON.parse(cached);
-    NOVA_RUNTIME_CACHE_.userIndex = parsed;
-    return parsed;
+
+  const cachedUsers = readCachedUserListV3_(cache);
+  if (cachedUsers) {
+    const index = buildUserIndexFromListV3_(cachedUsers);
+    NOVA_RUNTIME_CACHE_.userIndex = index;
+    return index;
+  }
+
+  // 배포 전 단일 캐시가 아직 살아 있으면 1회 호환 사용합니다.
+  const legacyCached = cache.get('NOVA_USER_INDEX_V2');
+  if (legacyCached) {
+    try {
+      const parsed = JSON.parse(legacyCached);
+      if (parsed && parsed.byEmployeeNo && parsed.byName && parsed.active) {
+        NOVA_RUNTIME_CACHE_.userIndex = parsed;
+        cacheUserListV3_(cache, Object.values(parsed.byEmployeeNo || {}));
+        return parsed;
+      }
+    } catch (error) {}
   }
 
   const sheet = getRequiredSheet_(NOVA.SHEETS.USERS);
   const headerMap = getHeaderMap_(sheet);
   const lastRow = sheet.getLastRow();
-  const index = { byName: {}, byEmployeeNo: {}, active: [] };
+  const users = [];
 
   if (lastRow >= 2) {
-    const values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getDisplayValues();
+    const requiredHeaders = [
+      '사번', '이름', '직무', '채용구분', '권한', '사용여부', '텔레그램ID', '텔레그램알림',
+      '연락처', '기본사업장', '기본담당동', '비고', '수정일시', '텔레그램연결키',
+      '텔레그램연결링크', '텔레그램연결상태', '텔레그램연결일시'
+    ];
+    const projectedLastColumn = requiredHeaders.reduce(
+      (max, header) => Math.max(max, Number(headerMap[header] || 0)), 0
+    ) || sheet.getLastColumn();
+    const values = sheet.getRange(2, 1, lastRow - 1, projectedLastColumn).getDisplayValues();
     values.forEach((row, offset) => {
       const user = rowToUser_(row, offset + 2, headerMap);
-      if (!user.employeeNo || !user.name) return;
-      index.byEmployeeNo[user.employeeNo] = user;
-      if (!index.byName[user.name]) index.byName[user.name] = [];
-      index.byName[user.name].push(user);
-      if (user.enabled) index.active.push(user);
+      if (user.employeeNo && user.name) users.push(user);
     });
   }
 
-  const serialized = JSON.stringify(index);
-  if (serialized.length < 95000) {
-    cache.put('NOVA_USER_INDEX_V2', serialized, NOVA.CACHE_SECONDS);
-  }
+  const index = buildUserIndexFromListV3_(users);
+  cacheUserListV3_(cache, users);
   NOVA_RUNTIME_CACHE_.userIndex = index; // NOVA_USER_INDEX_RUNTIME_CACHE_V1
   return index;
+}
+
+function buildUserIndexFromListV3_(users) { // (분할 캐시 사용자목록을 기존 인덱스 구조로 복원)
+  const index = { byName: {}, byEmployeeNo: {}, active: [] };
+  (Array.isArray(users) ? users : []).forEach(user => {
+    if (!user || !user.employeeNo || !user.name) return;
+    index.byEmployeeNo[user.employeeNo] = user;
+    if (!index.byName[user.name]) index.byName[user.name] = [];
+    index.byName[user.name].push(user);
+    if (user.enabled) index.active.push(user);
+  });
+  return index;
+}
+
+function readCachedUserListV3_(cache) { // (CacheService 100KB/key 제한을 피한 분할 사용자 캐시 조회)
+  let meta = null;
+  try { meta = JSON.parse(cache.get(NOVA_USER_INDEX_CACHE_META_V3_) || 'null'); }
+  catch (error) { return null; }
+  const chunkCount = Number(meta && meta.chunkCount || 0);
+  if (!Number.isFinite(chunkCount) || chunkCount < 1 || chunkCount > 100) return null;
+  const keys = Array.from({ length: chunkCount }, (_, index) => `${NOVA_USER_INDEX_CACHE_CHUNK_PREFIX_V3_}${index}`);
+  let cached = {};
+  try { cached = cache.getAll(keys) || {}; } catch (error) { return null; }
+  const users = [];
+  for (const key of keys) {
+    if (!cached[key]) return null;
+    let chunk = null;
+    try { chunk = JSON.parse(cached[key]); } catch (error) { return null; }
+    if (!Array.isArray(chunk)) return null;
+    users.push.apply(users, chunk);
+  }
+  if (Number(meta.total || users.length) !== users.length) return null;
+  return users;
+}
+
+function cacheUserListV3_(cache, users) { // (사용자 객체를 중복 인덱스가 아닌 1회 목록으로 분할 저장)
+  const list = Array.isArray(users) ? users : [];
+  if (!list.length) return false;
+  const ttl = Number(NOVA.CACHE_SECONDS || 300);
+  const payload = {};
+  let chunkCount = 0;
+  for (let index = 0; index < list.length; index += NOVA_USER_INDEX_CACHE_CHUNK_SIZE_V3_) {
+    const serialized = JSON.stringify(list.slice(index, index + NOVA_USER_INDEX_CACHE_CHUNK_SIZE_V3_));
+    if (serialized.length >= 95000) return false;
+    payload[`${NOVA_USER_INDEX_CACHE_CHUNK_PREFIX_V3_}${chunkCount}`] = serialized;
+    chunkCount += 1;
+  }
+  try {
+    cache.putAll(payload, ttl);
+    cache.put(NOVA_USER_INDEX_CACHE_META_V3_, JSON.stringify({ version: 3, chunkCount, total: list.length }), ttl);
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 function rowToUser_(row, rowNumber, headerMap) { // (사용자계정 행 변환)
@@ -216,6 +290,7 @@ function clearNovaCaches_() { // (공통 캐시 초기화)
     'NOVA_USER_INDEX_V1',
     'NOVA_CODE_INDEX_V1',
     'NOVA_USER_INDEX_V2',
+    NOVA_USER_INDEX_CACHE_META_V3_,
     'NOVA_CODE_INDEX_V2',
     'NOVA_SITE_LIST_V1',
     'NOVA_TELEGRAM_ROLE_POLICY_V1'
