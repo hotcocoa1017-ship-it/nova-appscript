@@ -88,7 +88,11 @@ function saveAdminOperationSettingsDbFirst(token, payload) { // (운영설정 DB
     const safe = payload || {};
     const input = safe.values && typeof safe.values === 'object' ? safe.values : safe;
     const current = novaOperationSettingsDbRead_(token);
-    if (current && current.legacyFallback) return saveAdminOperationSettings(token, payload);
+    if (current && current.legacyFallback) {
+      const error = new Error('운영설정 DB 연결을 확인할 수 없어 저장하지 않았습니다. 잠시 후 다시 시도하세요.');
+      error.code = 'OPERATION_SETTINGS_DB_UNAVAILABLE';
+      throw error;
+    }
 
     const fallbackValues = current && current.ok && current.values ? current.values : {};
     const normalized = novaOperationSettingsNormalize_(input, fallbackValues);
@@ -96,8 +100,7 @@ function saveAdminOperationSettingsDbFirst(token, payload) { // (운영설정 DB
     const db = novaDbFirstRpc_(token, 'nova_operation_settings_save_v1', {
       p_values: normalized,
       p_request_id: requestId
-    }, { allowLegacyFallback: true });
-    if (db && db.legacyFallback) return saveAdminOperationSettings(token, { values: normalized });
+    }, {});
     if (!db || db.ok !== true) throw new Error(db && db.message || '운영설정을 DB에 저장하지 못했습니다.');
 
     novaOperationSettingsMarkMirrorPending_(normalized);
