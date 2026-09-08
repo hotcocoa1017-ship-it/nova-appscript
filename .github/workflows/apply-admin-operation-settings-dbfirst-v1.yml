@@ -1,0 +1,97 @@
+name: Apply Admin Operation Settings DB First V1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/.apply_admin_operation_settings_dbfirst_v1_20260908'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nova-apps-script-production
+  cancel-in-progress: false
+
+env:
+  APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
+
+jobs:
+  patch-validate-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply admin operation settings DB-first patch
+        run: python3 scripts/patch_admin_operation_settings_dbfirst_v1_20260908.py
+
+      - name: Validate admin operation settings DB-first
+        run: python3 scripts/validate_admin_operation_settings_dbfirst_v1_20260908.py
+
+      - name: Validate whole DB transition
+        run: python3 scripts/validate_whole_db_transition_v2_20260908.py
+
+      - name: Validate NOVA release
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate touched JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check DbFirstBridge.js
+          node --check AdminSettingsDbFirstBridge.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+          text=Path('Client.html').read_text(encoding='utf-8')
+          blocks=re.findall(r'<script[^>]*>(.*?)</script>',text,flags=re.S|re.I)
+          if not blocks: raise SystemExit('Client script block missing')
+          subprocess.run(['node','--check','-'],input='\n'.join(blocks),text=True,check=True)
+          PY
+          git diff --check
+
+      - name: Persist generated sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add DbFirstBridge.js Client.html scripts/fix_patch_site_scope_v2.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'Route admin operation settings DB-first'
+            git push origin HEAD:main
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp
+
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo '::error::Apps Script OAuth secret missing'; exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+
+      - name: Deploy existing NOVA web app
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp push --force
+          clasp create-deployment --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" --description "Admin operation settings DB-first V1 ${GITHUB_SHA::12}"
