@@ -1,4 +1,0 @@
-NOVA production deployment trigger
-2026-09-04
-QM assignment cancel + monthly QM receiver fallback
-source commit: 130f807c1f04ae8896ca85966580183672654387
