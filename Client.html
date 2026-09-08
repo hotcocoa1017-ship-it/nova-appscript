@@ -5979,6 +5979,34 @@
     return currentCode;
   }
 
+  function indicatorRoomStatusDisplayLabel_(value) { // INDICATOR_KOREAN_STATUS_FALLBACK_V1 · DB 영문코드 UI 한글표시 보장
+    const roomStatuses = state.indicator.data?.codes?.roomStatuses || [];
+    const raw = String(value || '').trim();
+    const code = indicatorCodeValue_(roomStatuses, raw).toUpperCase();
+    const configured = String(codeLabel_(roomStatuses, raw || code || '') || '').trim();
+    if (configured && configured.toUpperCase() !== code && configured !== raw) return configured;
+    const fallback = {
+      VACANT_CLEAN: '공실', STOCK: '재고', STOCK_RC: '재고 R/C', STOCK_HU: '재고 H/U',
+      STAY: '투숙', DUE_OUT: '퇴실예정', CHECKED_OUT: '퇴실', CHECKED_OUT_RC: '퇴실R/C',
+      CHECKED_OUT_HU: '퇴실H/U', RECHECKIN: '재입실'
+    };
+    return fallback[code] || configured || raw || '-';
+  }
+
+  function indicatorCleaningStatusDisplayLabel_(value) { // INDICATOR_KOREAN_STATUS_FALLBACK_V1
+    const cleaningStatuses = state.indicator.data?.codes?.cleaningStatuses || [];
+    const raw = String(value || '').trim();
+    const code = indicatorCodeValue_(cleaningStatuses, raw).toUpperCase();
+    const configured = String(codeLabel_(cleaningStatuses, raw || code || '') || '').trim();
+    if (configured && configured.toUpperCase() !== code && configured !== raw) return configured;
+    const fallback = {
+      WAITING: '대기', NOT_REQUIRED: '정비대상 아님', ASSIGNED: '배정', CLEANING: '청소중',
+      COMPLETED: '청소완료', QM_WAITING: 'QM대기', QM_CHECKING: 'QM점검중',
+      QM_COMPLETED: 'QM완료', REWORK: '재정비'
+    };
+    return fallback[code] || configured || raw || '-';
+  }
+
   function indicatorCycleCleaningLabel_(cycle) { // (정비주기별 청소상태 카드 전문표기)
     const code = codeValue_(state.indicator.data?.codes?.cleaningStatuses, cycle?.cleaningStatus || 'WAITING').toUpperCase();
     if (code === 'WAITING') return 'VD';
@@ -5986,7 +6014,7 @@
     if (code === 'ASSIGNED') return '배정';
     if (code === 'CLEANING') return '청소중';
     if (['COMPLETED', 'QM_COMPLETED'].includes(code)) return 'VC';
-    return codeLabel_(state.indicator.data?.codes?.cleaningStatuses, cycle?.cleaningStatus || 'WAITING');
+    return indicatorCleaningStatusDisplayLabel_(cycle?.cleaningStatus || code || 'WAITING');
   }
 
   function indicatorCycleCleaningTooltip_(cycle) { // (VC·VD·N/R 마우스 한글 설명)
@@ -6018,7 +6046,7 @@
       }
     }
 
-    const roomStatusLabel = codeLabel_(roomStatuses, roomStatusCode || source.roomStatus || room.roomStatus || '');
+    const roomStatusLabel = indicatorRoomStatusDisplayLabel_(roomStatusCode || source.roomStatus || room.roomStatus || '');
     const cleaningStatusCode = codeValue_(state.indicator.data?.codes?.cleaningStatuses, source.cleaningStatus || 'WAITING').toUpperCase();
     const cleaningLabel = indicatorCycleCleaningLabel_(source);
     const names = [source.roommaidName, source.secondaryRoommaidName].filter(Boolean);
