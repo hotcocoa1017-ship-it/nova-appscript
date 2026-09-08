@@ -5,8 +5,8 @@ import sys
 
 errors = []
 checks = []
-NEW_VAPID = 'BKjiczDO9sG0qlh0rJDduCzQqT9tURU69oKN7mKmlyU4mnjx05x1FkUy-4Kaeqy40DReDmnQ1DR2s0ELu-SAgYM'
-OLD_VAPID = 'BIcs42B7cfuzFyx_-h0Ji8G8TfsU7CvoX8RBZo65MZe-J1VQvP9VrFOL_o2VCHQo0Y01zxN4vDbkcbcvspg3Hr8'
+NEW_VAPID = 'BCx-wnFcdo7z-Xk2DtjIcsBHTySpAxbL5CfMf2b7ltnxhlCF99n2AROSvQwkrSdZHNbniaGHUZaBWNUVJnRkWTk'
+OLD_VAPID = 'BKjiczDO9sG0qlh0rJDduCzQqT9tURU69oKN7mKmlyU4mnjx05x1FkUy-4Kaeqy40DReDmnQ1DR2s0ELu-SAgYM'
 
 
 def read(path):
@@ -45,25 +45,25 @@ def html_syntax(path, label):
 pwa = read('pwa/v2/index.html')
 sw = read('pwa/v2/sw.js')
 base = read('db/nova_pwa_web_push_v2.sql')
-migration = read('supabase/migrations/20260908_web_push_vapid_recovery_v3.sql')
+migration = read('supabase/migrations/20260908_web_push_vapid_recovery_v4.sql')
 edge = read('supabase/functions/nova-web-push-v2/index.ts')
 client = read('Client.html')
 center = read('NotificationCenterV1.html')
 permission_patch = read('scripts/patch_push_permission_settings_v1.py')
 
 # VAPID recovery and automatic stale-subscription rotation.
-require(pwa, 'NOVA_PUSH_VAPID_RECOVERY_V3', 'PWA VAPID recovery marker')
+require(pwa, 'NOVA_PUSH_VAPID_RECOVERY_V4', 'PWA VAPID recovery marker')
 require(pwa, NEW_VAPID, 'PWA current public VAPID key')
-require(base, NEW_VAPID, 'baseline DB current public VAPID key')
-require(migration, NEW_VAPID, 'migration current public VAPID key')
+require(base, 'nova_web_push_vapid_public_v2', 'baseline DB public VAPID Vault source')
+require(migration, 'nova_web_push_vapid_public_v2', 'migration public VAPID Vault source')
 forbid(pwa, OLD_VAPID, 'PWA old VAPID key removed')
 forbid(base, OLD_VAPID, 'baseline old VAPID key removed')
-require(pwa, "VAPID_VERSION='20260908-v3'", 'PWA key generation marker')
+require(pwa, "VAPID_VERSION='20260908-v4'", 'PWA key generation marker')
 require(pwa, "version!==VAPID_VERSION", 'stale subscription generation detection')
 require(pwa, 'await sub.unsubscribe()', 'stale subscription unsubscribe')
 require(pwa, 'applicationServerKey:b64uToBytes(VAPID)', 'resubscribe with current VAPID')
 require(pwa, 'localStorage.setItem(VAPID_VERSION_KEY,VAPID_VERSION)', 'successful VAPID generation persistence')
-require(sw, "nova-pwa-v2-vercel-5", 'service-worker cache promotion')
+require(sw, "nova-pwa-v2-vercel-6", 'service-worker cache promotion')
 require(sw, 'silent:false', 'background push sound enabled')
 require(edge, 'nova_web_push_config_service', 'Edge obtains server VAPID config')
 
