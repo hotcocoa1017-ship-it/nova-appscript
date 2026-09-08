@@ -183,6 +183,29 @@
   .notification-pref-actions{display:flex;justify-content:flex-end;gap:8px}.notification-pref-actions button{min-height:40px;padding:0 14px;border:1px solid #d1d5db;border-radius:9px;background:#fff;font-weight:800}.notification-pref-actions .primary{background:#111827;color:#fff;border-color:#111827}
   .settings-archive-host{min-width:0}.settings-archive-host .nova-archive-head h1{font-size:20px}
   @media(max-width:760px){.notification-pref-row{grid-template-columns:1fr;gap:7px}.notification-pref-actions{display:grid;grid-template-columns:1fr 1fr}.notification-pref-actions button{width:100%;min-height:44px}}
+
+  /* INDICATOR_HOUSEMAN_ORDER_UI_V1 */
+  .indicator-summary-filter {
+    appearance: none;
+    color: inherit;
+    cursor: pointer;
+    transition: background .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease;
+  }
+  .indicator-summary-filter:hover {
+    border-color: #9ca3af;
+    background: #f8fafc;
+  }
+  .indicator-summary-filter.active {
+    border-color: #111827;
+    background: #111827;
+    color: #fff;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .16);
+  }
+  .indicator-summary-filter:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+  }
+
 </style>
 <script>
 (() => {
@@ -5407,26 +5430,77 @@
     updateHousemanRoutingPreview_();
   }
 
+
+  function indicatorIsPendingHousemanOrder_(order) { // (미완료 하우스맨 오더 판정)
+    return !['COMPLETED', 'UNABLE'].includes(String(order?.statusCode || '').trim().toUpperCase());
+  }
+
+  function indicatorRoomPendingOrderTooltip_(room) { // (객실카드 숫자뱃지 hover에 실제 오더내용 표시)
+    const roomNo = String(room?.roomNo || '').trim();
+    if (!roomNo) return '';
+    const pending = (state.indicator.data?.orders || [])
+      .filter(order => String(order?.roomNo || '').trim() === roomNo && indicatorIsPendingHousemanOrder_(order));
+    if (!pending.length) return '';
+    return pending.map(order => {
+      const item = String(order?.itemSummary || '').trim();
+      const note = String(order?.note || '').trim();
+      if (item && note && note !== item) return `${item} · ${note}`;
+      return item || note || '오더내용 없음';
+    }).join('\n');
+  }
+
+  function indicatorOrderListFilter_() { // (오더 처리현황 필터 기본값)
+    const value = String(state.indicator.orderListFilter || 'ALL').trim().toUpperCase();
+    return ['ROOM', 'PENDING', 'ALL'].includes(value) ? value : 'ALL';
+  }
+
+  function indicatorOrderMatchesListFilter_(order, filter) { // (처리현황 필터 판정)
+    if (filter === 'PENDING') return indicatorIsPendingHousemanOrder_(order);
+    if (filter === 'ROOM') {
+      const roomNo = String(order?.roomNo || '').trim();
+      return Boolean(roomNo && roomNo !== '공용');
+    }
+    return true;
+  }
+
+  function indicatorOrderListEmptyMessage_(filter) { // (필터별 빈 목록 안내)
+    if (filter === 'PENDING') return '미완료 하우스맨 오더가 없습니다.';
+    if (filter === 'ROOM') return '객실 하우스맨 오더가 없습니다.';
+    return '등록된 하우스맨 오더가 없습니다.';
+  }
+
   function renderIndicatorSummary() { // (통합 화면 요약)
     const rooms = state.indicator.data?.rooms || [];
     const orders = state.indicator.data?.orders || [];
     const activeOrders = orders.filter(order => !['COMPLETED', 'UNABLE'].includes(order.statusCode)).length;
+    const orderListFilter = indicatorOrderListFilter_();
     $('indicatorSummary').innerHTML = `
-      <span class="summary-pill">객실 ${rooms.length}</span>
-      <span class="summary-pill">미완료 오더 ${activeOrders}</span>
-      <span class="summary-pill">전체 오더 ${orders.length}</span>`;
+      <button type="button" class="summary-pill indicator-summary-filter${orderListFilter === 'ROOM' ? ' active' : ''}" data-order-list-filter="ROOM" aria-pressed="${orderListFilter === 'ROOM'}" title="객실번호가 있는 오더만 보기">객실 ${rooms.length}</button>
+      <button type="button" class="summary-pill indicator-summary-filter${orderListFilter === 'PENDING' ? ' active' : ''}" data-order-list-filter="PENDING" aria-pressed="${orderListFilter === 'PENDING'}" title="미완료 오더만 보기">미완료 오더 ${activeOrders}</button>
+      <button type="button" class="summary-pill indicator-summary-filter${orderListFilter === 'ALL' ? ' active' : ''}" data-order-list-filter="ALL" aria-pressed="${orderListFilter === 'ALL'}" title="전체 오더 보기">전체 오더 ${orders.length}</button>`;
+    $('indicatorSummary').querySelectorAll('[data-order-list-filter]').forEach(button => {
+      button.addEventListener('click', () => {
+        state.indicator.orderListFilter = String(button.dataset.orderListFilter || 'ALL').toUpperCase();
+        renderIndicatorSummary();
+        renderOrderList();
+      });
+    });
   }
 
   function renderOrderList() { // (처리현황 내부 스크롤 목록)
     const container = $('orderScroll');
     if (!container) return;
     const scrollTop = container.scrollTop;
-    const orders = [...(state.indicator.data?.orders || [])].sort((a, b) =>
+    const orderListFilter = indicatorOrderListFilter_();
+    const orders = (state.indicator.data?.orders || [])
+      .filter(order => indicatorOrderMatchesListFilter_(order, orderListFilter))
+      .slice()
+      .sort((a, b) =>
       String(b.registeredAt || '').localeCompare(String(a.registeredAt || ''))
       || Number(b.rowNumber || 0) - Number(a.rowNumber || 0)
     ); // HOUSEMAN_LATEST_REGISTERED_LISTS_V1 · 통합인디케이터 최근 등록순 고정
     if (!orders.length) {
-      container.innerHTML = '<div class="empty-order">등록된 하우스맨 오더가 없습니다.</div>';
+      container.innerHTML = `<div class="empty-order">${escapeHtml(indicatorOrderListEmptyMessage_(orderListFilter))}</div>`;
       return;
     }
     container.innerHTML = orders.map(order => `
@@ -5987,7 +6061,7 @@
           ${cycles.map((cycle, index) => `<div class="room-cycle-row${index === cycles.length - 1 ? ' current' : ' previous'}"><span class="room-cycle-status">${indicatorRoomCycleStatusHtml_(cycle)}</span><span class="room-cycle-assignee">${escapeHtml(cycle.assignee || '')}</span></div>`).join('')}
         </div>
         ${(cleaningTypeLabel || assignmentTypeLabel) ? `<div class="room-cycle-meta">${cleaningTypeLabel ? `<span class="cleaning-type-badge ds">${cleaningTypeLabel}</span>` : ''}${assignmentTypeLabel ? `<span class="assignment-type-badge">${escapeHtml(assignmentTypeLabel)}</span>` : ''}</div>` : ''}
-        ${room.pendingOrderCount ? `<span class="room-order-count" title="미완료 하우스맨 오더">${room.pendingOrderCount}</span>` : ''}
+        ${room.pendingOrderCount ? `<span class="room-order-count" title="${escapeAttr(indicatorRoomPendingOrderTooltip_(room))}" aria-label="${escapeAttr(indicatorRoomPendingOrderTooltip_(room))}">${room.pendingOrderCount}</span>` : ''}
         ${saving ? '<span class="room-save-pending">저장중</span>' : ''}
       </article>`;
   }
