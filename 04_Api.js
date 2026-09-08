@@ -61,6 +61,7 @@ function buildBootstrapPayload_(user, clientType) { // (권한별 초기 화면 
       syncJitterRatio: NOVA.SYNC_JITTER_RATIO
     },
     user: getPublicUser_(user),
+    realtimeConfig: buildNovaRealtimeClientConfig_(user), // BOOTSTRAP_REALTIME_CONFIG_PERF_V1
     clientType: clientType === 'mobile' ? 'mobile' : 'desktop',
     defaultMenu: getDefaultMenuForRole_(role, clientType),
     menu: getMenuForRole_(role)
