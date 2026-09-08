@@ -54,3 +54,8 @@ subprocess.run([sys.executable, 'scripts/patch_daily_close_dbfirst_fallback_v1_2
 subprocess.run([sys.executable, 'scripts/patch_monthly_daily_dbfirst_v2_20260907.py'], check=True)
 subprocess.run([sys.executable, 'scripts/patch_roommaid_reporting_dbfirst_v2_20260907.py'], check=True)
 subprocess.run([sys.executable, 'scripts/validate_whole_db_transition_v2_20260908.py'], check=True)
+
+# 통합 인디게이터 하우스맨 오더 UI: 객실카드 숫자뱃지는 실제 미완료 오더내용을 tooltip으로 표시하고,
+# 객실/미완료/전체 요약 pill은 처리현황 목록 필터 버튼으로 동작하도록 보장합니다.
+subprocess.run([sys.executable, 'scripts/patch_indicator_houseman_order_ui_20260908.py'], check=True)
+subprocess.run([sys.executable, 'scripts/validate_indicator_houseman_order_ui_20260908.py'], check=True)
