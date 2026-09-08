@@ -11,8 +11,10 @@ for step_script, label in [
     ('scripts/patch_notification_preview_audio_unlock_v1.py', 'NOVA notification preview audio unlock V1'),
     ('scripts/patch_notification_preview_client_fallback_v2.py', 'NOVA notification preview client fallback V2'),
     ('scripts/patch_personal_settings_role_access_v3.py', 'NOVA personal settings role access V3'),
+    ('scripts/patch_push_permission_settings_v1.py', 'NOVA Push permission/reconnect settings V1'),
     ('scripts/validate_notification_preferences_archive_settings_v2.py', 'NOVA notification preferences + Archive settings validation'),
     ('scripts/validate_notification_center_v1.py', 'NOVA notification center V1 validation'),
+    ('scripts/validate_push_delivery_roles_v3_20260908.py', 'NOVA Push delivery role validation V3'),
 ]:
     step = subprocess.run([sys.executable, step_script], check=False)
     if step.returncode != 0:
