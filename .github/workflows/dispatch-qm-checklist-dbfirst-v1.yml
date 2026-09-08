@@ -1,0 +1,53 @@
+name: Dispatch QM Checklist DB First V1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/.dispatch_qm_checklist_dbfirst_v1_20260908'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nova-qm-checklist-dbfirst-dispatch-v1
+  cancel-in-progress: false
+
+jobs:
+  patch-validate-dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply QM checklist DB-first
+        run: |
+          python3 scripts/patch_qm_checklist_codes_dbfirst_v1_20260908.py
+          python3 scripts/patch_qm_checklist_definition_shape_v1_20260908.py
+
+      - name: Validate QM checklist DB-first
+        run: |
+          python3 scripts/validate_qm_checklist_definition_shape_v1_20260908.py
+          python3 scripts/validate_qm_checklist_codes_dbfirst_v1_20260908.py
+          python3 scripts/validate_whole_db_transition_v2_20260908.py
+          python3 scripts/validate_nova_release.py
+
+      - name: Persist validated sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add DbFirstBridge.js QmChecklistDbFirstBridge.js 16_QmChecklist.js Client.html scripts/fix_patch_site_scope_v2.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'Route QM checklist code master DB-first [skip ci]'
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch canonical production deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-apps-script.yml --ref main -f deploy=true
