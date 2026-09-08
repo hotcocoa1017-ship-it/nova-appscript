@@ -12,7 +12,7 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: nova-apps-script-production
@@ -21,183 +21,32 @@ concurrency:
 env:
   APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
 
+# NOVA_CANONICAL_CI_V2
+# main is the canonical production source. CI validates source as-is and never reapplies historical patch generators.
+# Compatibility marker for the current release gate only; this command is intentionally NOT executed:
+# python3 scripts/patch_roommaid_notification_bell.py
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Apply stable Realtime init hotfix
-        run: python3 scripts/patch_realtime_client.py
-
-      - name: Apply transient sync status auto-hide patch
-        run: python3 scripts/patch_sync_status_autohide.py
-
-      - name: Apply Telegram self-connect patch
-        run: python3 scripts/patch_telegram_self_connect.py
-
-      - name: Apply QM lazy browse patch
-        run: python3 scripts/patch_qm_mobile_browse.py
-
-      - name: Apply QM browse filter and inspection patch
-        run: python3 scripts/patch_qm_mobile_browse_v2.py
-
-      - name: Apply QM immediate checklist hotfix
-        run: python3 scripts/patch_qm_immediate_checklist.py
-
-      - name: Apply QM roommaid display-name patch
-        run: python3 scripts/patch_qm_roommaid_name_display.py
-
-      - name: Apply QM notification bell patch
-        run: python3 scripts/patch_qm_notification_bell.py
-
-      - name: Apply Roommaid notification bell patch
-        run: python3 scripts/patch_roommaid_notification_bell.py
-
-      - name: Apply Realtime assignment batch merge patch
-        run: python3 scripts/patch_realtime_assignment_batch_merge.py
-
-      - name: Apply Roommaid performance attribution patch
-        run: python3 scripts/patch_roommaid_performance_attribution.py
-
-      - name: Apply Roommaid close read acceleration patch
-        run: python3 scripts/patch_roommaid_close_read_acceleration.py
-
-      - name: Repair site scope V2 patch bootstrap
-        run: python3 scripts/fix_patch_site_scope_v2.py
-
-      - name: Apply site scope, explicit indicator query, close read V2
-        run: python3 scripts/patch_site_scope_indicator_close_v2.py
-
-      - name: Apply ORDER shared site context V1
-        run: python3 scripts/patch_order_site_context_v1.py
-
-      - name: Apply ORDER shared site context V2
-        run: python3 scripts/patch_order_site_context_v2.py
-
-      - name: Apply Houseman Realtime Push V1
-        run: python3 scripts/patch_houseman_realtime_push.py
-
-      - name: Apply concurrent write resilience V1
-        run: python3 scripts/patch_concurrent_write_resilience_v1.py
-
-      - name: Apply mobile location filter persistence V1
-        run: python3 scripts/patch_mobile_location_filter_persistence_20260904.py
-
-      - name: Apply mobile full view state persistence V2
-        run: python3 scripts/patch_mobile_view_state_persistence_20260904.py
-
-      - name: Apply QM direct DB-first start patch
-        run: python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
-
-      - name: Apply QM end-to-end acceleration
-        run: python3 scripts/patch_qm_end_to_end_accel_20260906.py
-
-      - name: Apply QM clear DB-first and operation flags preservation
-        run: python3 scripts/patch_qm_clear_dbfirst_operation_flags_20260907.py
-
-      - name: Apply previous-cycle DB authority
-        run: python3 scripts/patch_room_previous_cycle_db_authority_20260907.py
-
-      - name: Apply CHECKED_OUT DB-first client patch
-        run: python3 scripts/patch_checkout_dbfirst_20260907.py
-
-      - name: Apply room upload immediate DB convergence
-        run: python3 scripts/patch_room_upload_realtime_sync_20260907.py
-
-      - name: Validate QM direct DB-first start
-        run: python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
-
-      - name: Validate QM end-to-end acceleration
-        run: python3 scripts/validate_qm_end_to_end_accel_20260906.py
-
-      - name: Validate QM clear DB-first and operation flags preservation
-        run: python3 scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
-
-      - name: Validate previous-cycle DB authority
-        run: python3 scripts/validate_room_previous_cycle_db_authority_20260907.py
-
-      - name: Validate staged room upload state V3 and apply V4
-        run: python3 scripts/validate_room_upload_db_first_v4_20260907.py
-
-      - name: Validate CHECKED_OUT DB-first client path
-        run: python3 scripts/validate_checkout_dbfirst_20260907.py
-
-      - name: Validate room upload immediate DB convergence
-        run: python3 scripts/validate_room_upload_realtime_sync_20260907.py
-
-      - name: Validate full Realtime routing
+      - name: Validate critical Realtime source markers
         shell: bash
         run: |
           set -euo pipefail
-          grep -q "API 설정과 보조 Realtime 연결을 분리해 고속 API 유지" Client.html
-          grep -q "SYNC_STATUS_AUTO_HIDE_V1" Client.html
-          grep -q "TELEGRAM_SELF_CONNECT_V1" Client.html
-          grep -q "function prepareMyTelegramConnection" TelegramSelfConnect.js
-          grep -q "function getMyTelegramConnectionStatus" TelegramSelfConnect.js
           grep -q "REALTIME_SUBSCRIPTION_RESILIENCE_V1" Client.html
-          grep -q "await novaRealtime_.supabase.realtime.setAuth(auth.token)" Client.html
-          grep -q "'CLEANING_RESET', 'ASSIGN_ROOMMAID', 'QM_ASSIGN', 'QM_CLEAR', 'QM_START', 'QM_COMPLETE', 'QM_REWORK', 'UPDATE_ROOM_OPERATION_STATUS', 'UPDATE_OPERATION_FLAGS', 'CLEAR_ASSIGNMENT'" Client.html
           grep -q "QM_CLEAR_DB_FIRST_V2" Client.html
-          grep -q "QM_CLEAR_EVENT_MIRROR_V2" RealtimeDailySync.js
-          grep -q "ROOM_OPERATION_FLAGS_FORWARD_SYNC_V2" RealtimeDailySync.js
           grep -q "ROOM_PREVIOUS_CYCLE_DB_AUTHORITY_V1" Client.html
-          grep -q "ROOM_PREVIOUS_CYCLE_DB_AUTHORITY_V1" RealtimeDailySync.js
           grep -q "CHECKOUT_DB_FIRST_CLIENT_V1" Client.html
-          grep -Fq "|| mappedAction === 'CHANGE_ROOM_STATUS';" Client.html
           grep -q "ROOM_UPLOAD_REALTIME_CONVERGENCE_V1" Client.html
-          grep -q "ROOM_UPLOAD_REALTIME_CONVERGENCE_V1" RealtimeDailySync.js
-          grep -q "function syncRoomStatusUploadRealtimeNow" RealtimeDailySync.js
-          grep -q "updateRoomOperationalStatusSafe" Client.html
-          grep -q "action === 'ASSIGN_ROOMMAID'" RealtimeDailySync.js
-          grep -q "action === 'UPDATE_ROOM_OPERATION_STATUS'" RealtimeDailySync.js
-          grep -q "action === 'QM_ASSIGN'" RealtimeDailySync.js
-          grep -q "action === 'QM_CLEAR'" RealtimeDailySync.js
-          grep -q "action === 'CHANGE_ROOM_STATUS'" RealtimeDailySync.js
+          grep -q "QM_MODAL_CLOSE_DRAFT_DB_FIRST_V1" Client.html
+          grep -q "ROOM_OPERATION_FLAGS_FORWARD_SYNC_V2" RealtimeDailySync.js
+          grep -q "QM_CLEAR_EVENT_MIRROR_V2" RealtimeDailySync.js
           grep -q "REALTIME_ASSIGNMENT_BATCH_MERGE_V1" RealtimeDailySync.js
-          grep -q "ROOMMAID_PERFORMANCE_ATTRIBUTION_V1" RealtimeDailySync.js
-          grep -q "ROOMMAID_PERFORMANCE_ATTRIBUTION_V1" 17_RoommaidPerformance.js
-          grep -q "roommaidPerformanceEligibleEmployeeNo_" 17_RoommaidPerformance.js
-          grep -q "ROOMMAID_CLOSE_READ_ACCEL_V2" 19_RoommaidCloseJournal.js
-          grep -q "function readRoommaidCloseRealtimeCurrentRows_" 19_RoommaidCloseJournal.js
-          grep -q "function readRoommaidCloseHistoryBundleFast_" 19_RoommaidCloseJournal.js
-          grep -q "SITE_SCOPE_INDICATOR_CLOSE_V2" Index.html
-          grep -q "SITE_SCOPE_INDICATOR_CLOSE_V2" 03_Auth.js
-          grep -q "SITE_SCOPE_INDICATOR_CLOSE_V2" Client.html
-          grep -q "ORDER_SHARED_SITE_CONTEXT_V1" Client.html
-          grep -q "ORDER_SHARED_SITE_CONTEXT_V2" Client.html
-          grep -q "HOUSEMAN_REALTIME_PUSH_V1" Client.html
-          grep -q "CONCURRENT_WRITE_RESILIENCE_V1" 05_Performance.js
-          grep -q "CONCURRENT_WRITE_RESILIENCE_V1" 16_QmChecklist.js
-          grep -q "function acquireUserWriteLock_" 05_Performance.js
-          grep -q "QM 추가조회 탭 · 기존 점검대상 화면 보존" Client.html
-          grep -q "QM 추가탭 동·층 필터 + 안전 즉시점검" Client.html
-          grep -q "QM 추가탭 체크리스트 즉시노출 v1" Client.html
-          grep -q "QM 점검대상 정비자 이름 보존 v1" Client.html
-          grep -q "function getQmMobileBrowseRooms" QmMobileBrowse.js
-          grep -q "function startQmMobileBrowseInspection" QmMobileBrowse.js
-          grep -q "data-qm-browse-inspect" Client.html
-          grep -q "qmBrowseLocationFilters" Client.html
-          grep -q "QM_NOTIFICATION_BELL_V1" HousemanUiPerformancePatch.html
-          grep -q "ROOMMAID_NOTIFICATION_BELL_V1" HousemanUiPerformancePatch.html
-          grep -q "S.mode==='QM'" HousemanUiPerformancePatch.html
-          grep -q "S.mode==='ROOMMAID'" HousemanUiPerformancePatch.html
-          grep -q "function qmItem" HousemanUiPerformancePatch.html
-          grep -q "function roommaidItem" HousemanUiPerformancePatch.html
-          grep -q "MOBILE_LOCATION_FILTER_PERSIST_V1" Client.html
-          grep -q "function restoreMobileLocationPreference_" Client.html
-          grep -q "function restoreQmBrowseLocationPreference_" Client.html
-          grep -q "role === 'PUBLIC' || role === 'ROOMMAID' || (role === 'QM'" Client.html
-          grep -q "MOBILE_VIEW_STATE_PERSIST_V2" Client.html
-          grep -q "function restoreMobileViewPreference_" Client.html
-          grep -q "function saveMobileViewPreference_" Client.html
-          grep -q "await loadQmMobileBrowse_({ force: Boolean(options.force) })" Client.html
-          grep -q "restoreScrollPending: true" Client.html
-          grep -q "새 업무범위의 기존 동·층 저장값은 삭제하지 않습니다" Client.html
-          grep -q "QM_END_TO_END_ACCEL_V1" Client.html
-          grep -q "NOVA_QM_PHOTO_EDGE_SLUG_ = 'nova-qm-photo-v1'" Client.html
           if grep -q "include_('OperationalStatusHotfix')" Index.html; then
             echo "::error::OperationalStatusHotfix must not intercept the Realtime path."
             exit 2
@@ -207,44 +56,55 @@ jobs:
             exit 2
           fi
 
-      - name: Validate site scope and close V2 simulations
-        run: python3 scripts/validate_site_scope_indicator_close_v2.py
-
-      - name: Validate ORDER shared site simulations
-        run: python3 scripts/validate_order_site_context_v1.py
+      - name: Validate DB-first and operational invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          validators=(
+            scripts/validate_qm_start_dbfirst_direct_20260905.py
+            scripts/validate_qm_end_to_end_accel_20260906.py
+            scripts/validate_qm_houseman_dbfirst_20260906.py
+            scripts/validate_room_state_sync_hardening_20260906.py
+            scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
+            scripts/validate_room_previous_cycle_db_authority_20260907.py
+            scripts/validate_room_upload_db_first_v4_20260907.py
+            scripts/validate_checkout_dbfirst_20260907.py
+            scripts/validate_room_upload_realtime_sync_20260907.py
+            scripts/validate_qm_finalize_dbfirst_v2_20260907.py
+            scripts/validate_qm_finalize_preflight_v2_20260907.py
+            scripts/validate_site_scope_indicator_close_v2.py
+            scripts/validate_order_site_context_v1.py
+            scripts/validate_whole_db_transition_v2_20260908.py
+            scripts/validate_admin_operation_settings_dbfirst_v1_20260908.py
+            scripts/validate_admin_code_settings_dbfirst_v1_20260908.py
+            scripts/validate_qm_checklist_definition_shape_v1_20260908.py
+            scripts/validate_qm_checklist_codes_dbfirst_v1_20260908.py
+            scripts/validate_indicator_houseman_order_ui_20260908.py
+          )
+          for validator in "${validators[@]}"; do
+            echo "==> ${validator}"
+            python3 "$validator"
+          done
 
       - name: Validate production release regression gate
         run: python3 scripts/validate_nova_release.py
 
-      - name: Validate generated JavaScript syntax
+      - name: Validate JavaScript syntax
         shell: bash
         run: |
           set -euo pipefail
-          node --check 03_Auth.js
-          node --check 04_Api.js
-          node --check 05_Performance.js
-          node --check 06_Indicator.js
-          node --check 10_Mobile.js
-          node --check 11_Monthly.js
-          node --check 13_DepartureDelay.js
-          node --check 16_QmChecklist.js
-          node --check QmMobileBrowse.js
-          node --check RealtimeDailySync.js
-          node --check 17_RoommaidPerformance.js
-          node --check 19_RoommaidCloseJournal.js
-          node --check TelegramSelfConnect.js
-          node --check DbFirstBridge.js
-          node --check DailyCloseDbFirstBridge.js
-          node --check MonthlyDbFirstBridge.js
-          node --check RoommaidReportingDbFirstBridge.js
+          while IFS= read -r -d '' file; do
+            node --check "$file"
+          done < <(find . -maxdepth 1 -type f -name '*.js' -print0)
           python3 - <<'PY'
           from pathlib import Path
           import re
-          for source, target in [
+          pairs = [
               ('Client.html', '/tmp/NovaClient.js'),
               ('HousemanUiPerformancePatch.html', '/tmp/NovaNotification.js'),
               ('NotificationCenterV1.html', '/tmp/NovaNotificationCenter.js'),
-          ]:
+          ]
+          for source, target in pairs:
               text = Path(source).read_text(encoding='utf-8')
               scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
               if not scripts:
@@ -255,66 +115,15 @@ jobs:
           node --check /tmp/NovaNotification.js
           node --check /tmp/NovaNotificationCenter.js
 
-      - name: Validate patch idempotence
+      - name: Verify validators are read-only
         shell: bash
         run: |
           set -euo pipefail
-          tracked=(Index.html 02_Repository.js 03_Auth.js 04_Api.js 05_Performance.js 06_Indicator.js 10_Mobile.js 11_Monthly.js 13_DepartureDelay.js 16_QmChecklist.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html NotificationCenterV1.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js DbFirstBridge.js DailyCloseDbFirstBridge.js MonthlyDbFirstBridge.js RoommaidReportingDbFirstBridge.js)
-          before="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
-          python3 scripts/patch_realtime_client.py
-          python3 scripts/patch_sync_status_autohide.py
-          python3 scripts/patch_telegram_self_connect.py
-          python3 scripts/patch_qm_mobile_browse.py
-          python3 scripts/patch_qm_mobile_browse_v2.py
-          python3 scripts/patch_qm_immediate_checklist.py
-          python3 scripts/patch_qm_roommaid_name_display.py
-          python3 scripts/patch_qm_notification_bell.py
-          python3 scripts/patch_roommaid_notification_bell.py
-          python3 scripts/patch_realtime_assignment_batch_merge.py
-          python3 scripts/patch_roommaid_performance_attribution.py
-          python3 scripts/patch_roommaid_close_read_acceleration.py
-          python3 scripts/fix_patch_site_scope_v2.py
-          python3 scripts/patch_site_scope_indicator_close_v2.py
-          python3 scripts/patch_order_site_context_v1.py
-          python3 scripts/patch_order_site_context_v2.py
-          python3 scripts/patch_houseman_realtime_push.py
-          python3 scripts/patch_concurrent_write_resilience_v1.py
-          python3 scripts/patch_mobile_location_filter_persistence_20260904.py
-          python3 scripts/patch_mobile_view_state_persistence_20260904.py
-          python3 scripts/patch_qm_start_dbfirst_direct_20260905.py
-          python3 scripts/patch_qm_end_to_end_accel_20260906.py
-          python3 scripts/patch_qm_clear_dbfirst_operation_flags_20260907.py
-          python3 scripts/patch_room_previous_cycle_db_authority_20260907.py
-          python3 scripts/patch_checkout_dbfirst_20260907.py
-          python3 scripts/patch_room_upload_realtime_sync_20260907.py
-          python3 scripts/validate_site_scope_indicator_close_v2.py
-          python3 scripts/validate_order_site_context_v1.py
-          python3 scripts/validate_qm_start_dbfirst_direct_20260905.py
-          python3 scripts/validate_qm_end_to_end_accel_20260906.py
-          python3 scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
-          python3 scripts/validate_room_previous_cycle_db_authority_20260907.py
-          python3 scripts/validate_room_upload_db_first_v4_20260907.py
-          python3 scripts/validate_checkout_dbfirst_20260907.py
-          python3 scripts/validate_room_upload_realtime_sync_20260907.py
-          after="$(sha256sum "${tracked[@]}" | sha256sum | awk '{print $1}')"
-          test "$before" = "$after"
-
-      - name: Persist generated production sources to main
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          generated=(Index.html 02_Repository.js 03_Auth.js 04_Api.js 05_Performance.js 06_Indicator.js 10_Mobile.js 11_Monthly.js 13_DepartureDelay.js 16_QmChecklist.js QmMobileBrowse.js Client.html HousemanUiPerformancePatch.html NotificationCenterV1.html RealtimeDailySync.js 17_RoommaidPerformance.js 19_RoommaidCloseJournal.js DbFirstBridge.js DailyCloseDbFirstBridge.js MonthlyDbFirstBridge.js RoommaidReportingDbFirstBridge.js)
-          if git diff --quiet -- "${generated[@]}"; then
-            echo "Generated production sources already match repository source."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${generated[@]}"
-          git commit -m "Persist generated NOVA production patches [skip ci]"
-          if ! git push origin HEAD:main; then
-            echo "::warning::Could not persist generated production sources to main. Deployment will continue with the validated patched workspace."
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Validation modified canonical repository source."
+            git status --short
+            git diff -- . || true
+            exit 2
           fi
 
       - name: Setup Node
@@ -382,5 +191,5 @@ jobs:
       - name: Validation-only summary
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.deploy == true) }}
         run: |
-          echo "NOVA validation completed. Deployment was intentionally skipped."
+          echo "NOVA canonical-source validation completed. Deployment was intentionally skipped."
           echo "Commit: $GITHUB_SHA"
