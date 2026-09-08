@@ -81,10 +81,10 @@ for control in ('indicatorDate', 'indicatorSite'):
 # Entering indicator may not auto-query when no previously applied query.
 need('renderIndicatorAwaitingQuery_();' in client, 'indicator initial waiting state missing')
 
-# Close journal V2: Realtime current rooms for live reads, TextFinder history, Sheet fallback for safety.
-need('ROOMMAID_CLOSE_READ_ACCEL_V2' in close, 'close journal V2 marker missing')
+# Close journal V3: Realtime current rooms for live reads, direct same-day TextFinder history, Sheet fallback for safety.
+need('ROOMMAID_CLOSE_READ_ACCEL_V3' in close, 'close journal V3 marker missing')
 need('readRoommaidCloseRealtimeCurrentRows_' in close, 'close journal Realtime current-room helper missing')
-need("historyLookup: 'DATE_TEXTFINDER'" in close, 'close journal TextFinder marker missing')
+need("historyLookup: String(historyBundle.readPath || (historyBundle.dbFirst ? 'DB_NATIVE' : 'DATE_TEXTFINDER'))" in close, 'close journal V3 history path marker missing')
 need('.createTextFinder(String(businessDate || \'\'))' in close, 'history date TextFinder missing')
 need('readRoommaidCloseHistoryBundle_(businessDate, site)' in close, 'history fallback missing')
 need('readRoommaidCloseCurrentSelection_(businessDate, preferredSite, defaultSite)' in close, 'current Sheet fallback missing')
