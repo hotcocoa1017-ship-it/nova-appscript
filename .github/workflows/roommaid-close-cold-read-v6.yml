@@ -1,0 +1,125 @@
+name: Roommaid Close Cold Read V6
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/roommaid-close-cold-read-v6.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nova-roommaid-close-cold-read-v6
+  cancel-in-progress: false
+
+env:
+  APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
+
+jobs:
+  patch-validate-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Apply cold-read V6 patch
+        run: python3 scripts/patch_roommaid_close_cold_read_v6_20260908.py
+
+      - name: Verify V6 markers and focused invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "USER_INDEX_CHUNK_CACHE_V3" 02_Repository.js
+          grep -q "ROOMMAID_CLOSE_SHARED_CACHE_V6" 19_RoommaidCloseJournal.js
+          grep -q "ROOMMAID_CLOSE_COLD_TIMING_V6" 19_RoommaidCloseJournal.js
+          grep -q "ROOMMAID_CLOSE_READ_ACCEL_V6" 19_RoommaidCloseJournal.js
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_whole_db_transition_v2_20260908.py
+          python3 scripts/validate_nova_release.py
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            node --check "$file"
+          done < <(find . -maxdepth 1 -type f -name '*.js' -print0)
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('Client.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if not scripts:
+              raise SystemExit('No script block found in Client.html')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+
+      - name: Show patch
+        run: git diff --check && git diff --stat && git diff -- 02_Repository.js 19_RoommaidCloseJournal.js
+
+      - name: Commit canonical source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add 02_Repository.js 19_RoommaidCloseJournal.js
+          git commit -m "Optimize roommaid close cold read V6"
+          git push origin HEAD:main
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp
+
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo "::error::Apps Script OAuth secret is missing."
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+
+      - name: Check Apps Script version capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          versions="$(clasp versions)"
+          version_count="$(printf '%s\n' "$versions" | grep -Ec '^[[:space:]]*[0-9]+[[:space:]]*-' || true)"
+          echo "Apps Script versions: ${version_count}/200"
+          if [ "$version_count" -ge 200 ]; then
+            echo "::error::Apps Script version limit reached (${version_count}/200)."
+            exit 4
+          fi
+
+      - name: Deploy existing web app
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp push --force
+          clasp create-deployment \
+            --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" \
+            --description "NOVA roommaid close cold read V6 ${GITHUB_SHA::12}"
+
+      - name: Summary
+        run: |
+          echo "Roommaid close cold-read V6 patched, validated, committed, and deployed."
