@@ -1,4 +1,4 @@
-/** NOVA_ROOMMAID_REPORTING_DB_FIRST_V4 */
+/** NOVA_ROOMMAID_REPORTING_DB_FIRST_V2 · NOVA_ROOMMAID_REPORTING_DB_FIRST_V4 */
 function readRoommaidCloseHistoryBundleDbFirst_(token, businessDate, site) {
   const dateText = normalizeBusinessDate_(businessDate);
   const siteText = String(site || '').trim();
