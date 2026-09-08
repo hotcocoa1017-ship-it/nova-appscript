@@ -1,0 +1,84 @@
+<style>
+/* NOVA_PWA_MIGRATION_BANNER_V1 */
+#novaPwaMigrationBanner{position:fixed;left:10px;right:10px;bottom:max(10px,env(safe-area-inset-bottom));z-index:10070;display:none;align-items:center;gap:10px;padding:12px 12px 12px 14px;border:1px solid #bfdbfe;border-radius:14px;background:rgba(255,255,255,.98);box-shadow:0 14px 34px rgba(15,23,42,.2);color:#111827;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+#novaPwaMigrationBanner.show{display:flex}
+#novaPwaMigrationBanner .nova-pwa-migration-copy{min-width:0;flex:1;display:grid;gap:3px}
+#novaPwaMigrationBanner strong{font-size:13px;line-height:1.35}
+#novaPwaMigrationBanner small{font-size:11px;line-height:1.4;color:#64748b}
+#novaPwaMigrationBanner .nova-pwa-migration-actions{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+#novaPwaMigrationBanner button{min-height:38px;border-radius:10px;font-weight:900;white-space:nowrap}
+#novaPwaMigrationOpen{padding:0 12px;border:1px solid #1d4ed8;background:#2563eb;color:#fff}
+#novaPwaMigrationDismiss{width:38px;border:1px solid #e5e7eb;background:#fff;color:#64748b;font-size:17px}
+@media(min-width:901px){#novaPwaMigrationBanner{display:none!important}}
+</style>
+<script>
+(()=>{'use strict';
+const MARKER='NOVA_PWA_MIGRATION_BANNER_V1';
+if(window.__NOVA_PWA_MIGRATION_BANNER_V1__)return;
+window.__NOVA_PWA_MIGRATION_BANNER_V1__=true;
+
+const PWA_URL='https://nova-pwa-hotcocoa1017-3826.vercel.app/';
+const DISMISS_KEY='novaPwaMigrationDismissedAtV1';
+const DISMISS_MS=24*60*60*1000;
+let banner=null;
+
+function isLegacyDirectMobile(){
+  if(window.top!==window)return false;
+  if(!window.matchMedia?.('(max-width: 900px)').matches)return false;
+  return true;
+}
+function isLoggedIn(){
+  const main=document.getElementById('mainView');
+  return Boolean(main&&!main.classList.contains('hidden')&&String(localStorage.getItem('novaToken')||'').trim());
+}
+function dismissed(){
+  const at=Number(localStorage.getItem(DISMISS_KEY)||0);
+  return Number.isFinite(at)&&at>0&&(Date.now()-at)<DISMISS_MS;
+}
+function ensureBanner(){
+  if(banner)return banner;
+  banner=document.createElement('aside');
+  banner.id='novaPwaMigrationBanner';
+  banner.setAttribute('role','status');
+  banner.setAttribute('aria-live','polite');
+  banner.innerHTML=`
+    <div class="nova-pwa-migration-copy">
+      <strong>새 NOVA 앱에서 업무 알림을 받을 수 있습니다.</strong>
+      <small>새 앱에서 1회 로그인 후 알림을 켜 주세요.</small>
+    </div>
+    <div class="nova-pwa-migration-actions">
+      <button id="novaPwaMigrationOpen" type="button">새 앱 열기</button>
+      <button id="novaPwaMigrationDismiss" type="button" aria-label="오늘은 닫기">×</button>
+    </div>`;
+  document.body.appendChild(banner);
+  banner.querySelector('#novaPwaMigrationOpen')?.addEventListener('click',()=>{
+    try{localStorage.removeItem(DISMISS_KEY)}catch(_){ }
+    window.location.assign(PWA_URL);
+  });
+  banner.querySelector('#novaPwaMigrationDismiss')?.addEventListener('click',()=>{
+    try{localStorage.setItem(DISMISS_KEY,String(Date.now()))}catch(_){ }
+    paint();
+  });
+  return banner;
+}
+function paint(){
+  const el=ensureBanner();
+  const show=isLegacyDirectMobile()&&isLoggedIn()&&!dismissed();
+  el.classList.toggle('show',show);
+}
+function watch(){
+  ensureBanner();
+  const main=document.getElementById('mainView');
+  if(main)new MutationObserver(paint).observe(main,{attributes:true,attributeFilter:['class']});
+  window.matchMedia?.('(max-width: 900px)').addEventListener?.('change',paint);
+  window.addEventListener('storage',paint);
+  window.addEventListener('pageshow',paint);
+  window.addEventListener('focus',paint);
+  setTimeout(paint,0);
+  setTimeout(paint,800);
+  setTimeout(paint,2200);
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',watch,{once:true});
+else watch();
+})();
+</script>
