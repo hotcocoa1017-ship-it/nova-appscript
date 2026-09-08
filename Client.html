@@ -10865,6 +10865,36 @@
     $('modalRoot').setAttribute('aria-hidden', 'false');
   }
 
+
+  async function novaQmSaveDraftOnCloseDbFirst_(draft) { // QM_MODAL_CLOSE_DRAFT_DB_FIRST_V1
+    const active = state.qmChecklist?.activeInspection;
+    if (novaRealtime_.qmDraftDbFirstEnabled && novaRealtimeIsEnabled_()) {
+      try {
+        const dbResult = await novaQmDraftDbFirstSave_(draft);
+        if (active?.draft?.draftId === draft?.draftId) {
+          active.draft = Object.assign({}, active.draft, {
+            answers: draft.answers || [],
+            defects: draft.defects || [],
+            dbVersion: dbResult.dbVersion
+          });
+        }
+        novaQmScheduleLegacyDraftMirror_(Object.assign({}, active?.draft || draft, {
+          answers: draft.answers || [],
+          defects: draft.defects || []
+        }));
+        return { ok: true, savedAt: dbResult.savedAt, draft: active?.draft || draft, dbFirst: true };
+      } catch (dbError) {
+        console.warn('[NOVA QM] 모달 종료 DB-first 초안 저장 실패 · 기존 Sheet 저장으로 fallback', dbError);
+      }
+    }
+    return callServer('saveQmInspectionDraft', state.token, {
+      draftId: draft.draftId,
+      draftRowNumber: Number(draft.rowNumber || 0),
+      answers: draft.answers || [],
+      defects: draft.defects || []
+    });
+  }
+
   function closeModal() { // (모달 닫기·QM 진행중 초안 보존)
     const active = state.qmChecklist?.activeInspection;
     const hasInspectionForm = Boolean(active?.draft?.draftId && $('qmChecklistInspectionItems'));
@@ -10873,11 +10903,7 @@
       active.draft = draft;
       if (state.qmChecklist.autosaveTimer) window.clearTimeout(state.qmChecklist.autosaveTimer);
       state.qmChecklist.autosaveTimer = null;
-      callServer('saveQmInspectionDraft', state.token, {
-        draftId: draft.draftId,
-        answers: draft.answers || [],
-        defects: draft.defects || []
-      }).then(result => {
+      novaQmSaveDraftOnCloseDbFirst_(draft).then(result => {
         if (result?.ok && state.qmChecklist.activeInspection?.draft?.draftId === draft.draftId) {
           state.qmChecklist.activeInspection.draft = Object.assign({}, state.qmChecklist.activeInspection.draft, result.draft || {}, {
             answers: draft.answers || [], defects: draft.defects || []
