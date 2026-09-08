@@ -1254,7 +1254,7 @@ function novaRealtimeFinalBuildUsers_(knownSites) {
       role,
       enabled: !['N', 'NO', 'FALSE', '0', '중지', '미사용'].includes(enabledRaw),
       defaultSite,
-      allowedSites: ['ADMIN', 'ORDER'].includes(role) ? sites : (defaultSite ? [defaultSite] : [])
+      allowedSites: defaultSite ? [defaultSite] : [] // ADMIN_ORDER_UNSCOPED_SITE_SYNC_V1 · blank 기본사업장은 기존 NOVA와 동일하게 전체사업장
     });
   }
   return result;
