@@ -1,4 +1,4 @@
-// deploy-trigger: NOVA Push recovery V4 2026-09-08
+// deploy-trigger: NOVA Push recovery V4 2026-09-08 rev2
 const CACHE='nova-pwa-v2-vercel-6'; // NOVA_PUSH_VAPID_RECOVERY_V4
 const ICON='https://evoetxfjmkkjptucwxsv.supabase.co/storage/v1/object/public/nova-pwa-v2/icon-192.png';
 const BADGE='https://evoetxfjmkkjptucwxsv.supabase.co/storage/v1/object/public/nova-pwa-v2/badge-96.png';
