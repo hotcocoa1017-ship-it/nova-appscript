@@ -1,0 +1,80 @@
+name: Apply NOVA PWA Subscription Key Guard V1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/.apply_pwa_subscription_key_guard_v1_20260908'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nova-pwa-subscription-key-guard-v1
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply subscription applicationServerKey guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('pwa/v2/index.html')
+          text = p.read_text(encoding='utf-8')
+          old = """function b64uToBytes(v){const p='='.repeat((4-v.length%4)%4),b=atob((v+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(b,c=>c.charCodeAt(0))}\nfunction subscriptionJSON(s){const j=s.toJSON();return {endpoint:j.endpoint,keys:{p256dh:j.keys?.p256dh||'',auth:j.keys?.auth||''}}}\n"""
+          new = """function b64uToBytes(v){const p='='.repeat((4-v.length%4)%4),b=atob((v+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(b,c=>c.charCodeAt(0))}\nfunction sameBytes(a,b){if(!a||!b||a.length!==b.length)return false;for(let i=0;i<a.length;i++)if(a[i]!==b[i])return false;return true}\nfunction subscriptionUsesCurrentVapid(s){try{const k=s?.options?.applicationServerKey;if(!k)return false;return sameBytes(new Uint8Array(k),b64uToBytes(VAPID))}catch(_){return false}} // NOVA_PUSH_SUBSCRIPTION_KEY_GUARD_V1\nfunction subscriptionJSON(s){const j=s.toJSON();return {endpoint:j.endpoint,keys:{p256dh:j.keys?.p256dh||'',auth:j.keys?.auth||''}}}\n"""
+          assert old in text, 'helper insertion baseline not found'
+          text = text.replace(old, new, 1)
+
+          old = """async function currentPushSubscription(reg){\n  let sub=await reg.pushManager.getSubscription();\n  const version=String(localStorage.getItem(VAPID_VERSION_KEY)||'');\n  if(sub&&version!==VAPID_VERSION){\n    try{await sub.unsubscribe()}catch(e){console.warn('[NOVA PWA] old push unsubscribe',e)}\n    sub=null;\n  }\n  if(Notification.permission==='granted'&&!sub){\n    sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64uToBytes(VAPID)});\n  }\n  return sub;\n}\n"""
+          new = """async function currentPushSubscription(reg){\n  let sub=await reg.pushManager.getSubscription();\n  const version=String(localStorage.getItem(VAPID_VERSION_KEY)||'');\n  const keyMismatch=Boolean(sub&&!subscriptionUsesCurrentVapid(sub));\n  if(sub&&(version!==VAPID_VERSION||keyMismatch)){\n    try{await sub.unsubscribe()}catch(e){console.warn('[NOVA PWA] old push unsubscribe',e)}\n    sub=null;\n  }\n  if(Notification.permission==='granted'&&!sub){\n    sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64uToBytes(VAPID)});\n    if(!subscriptionUsesCurrentVapid(sub)){\n      try{await sub.unsubscribe()}catch(_){}\n      throw new Error('Push 구독 VAPID 키 검증 실패');\n    }\n  }\n  return sub;\n}\n"""
+          assert old in text, 'currentPushSubscription baseline not found'
+          text = text.replace(old, new, 1)
+          p.write_text(text, encoding='utf-8')
+
+          p = Path('pwa/v2/sw.js')
+          text = p.read_text(encoding='utf-8')
+          assert "nova-pwa-v2-vercel-6" in text, 'unexpected SW cache baseline'
+          text = text.replace("nova-pwa-v2-vercel-6", "nova-pwa-v2-vercel-7", 1)
+          text = text.replace('NOVA_PUSH_VAPID_RECOVERY_V4', 'NOVA_PUSH_VAPID_RECOVERY_V4_KEY_GUARD_V1', 1)
+          p.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Validate exact guard patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check pwa/v2/sw.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+          text=Path('pwa/v2/index.html').read_text(encoding='utf-8')
+          blocks=re.findall(r'<script[^>]*>(.*?)</script>',text,flags=re.S|re.I)
+          assert blocks
+          subprocess.run(['node','--check','-'],input='\n'.join(blocks),text=True,check=True)
+          assert 'NOVA_PUSH_SUBSCRIPTION_KEY_GUARD_V1' in text
+          assert 'subscriptionUsesCurrentVapid' in text
+          assert 'keyMismatch=Boolean(sub&&!subscriptionUsesCurrentVapid(sub))' in text
+          assert "VAPID_VERSION='20260908-v4'" in text
+          sw=Path('pwa/v2/sw.js').read_text(encoding='utf-8')
+          assert "nova-pwa-v2-vercel-7" in sw
+          PY
+          git diff --check
+
+      - name: Commit subscription key guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pwa/v2/index.html pwa/v2/sw.js
+          git commit -m "Harden NOVA PWA push subscription key guard"
+          git push origin HEAD:main
