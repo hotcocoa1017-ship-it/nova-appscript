@@ -1,0 +1,20 @@
+name: Dispatch PWA Migration Deploy Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dispatch-pwa-migration-deploy-once.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch canonical deployment workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-apps-script.yml --repo "$GITHUB_REPOSITORY" --ref main -f deploy=true
