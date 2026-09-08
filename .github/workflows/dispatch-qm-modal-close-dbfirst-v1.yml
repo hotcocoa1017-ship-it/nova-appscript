@@ -18,4 +18,4 @@ jobs:
       - name: Dispatch canonical production deployment
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run deploy-apps-script.yml --ref main -f deploy=true
+        run: gh workflow run deploy-apps-script.yml -R hotcocoa1017-ship-it/nova-appscript --ref main -f deploy=true
