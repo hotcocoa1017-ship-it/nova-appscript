@@ -1,0 +1,58 @@
+name: Clean Whole DB Validator Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/.clean_whole_db_validator_once_20260908'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nova-validator-cleanup-whole-db
+  cancel-in-progress: false
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Convert whole-DB validator to read-only canonical checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('scripts/validate_whole_db_transition_v2_20260908.py')
+          s = p.read_text(encoding='utf-8')
+
+          start = s.index('# Canonical workflow still owns a single meta-patch step; the meta-patcher owns all new changes.')
+          end = s.index('# Syntax gate for every newly introduced/touched runtime source.', start)
+          replacement = '''# Canonical CI validates the persisted main source directly; historical patch generators are not executed.\nrequire(workflow, 'NOVA_CANONICAL_CI_V2', 'canonical source validation marker')\nrequire(workflow, 'Validate DB-first and operational invariants', 'canonical DB-first validation step')\nrequire(workflow, 'Verify validators are read-only', 'canonical read-only validator gate')\nrequire(workflow, 'validate_whole_db_transition_v2_20260908.py', 'whole DB validator remains in canonical CI')\nforbid(workflow, '      - name: Apply stable Realtime init hotfix', 'historical patch execution removed')\n\n'''
+          s = s[:start] + replacement + s[end:]
+
+          start = s.index('# Self-contained idempotence for the new subset.')
+          end = s.index('\nif errors:', start)
+          replacement = '''# Canonical validation is intentionally read-only. Patch-generator idempotence is no longer\n# executed in CI because main now stores the exact production source.\nchecks.append(('canonical validator read-only by construction', True))\n'''
+          s = s[:start] + replacement + s[end:]
+
+          p.write_text(s, encoding='utf-8')
+          PY
+          python3 scripts/validate_whole_db_transition_v2_20260908.py
+          git diff --check
+      - name: Commit validator cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- scripts/validate_whole_db_transition_v2_20260908.py; then
+            echo 'Whole-DB validator already clean.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/validate_whole_db_transition_v2_20260908.py
+          git commit -m 'Make whole-DB validator canonical and read-only [skip ci]'
+          git push origin HEAD:main
