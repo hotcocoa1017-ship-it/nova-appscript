@@ -3,12 +3,17 @@
  */
 var NOVA_RUNTIME_CACHE_ = typeof NOVA_RUNTIME_CACHE_ !== 'undefined'
   ? NOVA_RUNTIME_CACHE_
-  : { spreadsheet: null, sheets: {}, headerMaps: {} }; // (동일 실행 내 시트·헤더 재사용)
+  : { spreadsheet: null, sheets: {}, headerMaps: {}, userIndex: null }; // NOVA_USER_INDEX_RUNTIME_CACHE_V1 · 동일 실행 내 사용자 인덱스 재사용
 
 function getUserIndex_() { // (사용자계정 인덱스 조회)
+  if (NOVA_RUNTIME_CACHE_.userIndex) return NOVA_RUNTIME_CACHE_.userIndex; // NOVA_USER_INDEX_RUNTIME_CACHE_V1
   const cache = CacheService.getScriptCache();
   const cached = cache.get('NOVA_USER_INDEX_V2');
-  if (cached) return JSON.parse(cached);
+  if (cached) {
+    const parsed = JSON.parse(cached);
+    NOVA_RUNTIME_CACHE_.userIndex = parsed;
+    return parsed;
+  }
 
   const sheet = getRequiredSheet_(NOVA.SHEETS.USERS);
   const headerMap = getHeaderMap_(sheet);
@@ -31,6 +36,7 @@ function getUserIndex_() { // (사용자계정 인덱스 조회)
   if (serialized.length < 95000) {
     cache.put('NOVA_USER_INDEX_V2', serialized, NOVA.CACHE_SECONDS);
   }
+  NOVA_RUNTIME_CACHE_.userIndex = index; // NOVA_USER_INDEX_RUNTIME_CACHE_V1
   return index;
 }
 
@@ -217,4 +223,5 @@ function clearNovaCaches_() { // (공통 캐시 초기화)
   NOVA_RUNTIME_CACHE_.spreadsheet = null;
   NOVA_RUNTIME_CACHE_.sheets = {};
   NOVA_RUNTIME_CACHE_.headerMaps = {};
+  NOVA_RUNTIME_CACHE_.userIndex = null; // NOVA_USER_INDEX_RUNTIME_CACHE_V1
 }
