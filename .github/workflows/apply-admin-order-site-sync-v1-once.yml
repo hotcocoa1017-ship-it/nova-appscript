@@ -1,0 +1,64 @@
+name: Apply ADMIN ORDER Site Sync V1 Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-admin-order-site-sync-v1-once.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Apply focused sync patch
+        run: python3 scripts/patch_admin_order_site_sync_v1_20260909.py
+
+      - name: Validate sync semantics and NOVA regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "ADMIN_ORDER_UNSCOPED_SITE_SYNC_V1" RealtimeDailySync.js
+          if grep -Fq "allowedSites: ['ADMIN', 'ORDER'].includes(role) ? sites" RealtimeDailySync.js; then
+            echo "::error::Old site-scoped ADMIN/ORDER sync mapping remains."
+            exit 2
+          fi
+          python3 scripts/validate_order_site_context_v1.py
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_whole_db_transition_v2_20260908.py
+          python3 scripts/validate_room_upload_db_first_v4_20260907.py
+          python3 scripts/validate_nova_release.py
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check RealtimeDailySync.js
+
+      - name: Commit canonical source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add RealtimeDailySync.js
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+          else
+            git commit -m "Fix ADMIN ORDER cross-site realtime sync [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch canonical production deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-apps-script.yml --repo "$GITHUB_REPOSITORY" --ref main -f deploy=true
