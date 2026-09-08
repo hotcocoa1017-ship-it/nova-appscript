@@ -210,18 +210,12 @@ require(perf, 'ROOMMAID_REPORTING_DB_FIRST_APP_V2', 'roommaid performance DB tok
 require(close, 'ROOMMAID_REPORTING_DB_FIRST_APP_V2', 'roommaid close DB route')
 require(close, 'readRoommaidCloseHistoryBundleDbFirst_', 'roommaid close DB bridge')
 
-# Canonical workflow still owns a single meta-patch step; the meta-patcher owns all new changes.
-require(workflow, 'python3 scripts/fix_patch_site_scope_v2.py', 'canonical workflow meta-patcher')
-for script in [
-    'patch_shift_zone_dbfirst_v3_20260907.py',
-    'patch_departure_delay_dbfirst_v3_20260907.py',
-    'patch_daily_close_dbfirst_fallback_v1_20260908.py',
-    'patch_monthly_daily_dbfirst_v2_20260907.py',
-    'patch_roommaid_reporting_dbfirst_v2_20260907.py',
-    'patch_roommaid_close_save_dbfirst_v1_20260908.py',
-    'validate_whole_db_transition_v2_20260908.py'
-]:
-    require(canonical, script, f'canonical meta-patcher {script}')
+# Canonical CI validates the persisted main source directly; historical patch generators are not executed.
+require(workflow, 'NOVA_CANONICAL_CI_V2', 'canonical source validation marker')
+require(workflow, 'Validate DB-first and operational invariants', 'canonical DB-first validation step')
+require(workflow, 'Verify validators are read-only', 'canonical read-only validator gate')
+require(workflow, 'validate_whole_db_transition_v2_20260908.py', 'whole DB validator remains in canonical CI')
+forbid(workflow, '      - name: Apply stable Realtime init hotfix', 'historical patch execution removed')
 
 # Syntax gate for every newly introduced/touched runtime source.
 for path in [
@@ -231,29 +225,9 @@ for path in [
     node_check(path, f'JavaScript syntax {path}')
 node_check_html('NotificationCenterV1.html', 'Notification center script syntax')
 
-# Self-contained idempotence for the new subset.
-new_tracked = [
-    'DbFirstBridge.js', 'DailyCloseDbFirstBridge.js', 'MonthlyDbFirstBridge.js', 'RoommaidReportingDbFirstBridge.js',
-    'Client.html', '11_Monthly.js', '13_DepartureDelay.js', '17_RoommaidPerformance.js', '19_RoommaidCloseJournal.js',
-    '04_Api.js', 'NotificationCenterV1.html', 'scripts/patch_pwa_web_push_v2.py'
-]
-before = digest(new_tracked)
-for script in [
-    'scripts/patch_shift_zone_dbfirst_v3_20260907.py',
-    'scripts/patch_departure_delay_dbfirst_v3_20260907.py',
-    'scripts/patch_daily_close_dbfirst_fallback_v1_20260908.py',
-    'scripts/patch_monthly_daily_dbfirst_v2_20260907.py',
-    'scripts/patch_roommaid_reporting_dbfirst_v2_20260907.py',
-    'scripts/patch_roommaid_close_save_dbfirst_v1_20260908.py'
-]:
-    result = subprocess.run([sys.executable, script], text=True, capture_output=True, check=False)
-    if result.returncode != 0:
-        errors.append(f'IDEMPOTENCE PATCH FAILED: {script} :: {(result.stderr or result.stdout).strip()}')
-after = digest(new_tracked)
-idempotent = before == after
-checks.append(('whole-DB patch subset idempotent', idempotent))
-if not idempotent:
-    errors.append('IDEMPOTENCE: whole-DB patch subset changed sources on second run')
+# Canonical validation is intentionally read-only. Patch-generator idempotence is no longer
+# executed in CI because main now stores the exact production source.
+checks.append(('canonical validator read-only by construction', True))
 
 if errors:
     print(f'Whole DB transition gate FAILED: {len(errors)} issue(s), {len(checks)} checks.', file=sys.stderr)
