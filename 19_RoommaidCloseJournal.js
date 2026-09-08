@@ -28,7 +28,7 @@ const NOVA_ROOMMAID_CLOSE = Object.freeze({
   ])
 });
 
-function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지 조회 · ROOMMAID_CLOSE_READ_ACCEL_V2)
+function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지 조회 · ROOMMAID_CLOSE_READ_ACCEL_V3)
   return measureResponse_('getRoommaidCloseJournal', () => {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const safe = filters || {};
@@ -43,7 +43,7 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
     if (!sites.includes(preferredSite)) throw new Error(`${preferredSite} 사업장을 확인할 수 없습니다.`);
 
     const sourceVersion = getSyncVersion_(['ROOM', 'ORDER', 'REPORT'], businessDate, preferredSite);
-    const cacheKey = buildDeltaCacheKey_('ROOMMAID_CLOSE_READ_V2', [
+    const cacheKey = buildDeltaCacheKey_('ROOMMAID_CLOSE_READ_V3', [
       NOVA_ROOMMAID_CLOSE.SCHEMA_VERSION,
       businessDate,
       preferredSite,
@@ -133,16 +133,16 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
         ? (isStale ? '마감 이후 객실 또는 정비실적이 수정되었습니다. 수정 후 재마감이 필요합니다.' : '저장된 마감자료입니다.')
         : '실시간 미마감 자료입니다.',
       optimization: {
-        marker: 'ROOMMAID_CLOSE_READ_ACCEL_V2',
+        marker: 'ROOMMAID_CLOSE_READ_ACCEL_V3',
         cacheHit: false,
         sourceVersion,
         currentSource,
         currentRowCount: currentRows.length,
         historyRowCount: historyRows.length,
-        historyLookup: 'DATE_TEXTFINDER'
+        historyLookup: String(historyBundle.readPath || (historyBundle.dbFirst ? 'DB_NATIVE' : 'DATE_TEXTFINDER'))
       }
     };
-    putCachedJson_(cacheKey, result, Math.min(30, Number(NOVA.SNAPSHOT_CACHE_SECONDS || 45)));
+    putCachedJson_(cacheKey, result, 120); // ROOMMAID_CLOSE_RESULT_CACHE_120S_V1
     return result;
   });
 }
@@ -436,7 +436,7 @@ function getRoommaidCloseMaintenanceHistory(token, filters) { // (객실·직원
       const currentRows = readCurrentRowsForClose_(businessDate, site);
       const liveCurrentRows = latestRoommaidCloseCurrentRows_(currentRows, site);
       const activeHistoryRows = readHistoryRowsForClose_(businessDate, site);
-      const master = readRoomMasterIndexForClose_(site);
+      const master = readRoomMasterIndexForCloseCached_(site);
       const upload = latestUploadSummaryForClose_(activeHistoryRows);
       const initialMap = buildInitialRoomStatusMapForClose_(upload, liveCurrentRows);
       const completionEvents = cleaningCompletionEventsForClose_(activeHistoryRows);
@@ -452,7 +452,7 @@ function getRoommaidCloseMaintenanceHistory(token, filters) { // (객실·직원
       performanceWarning = `개인실적 반영여부 계산 중 확인 필요: ${error && error.message || error}`;
     }
 
-    const master = readRoomMasterIndexForClose_(site);
+    const master = readRoomMasterIndexForCloseCached_(site);
     let items = rawEvents
       .filter(event => !employeeNo || roommaidCloseMaintenanceHistoryEmployeeMatches_(event, employeeNo))
       .map(event => buildRoommaidCloseMaintenanceHistoryPublicItem_(event, users, master, performanceCompletionKeys))
@@ -1004,7 +1004,7 @@ function roommaidCloseTimestampMs_(value) { // (NOVA 일시 문자열 밀리초 
 
 function buildRoommaidCloseJournal_(businessDate, site, currentRows, historyRows, users, attendanceEmployeeNos) { // (현재객실현황 최신 1행·현재 분류 기준 마감일지 집계)
   const liveCurrentRows = latestRoommaidCloseCurrentRows_(currentRows, site);
-  const master = readRoomMasterIndexForClose_(site);
+  const master = readRoomMasterIndexForCloseCached_(site);
   const upload = latestUploadSummaryForClose_(historyRows);
   const initialMap = buildInitialRoomStatusMapForClose_(upload, liveCurrentRows);
   const maintenanceTypes = buildMaintenanceTypeListForClose_(master);
@@ -1924,7 +1924,7 @@ function resolveRoommaidCloseWorkerGroup_(user, storedEmploymentType) { // (채�
   return { code: '', label: '', jobLabel: '', displayLabel: '정규직' };
 }
 
-function readRoommaidCloseEmploymentIndex_() { // (사용자 인덱스 채용구분 재사용 · ROOMMAID_CLOSE_READ_ACCEL_V2)
+function readRoommaidCloseEmploymentIndex_() { // (사용자 인덱스 채용구분 재사용 · ROOMMAID_CLOSE_READ_ACCEL_V3)
   const result = {};
   const users = getUserIndex_().byEmployeeNo || {};
   Object.keys(users).forEach(employeeNo => {
@@ -2229,7 +2229,7 @@ function validateRoommaidCloseIntegrityForSave_(businessDate, site, currentRows,
     issues.push(`${item.roomNo}호 — 현재객실현황 최신행이 같은 버전·시각으로 중복되어 내용이 서로 다릅니다.`);
   });
 
-  const master = readRoomMasterIndexForClose_(site);
+  const master = readRoomMasterIndexForCloseCached_(site);
   const upload = latestUploadSummaryForClose_(historyRows || []);
   const initialMap = buildInitialRoomStatusMapForClose_(upload, liveCurrentRows);
   const completionEvents = cleaningCompletionEventsForClose_(historyRows || []);

@@ -1,7 +1,18 @@
 /** NOVA_ROOMMAID_REPORTING_DB_FIRST_V2 */
 function readRoommaidCloseHistoryBundleDbFirst_(token, businessDate, site) {
+  const dateText = normalizeBusinessDate_(businessDate);
+  const todayText = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'Asia/Seoul', 'yyyy-MM-dd');
+  if (dateText === todayText) { // ROOMMAID_CLOSE_TODAY_DIRECT_SHEET_V3
+    const fast = readRoommaidCloseHistoryBundleFast_(dateText, site);
+    return Object.assign({}, fast, {
+      dbFirst: false,
+      nativeComplete: false,
+      readPath: 'SHEET_TODAY_DIRECT'
+    });
+  }
+
   const db = novaDbFirstRpc_(token, 'nova_roommaid_close_history_v1', {
-    p_business_date: normalizeBusinessDate_(businessDate),
+    p_business_date: dateText,
     p_site: String(site || '').trim()
   }, { readOnly: true, allowLegacyFallback: true });
   if (db && db.legacyFallback) return readRoommaidCloseHistoryBundleFast_(businessDate, site);
