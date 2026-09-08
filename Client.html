@@ -1987,6 +1987,13 @@
 
   function applyBootstrapResult_(bootstrap, networkElapsed, serverElapsed) { // (초기데이터 공통 반영)
     state.bootstrap = bootstrap;
+    const bootstrapRealtime = bootstrap?.realtimeConfig; // BOOTSTRAP_REALTIME_CONFIG_PERF_V1
+    if (bootstrapRealtime?.ok) {
+      novaRealtime_.configLoaded = true;
+      novaRealtime_.enabled = Boolean(bootstrapRealtime.enabled && bootstrapRealtime.apiBase);
+      novaRealtime_.apiBase = String(bootstrapRealtime.apiBase || '').replace(/\/+$/, '');
+      novaRealtime_.qmDraftDbFirstEnabled = Boolean(bootstrapRealtime.qmDraftDbFirstEnabled);
+    }
     const bootstrapRole = String(bootstrap.user?.role || '').toUpperCase();
     const sessionSite = String(bootstrap.user?.sessionSite || '').trim();
     if (!['ADMIN', 'ORDER'].includes(bootstrapRole) && bootstrap.user?.siteScopeLocked && sessionSite) {
