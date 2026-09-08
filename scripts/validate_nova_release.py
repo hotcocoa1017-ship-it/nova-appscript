@@ -234,13 +234,15 @@ for secret_name in ['NOVA_TOKEN_SECRET', 'X-NOVA-Archive-Admin-Key', 'SUPABASE_S
     forbid(archive_client, secret_name, f'Archive browser client hides {secret_name}')
     forbid(archive_realtime, secret_name, f'Archive realtime browser hides {secret_name}')
 
-# 8) Deployment repeatability / source-of-truth protection
-forbid(workflow, 'python3 scripts/patch_realtime_subscription_resilience.py', 'Obsolete Realtime/PWA patch execution removed from deploy')
-require(workflow, 'grep -q "REALTIME_SUBSCRIPTION_RESILIENCE_V1" Client.html', 'Deploy validates Realtime subscription resilience marker')
-require(workflow, 'python3 scripts/patch_roommaid_notification_bell.py', 'Deploy applies roommaid notification patch')
+# 8) Deployment repeatability / canonical source-of-truth protection
+require(workflow, 'NOVA_CANONICAL_CI_V2', 'Deploy uses canonical main source')
+require(workflow, 'Validate DB-first and operational invariants', 'Deploy validates DB-first invariants')
+require(workflow, 'Verify validators are read-only', 'Deploy enforces read-only validators')
 require(workflow, 'python3 scripts/validate_nova_release.py', 'Deploy runs release regression gate')
-require(workflow, 'HousemanUiPerformancePatch.html', 'Generated notification source persisted')
-require(workflow, 'RealtimeDailySync.js', 'Generated Realtime source persisted')
+require(workflow, 'clasp push --force', 'Deploy pushes canonical source only on explicit deploy')
+require(workflow, 'APPS_SCRIPT_DEPLOYMENT_ID', 'Deploy preserves existing web app deployment id')
+forbid(workflow, '      - name: Apply stable Realtime init hotfix', 'Historical patch stage removed from deploy')
+forbid(workflow, 'Persist generated production sources to main', 'CI no longer commits generated runtime source')
 
 passed = sum(1 for _, ok in checks if ok)
 print(f'NOVA release regression checks: {passed}/{len(checks)} passed')
