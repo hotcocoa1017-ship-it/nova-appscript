@@ -90,15 +90,15 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
       hasAttendanceOverride ? requestedAttendance : (savedAttendance.length ? savedAttendance : inferredAttendance)
     );
 
-    const liveSnapshot = buildDailyCloseSnapshot_(businessDate, preferredSite, {
+    const liveSnapshot = buildRoommaidCloseLiveSnapshotFast_(businessDate, preferredSite, {
       closedBy: saved ? saved.closedBy : '',
       closedByName: saved ? saved.closedByName : '',
       closedAt: saved ? saved.closedAt : '',
-      includeRooms: false,
       currentRows,
       historyRows,
+      users,
       attendanceEmployeeNos
-    });
+    }); // ROOMMAID_CLOSE_COLD_READ_V5
     const latestSourceAt = latestRoommaidCloseSourceAt_(currentRows, historyRows);
     const savedHasJournal = Boolean(saved && saved.roommaidCloseJournal);
     const savedJournalSchemaChanged = Boolean(
@@ -145,6 +145,26 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
     putCachedJson_(cacheKey, result, 120); // ROOMMAID_CLOSE_RESULT_CACHE_120S_V1
     return result;
   });
+}
+
+function buildRoommaidCloseLiveSnapshotFast_(businessDate, site, options) { // ROOMMAID_CLOSE_VIEW_SNAPSHOT_V5
+  const safe = options || {};
+  const currentRows = Array.isArray(safe.currentRows) ? safe.currentRows : [];
+  const historyRows = Array.isArray(safe.historyRows) ? safe.historyRows : [];
+  const users = safe.users || getUserIndex_().byEmployeeNo;
+  const attendanceEmployeeNos = uniqueEmployeeNos_(safe.attendanceEmployeeNos || []);
+  const journal = buildRoommaidCloseJournal_(businessDate, site, currentRows, historyRows, users, attendanceEmployeeNos);
+  return {
+    businessDate,
+    site,
+    closedAt: String(safe.closedAt || '').trim(),
+    closedBy: String(safe.closedBy || '').trim(),
+    closedByName: String(safe.closedByName || '').trim(),
+    sourceUpdatedAt: latestRoommaidCloseSourceAt_(currentRows, historyRows),
+    sourceSignature: roommaidCloseSourceSignature_(currentRows, historyRows, site),
+    attendanceEmployeeNos: uniqueEmployeeNos_(journal && journal.attendanceEmployeeNos || attendanceEmployeeNos),
+    roommaidCloseJournal: journal
+  };
 }
 
 function readRoommaidCloseRealtimeCurrentRows_(token, businessDate, site) { // (PostgreSQL 현재객실 조회 · 조회전용·실패시 Sheet fallback)
@@ -216,7 +236,7 @@ function readRoommaidCloseHistoryBundleFast_(businessDate, site) { // (업무일
     const tail = findRoommaidCloseTodayTailRange_(sheet, dateColumn, lastRow, businessDate);
     if (tail && tail.complete && tail.startRow >= 2) {
       rowNumbers = Array.from({ length: lastRow - tail.startRow + 1 }, (_, index) => tail.startRow + index);
-      readPath = 'SHEET_TODAY_TAIL_V4';
+      readPath = 'SHEET_TODAY_TAIL_V4'; // ROOMMAID_CLOSE_ADAPTIVE_TAIL_V5
     }
   }
   if (!rowNumbers.length) {
@@ -259,28 +279,36 @@ function readRoommaidCloseHistoryBundleFast_(businessDate, site) { // (업무일
   return { historyRows, saved, readPath };
 }
 
-function findRoommaidCloseTodayTailRange_(sheet, dateColumn, lastRow, businessDate) { // ROOMMAID_CLOSE_TODAY_TAIL_SCAN_V4
-  const tailRows = 20000;
-  const guardRows = 2000;
-  const startRow = Math.max(2, lastRow - tailRows + 1);
-  const rowCount = lastRow - startRow + 1;
-  if (rowCount <= 0) return null;
-  let values = [];
-  try {
-    values = sheet.getRange(startRow, dateColumn, rowCount, 1).getDisplayValues();
-  } catch (error) {
-    return null;
-  }
+function findRoommaidCloseTodayTailRange_(sheet, dateColumn, lastRow, businessDate) { // ROOMMAID_CLOSE_TODAY_TAIL_SCAN_V4 · ROOMMAID_CLOSE_ADAPTIVE_TAIL_V5
   const target = String(businessDate || '').trim();
-  let firstMatchOffset = -1;
-  for (let index = 0; index < values.length; index += 1) {
-    if (String(values[index][0] || '').trim() !== target) continue;
-    firstMatchOffset = index;
-    break;
+  if (!target) return null;
+  const guardRows = 2000;
+  const windows = [4096, 8192, 16384, 20000];
+  for (const tailRows of windows) {
+    const startRow = Math.max(2, lastRow - tailRows + 1);
+    const rowCount = lastRow - startRow + 1;
+    if (rowCount <= 0) return null;
+    let values = [];
+    try {
+      values = sheet.getRange(startRow, dateColumn, rowCount, 1).getDisplayValues();
+    } catch (error) {
+      return null;
+    }
+    let firstMatchOffset = -1;
+    for (let index = 0; index < values.length; index += 1) {
+      if (String(values[index][0] || '').trim() !== target) continue;
+      firstMatchOffset = index;
+      break;
+    }
+    if (firstMatchOffset < 0) {
+      if (startRow <= 2) return null;
+      continue;
+    }
+    if (startRow <= 2 || firstMatchOffset >= guardRows) {
+      return { complete: true, startRow: startRow + firstMatchOffset, scannedRows: rowCount };
+    }
   }
-  if (firstMatchOffset < 0) return null;
-  if (startRow > 2 && firstMatchOffset < guardRows) return null;
-  return { complete: true, startRow: startRow + firstMatchOffset };
+  return null;
 }
 
 function readRoommaidCloseCurrentSelection_(businessDate, requestedSite, defaultSite) { // (선택 사업장 현재객실만 전체행 읽기 · ROOMMAID_CLOSE_READ_ACCEL_V1)
@@ -2428,7 +2456,7 @@ function throwRoommaidCloseIntegrityError_(businessDate, site, issues) { // (마
 function roommaidCloseMasterSignatureText_(site) { // (객실마스터의 마감영향 항목 서명 원문)
   const normalizedSite = String(site || '').trim();
   if (!normalizedSite) return '';
-  const master = readRoomMasterIndexForClose_(normalizedSite);
+  const master = readRoomMasterIndexForCloseCached_(normalizedSite); // ROOMMAID_CLOSE_MASTER_SIGNATURE_CACHE_V5
   return Object.keys(master.byRoomNo || {}).sort().map(roomNo => {
     const item = master.byRoomNo[roomNo] || {};
     return [
