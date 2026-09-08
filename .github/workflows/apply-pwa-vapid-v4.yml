@@ -26,7 +26,6 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
           old_public = 'BKjiczDO9sG0qlh0rJDduCzQqT9tURU69oKN7mKmlyU4mnjx05x1FkUy-4Kaeqy40DReDmnQ1DR2s0ELu-SAgYM'
           new_public = 'BCx-wnFcdo7z-Xk2DtjIcsBHTySpAxbL5CfMf2b7ltnxhlCF99n2AROSvQwkrSdZHNbniaGHUZaBWNUVJnRkWTk'
@@ -79,6 +78,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 scripts/patch_push_permission_settings_v1.py
           python3 scripts/validate_push_delivery_roles_v3_20260908.py
           node --check pwa/v2/sw.js
           python3 - <<'PY'
