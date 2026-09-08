@@ -81,15 +81,17 @@ for control in ('indicatorDate', 'indicatorSite'):
 # Entering indicator may not auto-query when no previously applied query.
 need('renderIndicatorAwaitingQuery_();' in client, 'indicator initial waiting state missing')
 
-# Close journal V3: Realtime current rooms for live reads, direct same-day TextFinder history, Sheet fallback for safety.
+# Close journal V3+: DB/Realtime current rooms for live reads, direct same-day TextFinder history, Sheet fallback for safety.
 need('ROOMMAID_CLOSE_READ_ACCEL_V3' in close, 'close journal V3 marker missing')
 need('readRoommaidCloseRealtimeCurrentRows_' in close, 'close journal Realtime current-room helper missing')
 need("historyLookup: String(historyBundle.readPath || (historyBundle.dbFirst ? 'DB_NATIVE' : 'DATE_TEXTFINDER'))" in close, 'close journal V3 history path marker missing')
 need('.createTextFinder(String(businessDate || \'\'))' in close, 'history date TextFinder missing')
 need('readRoommaidCloseHistoryBundle_(businessDate, site)' in close, 'history fallback missing')
 need('readRoommaidCloseCurrentSelection_(businessDate, preferredSite, defaultSite)' in close, 'current Sheet fallback missing')
-need("if (!saved)" in close and "currentSource = 'REALTIME_DB'" in close, 'Realtime current rows must be live/unclosed only')
-need("currentSource = 'SHEET'" in close, 'saved/fallback Sheet source missing')
+# V5 may already have current rows in the DB history bundle. The separate Realtime /v1/rooms call must still be live/unclosed only.
+live_realtime_guard = "if (!currentRows.length && !saved)" in close or "if (!saved)" in close
+need(live_realtime_guard and "currentSource = 'REALTIME_DB'" in close, 'Realtime current rows must be live/unclosed only')
+need("currentSource = 'SHEET'" in close or "? 'DB_SINGLE_BUNDLE_V5' : 'SHEET'" in close, 'saved/fallback Sheet source missing')
 need('function saveRoommaidCloseJournal(token, payload)' in close, 'close save function must remain')
 need('saveDailyCloseSnapshotForSite_' in close, 'official close save path must remain unchanged')
 need('function resetRoommaidCloseJournal(token, payload)' in close, 'close reset function must remain')
