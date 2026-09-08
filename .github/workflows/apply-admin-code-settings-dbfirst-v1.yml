@@ -68,7 +68,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add DbFirstBridge.js Client.html .github/workflows/deploy-apps-script.yml scripts/fix_patch_site_scope_v2.py
+          git add DbFirstBridge.js Client.html .github/workflows/deploy-apps-script.yml scripts/fix_patch_site_scope_v2.py scripts/validate_nova_release.py
           if ! git diff --cached --quiet; then
             git commit -m 'Route admin code settings DB-first and clean obsolete Push CI [skip ci]'
             git push origin HEAD:main
