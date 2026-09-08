@@ -38,9 +38,6 @@ jobs:
       - name: Apply Telegram self-connect patch
         run: python3 scripts/patch_telegram_self_connect.py
 
-      - name: Apply Realtime subscription resilience patch
-        run: python3 scripts/patch_realtime_subscription_resilience.py
-
       - name: Apply QM lazy browse patch
         run: python3 scripts/patch_qm_mobile_browse.py
 
@@ -267,7 +264,6 @@ jobs:
           python3 scripts/patch_realtime_client.py
           python3 scripts/patch_sync_status_autohide.py
           python3 scripts/patch_telegram_self_connect.py
-          python3 scripts/patch_realtime_subscription_resilience.py
           python3 scripts/patch_qm_mobile_browse.py
           python3 scripts/patch_qm_mobile_browse_v2.py
           python3 scripts/patch_qm_immediate_checklist.py
