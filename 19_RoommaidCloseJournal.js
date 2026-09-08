@@ -71,12 +71,12 @@ function getRoommaidCloseJournal(token, filters) { // (룸메이드 마감일지
     const historyRows = historyBundle.historyRows;
     const saved = historyBundle.saved;
 
-    // 미마감 조회는 PostgreSQL 현재객실을 우선 사용합니다. 저장된 마감은 기존 Sheet 기반 sourceSignature를
-    // 그대로 비교해야 과거 저장서명과 DB updated_at 차이로 false stale이 생기지 않습니다.
-    let currentRows = [];
-    let currentSource = 'SHEET';
+    // ROOMMAID_CLOSE_SINGLE_BUNDLE_V5: DB history RPC가 현재객실까지 함께 반환하면 추가 네트워크 호출 없이 재사용합니다.
+    // bundle이 없거나 미완성일 때만 기존 Realtime DB -> Sheet fallback을 유지합니다.
+    let currentRows = Array.isArray(historyBundle.currentRows) ? historyBundle.currentRows : [];
+    let currentSource = currentRows.length ? 'DB_SINGLE_BUNDLE_V5' : 'SHEET';
     stageStartedAt = Date.now();
-    if (!saved) {
+    if (!currentRows.length && !saved) {
       try {
         currentRows = readRoommaidCloseRealtimeCurrentRows_(token, businessDate, preferredSite);
         if (currentRows.length) currentSource = 'REALTIME_DB';
