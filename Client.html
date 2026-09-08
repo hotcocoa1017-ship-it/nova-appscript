@@ -2824,7 +2824,7 @@
     if (state.settings.loading) return;
     state.settings.loading = true;
     try {
-      const result = await callServer('getAdminSettingsData', state.token);
+      const result = await callServer('getAdminSettingsDataDbFirst', state.token) // NOVA_OPERATION_SETTINGS_DB_FIRST_V1;
       if (!result?.ok) throw new Error(result?.message || '관리자 설정을 불러오지 못했습니다.');
       state.settings.data = result;
       state.settings.loaded = true;
@@ -2911,7 +2911,7 @@
     button.disabled = true;
     button.textContent = '저장 중…';
     try {
-      const result = await callServer('saveAdminOperationSettings', state.token, { values });
+      const result = await callServer('saveAdminOperationSettingsDbFirst', state.token, { values, requestId: novaRealtimeRequestId_('OPERATION_SETTINGS_V1', 'ADMIN') }) // NOVA_OPERATION_SETTINGS_DB_FIRST_V1;
       if (!result?.ok) throw new Error(result?.message || '운영 설정을 저장하지 못했습니다.');
       showToast(result.message || '운영 설정을 저장했습니다.');
       await loadAdminSettingsForce_();
