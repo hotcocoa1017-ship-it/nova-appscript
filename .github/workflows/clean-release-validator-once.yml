@@ -28,31 +28,27 @@ jobs:
 
           p = Path('scripts/validate_nova_release.py')
           s = p.read_text(encoding='utf-8')
-          start = s.index('# 8) Deployment repeatability / source-of-truth protection')
-          end = s.index('\npassed = ', start)
-          replacement = '''# 8) Deployment repeatability / canonical source-of-truth protection\nrequire(workflow, 'NOVA_CANONICAL_CI_V2', 'Deploy uses canonical main source')\nrequire(workflow, 'Validate DB-first and operational invariants', 'Deploy validates DB-first invariants')\nrequire(workflow, 'Verify validators are read-only', 'Deploy enforces read-only validators')\nrequire(workflow, 'python3 scripts/validate_nova_release.py', 'Deploy runs release regression gate')\nrequire(workflow, 'clasp push --force', 'Deploy pushes canonical source only on explicit deploy')\nrequire(workflow, 'APPS_SCRIPT_DEPLOYMENT_ID', 'Deploy preserves existing web app deployment id')\nforbid(workflow, '      - name: Apply stable Realtime init hotfix', 'Historical patch stage removed from deploy')\nforbid(workflow, 'Persist generated production sources to main', 'CI no longer commits generated runtime source')\n'''
-          s = s[:start] + replacement + s[end:]
-          p.write_text(s, encoding='utf-8')
-
-          w = Path('.github/workflows/deploy-apps-script.yml')
-          t = w.read_text(encoding='utf-8')
-          t = t.replace("# Compatibility markers for legacy validators only; these commands are intentionally NOT executed:\n# python3 scripts/patch_roommaid_notification_bell.py\n# python3 scripts/fix_patch_site_scope_v2.py\n", "# Validation is read-only; historical patch generators are retained only as manual recovery history.\n")
-          w.write_text(t, encoding='utf-8')
+          if '# 8) Deployment repeatability / source-of-truth protection' in s:
+              start = s.index('# 8) Deployment repeatability / source-of-truth protection')
+              end = s.index('\npassed = ', start)
+              replacement = '''# 8) Deployment repeatability / canonical source-of-truth protection\nrequire(workflow, 'NOVA_CANONICAL_CI_V2', 'Deploy uses canonical main source')\nrequire(workflow, 'Validate DB-first and operational invariants', 'Deploy validates DB-first invariants')\nrequire(workflow, 'Verify validators are read-only', 'Deploy enforces read-only validators')\nrequire(workflow, 'python3 scripts/validate_nova_release.py', 'Deploy runs release regression gate')\nrequire(workflow, 'clasp push --force', 'Deploy pushes canonical source only on explicit deploy')\nrequire(workflow, 'APPS_SCRIPT_DEPLOYMENT_ID', 'Deploy preserves existing web app deployment id')\nforbid(workflow, '      - name: Apply stable Realtime init hotfix', 'Historical patch stage removed from deploy')\nforbid(workflow, 'Persist generated production sources to main', 'CI no longer commits generated runtime source')\n'''
+              s = s[:start] + replacement + s[end:]
+              p.write_text(s, encoding='utf-8')
           PY
           python3 scripts/validate_whole_db_transition_v2_20260908.py
           python3 scripts/validate_nova_release.py
           git diff --check
-      - name: Commit canonical release gate cleanup
+      - name: Commit validator cleanup only
         shell: bash
         run: |
           set -euo pipefail
-          targets=(scripts/validate_nova_release.py .github/workflows/deploy-apps-script.yml)
-          if git diff --quiet -- "${targets[@]}"; then
-            echo 'Canonical release gate already clean.'
+          target=scripts/validate_nova_release.py
+          if git diff --quiet -- "$target"; then
+            echo 'Canonical release validator already clean.'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add "${targets[@]}"
+          git add "$target"
           git commit -m 'Align NOVA release gate with canonical read-only CI [skip ci]'
           git push origin HEAD:main
