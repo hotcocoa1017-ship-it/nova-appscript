@@ -210,17 +210,28 @@ function readRoommaidCloseHistoryBundleFast_(businessDate, site) { // (업무일
   const dateColumn = headerMap['업무일자'];
   if (!dateColumn) return readRoommaidCloseHistoryBundle_(businessDate, site);
 
-  let matches = [];
-  try {
-    matches = sheet.getRange(2, dateColumn, lastRow - 1, 1)
-      .createTextFinder(String(businessDate || ''))
-      .matchEntireCell(true)
-      .findAll();
-  } catch (error) {
-    return readRoommaidCloseHistoryBundle_(businessDate, site);
+  let rowNumbers = [];
+  let readPath = 'DATE_TEXTFINDER';
+  if (String(businessDate || '').trim() === businessDateText_()) {
+    const tail = findRoommaidCloseTodayTailRange_(sheet, dateColumn, lastRow, businessDate);
+    if (tail && tail.complete && tail.startRow >= 2) {
+      rowNumbers = Array.from({ length: lastRow - tail.startRow + 1 }, (_, index) => tail.startRow + index);
+      readPath = 'SHEET_TODAY_TAIL_V4';
+    }
   }
-  const rowNumbers = matches.map(range => range.getRow()).filter(row => row >= 2);
-  if (!rowNumbers.length) return { historyRows: [], saved: null };
+  if (!rowNumbers.length) {
+    let matches = [];
+    try {
+      matches = sheet.getRange(2, dateColumn, lastRow - 1, 1)
+        .createTextFinder(String(businessDate || ''))
+        .matchEntireCell(true)
+        .findAll();
+    } catch (error) {
+      return readRoommaidCloseHistoryBundle_(businessDate, site);
+    }
+    rowNumbers = matches.map(range => range.getRow()).filter(row => row >= 2);
+  }
+  if (!rowNumbers.length) return { historyRows: [], saved: null, readPath };
   const rows = readRowsByNumbersForClose_(sheet, headerMap, rowNumbers);
   const historyRows = [];
   let saved = null;
@@ -245,7 +256,31 @@ function readRoommaidCloseHistoryBundleFast_(businessDate, site) { // (업무일
       closedBy: String(detail.closedBy || data['등록사번'] || '').trim()
     });
   });
-  return { historyRows, saved };
+  return { historyRows, saved, readPath };
+}
+
+function findRoommaidCloseTodayTailRange_(sheet, dateColumn, lastRow, businessDate) { // ROOMMAID_CLOSE_TODAY_TAIL_SCAN_V4
+  const tailRows = 20000;
+  const guardRows = 2000;
+  const startRow = Math.max(2, lastRow - tailRows + 1);
+  const rowCount = lastRow - startRow + 1;
+  if (rowCount <= 0) return null;
+  let values = [];
+  try {
+    values = sheet.getRange(startRow, dateColumn, rowCount, 1).getDisplayValues();
+  } catch (error) {
+    return null;
+  }
+  const target = String(businessDate || '').trim();
+  let firstMatchOffset = -1;
+  for (let index = 0; index < values.length; index += 1) {
+    if (String(values[index][0] || '').trim() !== target) continue;
+    firstMatchOffset = index;
+    break;
+  }
+  if (firstMatchOffset < 0) return null;
+  if (startRow > 2 && firstMatchOffset < guardRows) return null;
+  return { complete: true, startRow: startRow + firstMatchOffset };
 }
 
 function readRoommaidCloseCurrentSelection_(businessDate, requestedSite, defaultSite) { // (선택 사업장 현재객실만 전체행 읽기 · ROOMMAID_CLOSE_READ_ACCEL_V1)

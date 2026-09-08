@@ -7,7 +7,7 @@ function readRoommaidCloseHistoryBundleDbFirst_(token, businessDate, site) {
     return Object.assign({}, fast, {
       dbFirst: false,
       nativeComplete: false,
-      readPath: 'SHEET_TODAY_DIRECT'
+      readPath: String(fast && fast.readPath || 'SHEET_TODAY_DIRECT') // ROOMMAID_CLOSE_TODAY_TAIL_SCAN_V4
     });
   }
 
