@@ -31,10 +31,10 @@
 <script>
 (()=>{'use strict';
 const FRAME=document.getElementById('novaFrame'),GATE=document.getElementById('pushGate'),BTN=document.getElementById('pushGateButton'),CLOSE=document.getElementById('pushGateClose'),TEXT=document.getElementById('pushGateText');
-const VAPID='BCx-wnFcdo7z-Xk2DtjIcsBHTySpAxbL5CfMf2b7ltnxhlCF99n2AROSvQwkrSdZHNbniaGHUZaBWNUVJnRkWTk',VAPID_VERSION='20260908-v4',VAPID_VERSION_KEY='novaPushVapidVersion'; // NOVA_PUSH_VAPID_RECOVERY_V4
+const VAPID='BChAXSYu9Ek8PxyUPQIDutnL3Nx1AV-2GlljuOO5L074gO1keV8zThPAWILU1_9JpAislux--l3USxuTZYQthNI',VAPID_VERSION='20260908-v5',VAPID_VERSION_KEY='novaPushVapidVersion'; // NOVA_PUSH_VAPID_RECOVERY_V5
 const PUB='sb_publishable_yKpHBqwrzlNdpIYzgmUMXg_5wApTA7L';
 const APPS='https://script.google.com/macros/s/AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf/exec',SUPABASE='https://evoetxfjmkkjptucwxsv.supabase.co';
-const PROMPT_KEY='novaPushPromptDismissedAtV4',PROMPT_SNOOZE_MS=24*60*60*1000;
+const PROMPT_KEY='novaPushPromptDismissedAtV5',PROMPT_SNOOZE_MS=24*60*60*1000;
 let bridge=null,registration=null,syncBusy=false,gateTimer=null,gateClosedSession=false; // NOVA_PUSH_PERMISSION_SETTINGS_V1
 
 function isiOS(){return /iphone|ipad|ipod/i.test(navigator.userAgent)}
