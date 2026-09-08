@@ -1,0 +1,83 @@
+name: Patch Roommaid Close Single Bundle Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-roommaid-close-single-bundle-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply minimal guarded source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('19_RoommaidCloseJournal.js')
+          s = p.read_text(encoding='utf-8')
+          old = """    // 미마감 조회는 PostgreSQL 현재객실을 우선 사용합니다. 저장된 마감은 기존 Sheet 기반 sourceSignature를
+    // 그대로 비교해야 과거 저장서명과 DB updated_at 차이로 false stale이 생기지 않습니다.
+    let currentRows = [];
+    let currentSource = 'SHEET';
+    stageStartedAt = Date.now();
+    if (!saved) {
+      try {
+        currentRows = readRoommaidCloseRealtimeCurrentRows_(token, businessDate, preferredSite);
+        if (currentRows.length) currentSource = 'REALTIME_DB';
+      } catch (error) {
+        currentRows = [];
+      }
+    }
+    if (!currentRows.length) {
+      const currentSelection = readRoommaidCloseCurrentSelection_(businessDate, preferredSite, defaultSite);
+      currentRows = currentSelection.currentRows;
+      currentSource = 'SHEET';
+    }
+"""
+          new = """    // ROOMMAID_CLOSE_SINGLE_BUNDLE_V5: DB history RPC가 현재객실까지 함께 반환하면 추가 네트워크 호출 없이 재사용합니다.
+    // bundle이 없거나 미완성일 때만 기존 Realtime DB -> Sheet fallback을 유지합니다.
+    let currentRows = Array.isArray(historyBundle.currentRows) ? historyBundle.currentRows : [];
+    let currentSource = currentRows.length ? 'DB_SINGLE_BUNDLE_V5' : 'SHEET';
+    stageStartedAt = Date.now();
+    if (!currentRows.length && !saved) {
+      try {
+        currentRows = readRoommaidCloseRealtimeCurrentRows_(token, businessDate, preferredSite);
+        if (currentRows.length) currentSource = 'REALTIME_DB';
+      } catch (error) {
+        currentRows = [];
+      }
+    }
+    if (!currentRows.length) {
+      const currentSelection = readRoommaidCloseCurrentSelection_(businessDate, preferredSite, defaultSite);
+      currentRows = currentSelection.currentRows;
+      currentSource = 'SHEET';
+    }
+"""
+          count = s.count(old)
+          if count != 1:
+              raise SystemExit(f'Expected exactly one target block, found {count}')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+          node --check 19_RoommaidCloseJournal.js
+          python3 scripts/validate_nova_release.py
+      - name: Commit patch and remove one-time workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/patch-roommaid-close-single-bundle-once.yml
+          git config user.name 'hotcocoa1017-ship-it'
+          git config user.email 'hotcocoa1017@gmail.com'
+          git add 19_RoommaidCloseJournal.js .github/workflows/patch-roommaid-close-single-bundle-once.yml
+          git diff --cached --check
+          git commit -m 'Use bundled current rooms in roommaid close read'
+          git push origin HEAD:main
