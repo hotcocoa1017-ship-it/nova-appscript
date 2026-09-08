@@ -67,7 +67,7 @@ client = read('Client.html')
 legacy = read('15_AdminSettings.js')
 patcher = read('scripts/patch_admin_code_settings_dbfirst_v1_20260908.py')
 canonical = read('scripts/fix_patch_site_scope_v2.py')
-schema_sql = read('supabase/migrations/20260908_admin_code_settings_db_first_v2.sql')
+schema_sql = read('supabase/migrations/20260908_admin_code_settings_db_first_v1.sql')
 scope_sql = read('supabase/migrations/20260908_admin_code_settings_scope_v3.sql')
 
 # Runtime bridge and exact authority boundary.
@@ -107,7 +107,7 @@ require(legacy, 'function disableAdminCodeRow(token, payload)', 'legacy admin-co
 require(legacy, 'function seedAdminSettingsCodes_()', 'automatic seed behavior preserved')
 
 # Database schema/security and scope migration.
-require(schema_sql, 'NOVA_ADMIN_CODE_SETTINGS_DB_FIRST_V2', 'admin-code schema migration marker')
+require(schema_sql, 'NOVA_ADMIN_CODE_SETTINGS_DB_FIRST_V1', 'admin-code schema migration marker')
 require(schema_sql, 'alter table public.nova_code_settings enable row level security', 'admin-code table RLS')
 require(schema_sql, 'nova_admin_code_settings_read_v1', 'admin-code read RPC migration')
 require(schema_sql, 'nova_admin_code_settings_save_v1', 'admin-code save RPC migration')
