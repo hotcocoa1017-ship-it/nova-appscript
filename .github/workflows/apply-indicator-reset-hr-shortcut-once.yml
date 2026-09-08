@@ -1,0 +1,78 @@
+name: Apply Indicator Reset + HR Shortcut Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-indicator-reset-hr-shortcut-once.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Apply focused patch
+        run: python3 scripts/patch_indicator_reset_buttons_hr_shortcut_20260908.py
+
+      - name: Validate requested invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "INDICATOR_RESET_BUTTON_AUTHORITY_V2" Client.html
+          grep -q "NOVA_HR_SHORTCUT_ROLES_V1" Client.html
+          grep -q "cleaningCompletedAt: row.cleaning_completed_at" Client.html
+          grep -q "ROOMMAID', 'QM', 'PUBLIC'" Client.html
+          if grep -q "Boolean(room.cleaningType || room.roommaidEmployeeNo || room.secondaryRoommaidEmployeeNo || room.qmEmployeeNo)" Client.html; then
+            echo "::error::Old reset-button proxy condition remains."
+            exit 2
+          fi
+          if grep -q "if (role === 'HOUSEMAN') return items" Client.html; then
+            echo "::error::HOUSEMAN still exits before HR shortcut."
+            exit 2
+          fi
+          python3 scripts/validate_qm_clear_dbfirst_operation_flags_20260907.py
+          python3 scripts/validate_site_scope_indicator_close_v2.py
+          python3 scripts/validate_whole_db_transition_v2_20260908.py
+          python3 scripts/validate_nova_release.py
+
+      - name: Validate Client JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text=Path('Client.html').read_text(encoding='utf-8')
+          scripts=re.findall(r'<script[^>]*>(.*?)</script>',text,flags=re.S|re.I)
+          if not scripts: raise SystemExit('No script blocks found')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts),encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+
+      - name: Commit canonical source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Client.html
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+          else
+            git commit -m "Fix indicator reset buttons and add HR shortcuts [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch canonical production deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-apps-script.yml --repo "$GITHUB_REPOSITORY" --ref main -f deploy=true
