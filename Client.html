@@ -1139,7 +1139,7 @@
     const role = String(state.bootstrap?.user?.role || '').toUpperCase();
     if (!['ADMIN', 'ORDER'].includes(role)) return;
     // ROOM_STATE_SYNC_HARDENING_V1 · 이벤트 커서만 믿지 않습니다.
-    // 시작/복귀 즉시 현재 DB 전체상태를 1회 맞추고, 이후 Broadcast + 2.5초 이벤트 + 15초 전체보정을 병행합니다.
+    // 시작/복귀 즉시 현재 DB 전체상태를 1회 맞추고, 이후 Broadcast + 2.5초 이벤트 + 60초 전체보정을 병행합니다. // INDICATOR_FULL_RECONCILE_PERF_V1
     novaRealtime_.indicatorEventCursorTime = '';
     novaRealtime_.indicatorEventCursorRequestId = '';
     novaRealtime_.indicatorFullReconcileAt = 0;
@@ -1150,7 +1150,7 @@
       }
       try {
         const fullDue = !novaRealtime_.indicatorFullReconcileAt
-          || Date.now() - Number(novaRealtime_.indicatorFullReconcileAt || 0) >= 15000;
+          || Date.now() - Number(novaRealtime_.indicatorFullReconcileAt || 0) >= 60000; // INDICATOR_FULL_RECONCILE_PERF_V1
         if (fullDue) {
           const fullChanged = await novaRealtimeReconcileIndicatorRooms_();
           if (fullChanged) setSyncStatus(`DB 전체확인 · ${fullChanged}실 보정`);

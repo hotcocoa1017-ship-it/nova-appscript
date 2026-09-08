@@ -18,7 +18,7 @@ checks = [
     ('room changes bounded', 'novaRealtimeBoundedFetch_(`${novaRealtime_.apiBase}/v1/room-changes`' in text),
     ('cleaning action 5s per-attempt timeout', "['CLEANING_START', 'CLEANING_COMPLETE'].includes(mappedAction) ? 5000 : 7000" in text),
     ('indicator full current-state helper', 'async function novaRealtimeReconcileIndicatorRooms_' in text),
-    ('indicator full reconcile every 15s', '>= 15000' in text),
+    ('indicator full reconcile every 60s', '>= 60000' in text and 'INDICATOR_FULL_RECONCILE_PERF_V1' in text),
     ('indicator first reconcile starts quickly', 'window.setTimeout(run, 80)' in text),
     ('event cursor fallback preserved', 'novaRealtimeHydrateIndicatorFallback_()' in text),
     ('ROOMMAID push subscription', "role === 'ROOMMAID' && state.activeMenu === 'cleaning'" in mobile_start_block and 'void novaRealtimeEnsureSubscriptions_()' in mobile_start_block),
