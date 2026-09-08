@@ -11989,7 +11989,7 @@
     button.disabled = true;
     button.textContent = '저장 중…';
     try {
-      const result = await callServer('saveRoommaidCloseJournal', state.token, {
+      const result = await callServer('saveRoommaidCloseJournalDbFirst', state.token, { // ROOMMAID_CLOSE_SAVE_DB_FIRST_V1
         businessDate: data.businessDate,
         site: data.site,
         attendanceEmployeeNos: state.roommaidClose.attendanceDraft || []
@@ -12017,7 +12017,7 @@
     button.textContent = '초기화 중…';
     if (saveButton) saveButton.disabled = true;
     try {
-      const result = await callServer('resetRoommaidCloseJournal', state.token, {
+      const result = await callServer('resetRoommaidCloseJournalDbFirst', state.token, { // ROOMMAID_CLOSE_SAVE_DB_FIRST_V1
         businessDate: data.businessDate,
         site: data.site
       });

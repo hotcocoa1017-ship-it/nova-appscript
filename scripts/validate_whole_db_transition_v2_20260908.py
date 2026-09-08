@@ -93,6 +93,8 @@ canonical = read('scripts/fix_patch_site_scope_v2.py')
 workflow = read('.github/workflows/deploy-apps-script.yml')
 shift_sql = read('supabase/migrations/20260907_shift_zone_bootstrap_v3.sql')
 delay_sql = read('supabase/migrations/20260907_departure_delay_db_first_v3.sql')
+roommaid_close_cancel_sql = read('supabase/migrations/20260908_roommaid_close_cancel_db_first_v1.sql')
+roommaid_close_cancel_sql = read('supabase/migrations/20260908_roommaid_close_cancel_db_first_v1.sql')
 
 # Common DB bridge.
 require(bridge, 'NOVA_WHOLE_DB_FIRST_BRIDGE_V1', 'whole DB bridge marker')
@@ -103,7 +105,7 @@ for rpc in [
     'nova_houseman_shift_zone_get_v2', 'nova_houseman_shift_zone_bootstrap_v3',
     'nova_houseman_shift_save_v2', 'nova_houseman_zone_save_v1',
     'nova_departure_delay_dashboard_v1', 'nova_daily_close_source_v1',
-    'nova_daily_close_save_v2', 'nova_daily_close_read_v1',
+    'nova_daily_close_save_v2', 'nova_daily_close_read_v1', 'nova_roommaid_close_cancel_v1',
     'nova_monthly_history_v1', 'nova_roommaid_performance_history_v1',
     'nova_roommaid_close_history_v1'
 ]:
@@ -162,6 +164,34 @@ order(daily, 'const prepared = [];', "const db = novaDbFirstRpc_(token, 'nova_da
 order(daily, "const db = novaDbFirstRpc_(token, 'nova_daily_close_save_v2'", 'mirror = novaDailyCloseMirrorSnapshotToSheet_(', 'DB close commit before Sheet mirror call')
 require(client, "callServer('saveDailyCloseSnapshotDbFirst'", 'client daily-close DB route')
 require(client, "novaRealtimeRequestId_('DAILY_CLOSE_V3'", 'daily-close request id')
+require(daily, 'ROOMMAID_CLOSE_SAVE_DB_FIRST_V1', 'roommaid close DB-first marker')
+require(daily, 'novaDailyCloseLegacyUploadCompatSource_', 'pre-V4 upload metadata compatibility')
+require(daily, 'function saveRoommaidCloseJournalDbFirst(', 'roommaid close DB-first save wrapper')
+require(daily, 'function resetRoommaidCloseJournalDbFirst(', 'roommaid close DB-first reset wrapper')
+require(daily, "'nova_roommaid_close_cancel_v1'", 'roommaid close cancel RPC')
+require(client, "callServer('saveRoommaidCloseJournalDbFirst'", 'roommaid close save DB route')
+require(client, "callServer('resetRoommaidCloseJournalDbFirst'", 'roommaid close reset DB route')
+forbid(client, "callServer('saveRoommaidCloseJournal', state.token", 'roommaid close direct Sheet save removed')
+forbid(client, "callServer('resetRoommaidCloseJournal', state.token", 'roommaid close direct Sheet reset removed')
+require(close, 'function saveRoommaidCloseJournal(', 'legacy roommaid close writer preserved')
+require(close, 'function resetRoommaidCloseJournal(', 'legacy roommaid reset writer preserved')
+require(roommaid_close_cancel_sql, 'NOVA_ROOMMAID_CLOSE_CANCEL_DB_FIRST_V1', 'roommaid close cancel migration marker')
+require(roommaid_close_cancel_sql, "not in ('ADMIN', 'ORDER')", 'roommaid close reset role parity')
+require(roommaid_close_cancel_sql, 'revoke all on function public.nova_roommaid_close_cancel_v1', 'roommaid close cancel default execute revoked')
+require(daily, 'ROOMMAID_CLOSE_SAVE_DB_FIRST_V1', 'roommaid close DB-first marker')
+require(daily, 'novaDailyCloseLegacyUploadCompatSource_', 'pre-V4 upload metadata compatibility')
+require(daily, 'function saveRoommaidCloseJournalDbFirst(', 'roommaid close DB-first save wrapper')
+require(daily, 'function resetRoommaidCloseJournalDbFirst(', 'roommaid close DB-first reset wrapper')
+require(daily, "'nova_roommaid_close_cancel_v1'", 'roommaid close cancel RPC')
+require(client, "callServer('saveRoommaidCloseJournalDbFirst'", 'roommaid close save DB route')
+require(client, "callServer('resetRoommaidCloseJournalDbFirst'", 'roommaid close reset DB route')
+forbid(client, "callServer('saveRoommaidCloseJournal', state.token", 'roommaid close direct Sheet save removed')
+forbid(client, "callServer('resetRoommaidCloseJournal', state.token", 'roommaid close direct Sheet reset removed')
+require(close, 'function saveRoommaidCloseJournal(', 'legacy roommaid close writer preserved')
+require(close, 'function resetRoommaidCloseJournal(', 'legacy roommaid reset writer preserved')
+require(roommaid_close_cancel_sql, 'NOVA_ROOMMAID_CLOSE_CANCEL_DB_FIRST_V1', 'roommaid close cancel migration marker')
+require(roommaid_close_cancel_sql, "not in ('ADMIN', 'ORDER')", 'roommaid close reset role parity')
+require(roommaid_close_cancel_sql, 'revoke all on function public.nova_roommaid_close_cancel_v1', 'roommaid close cancel default execute revoked')
 
 # Monthly/reporting hybrid boundary.
 require(monthly_bridge, 'NOVA_MONTHLY_DB_FIRST_V2', 'monthly bridge marker')
@@ -188,6 +218,7 @@ for script in [
     'patch_daily_close_dbfirst_fallback_v1_20260908.py',
     'patch_monthly_daily_dbfirst_v2_20260907.py',
     'patch_roommaid_reporting_dbfirst_v2_20260907.py',
+    'patch_roommaid_close_save_dbfirst_v1_20260908.py',
     'validate_whole_db_transition_v2_20260908.py'
 ]:
     require(canonical, script, f'canonical meta-patcher {script}')
@@ -212,7 +243,8 @@ for script in [
     'scripts/patch_departure_delay_dbfirst_v3_20260907.py',
     'scripts/patch_daily_close_dbfirst_fallback_v1_20260908.py',
     'scripts/patch_monthly_daily_dbfirst_v2_20260907.py',
-    'scripts/patch_roommaid_reporting_dbfirst_v2_20260907.py'
+    'scripts/patch_roommaid_reporting_dbfirst_v2_20260907.py',
+    'scripts/patch_roommaid_close_save_dbfirst_v1_20260908.py'
 ]:
     result = subprocess.run([sys.executable, script], text=True, capture_output=True, check=False)
     if result.returncode != 0:

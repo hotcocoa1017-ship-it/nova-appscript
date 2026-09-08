@@ -19,6 +19,7 @@ const NOVA_DB_FIRST_BRIDGE_V1 = Object.freeze({
     'nova_daily_close_read_v1',
     'nova_daily_close_cancel_v1',
     'nova_daily_close_cancel_many_v1',
+    'nova_roommaid_close_cancel_v1', // ROOMMAID_CLOSE_SAVE_DB_FIRST_V1
     'nova_monthly_history_v1',
     'nova_roommaid_performance_history_v1',
     'nova_roommaid_close_history_v1'

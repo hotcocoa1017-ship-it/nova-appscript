@@ -23,6 +23,50 @@ function novaDailyCloseSourceDbFirst_(token, businessDate, site) {
   }, { readOnly: true, allowLegacyFallback: true });
 }
 
+// ROOMMAID_CLOSE_SAVE_DB_FIRST_V1
+// V4 이전 업로드로 DB snapshot만 없는 업무일은 DB 현재객실을 유지하고,
+// Sheet에서 최종 ROOM_STATUS_UPLOAD 원본 메타데이터 1건만 보강합니다.
+function novaDailyCloseLegacyUploadCompatSource_(source, businessDate, site) {
+  const safe = source && typeof source === 'object' ? source : {};
+  if (safe.ready === true) return safe;
+  const reasons = (Array.isArray(safe.reasons) ? safe.reasons : []).map(value => String(value || '').trim()).filter(Boolean);
+  const allowedReasons = new Set(['ACTIVE_UPLOAD_SNAPSHOT_MISSING', 'ROOM_COUNT_MISMATCH']);
+  if (!reasons.length || reasons.some(reason => !allowedReasons.has(reason))) return safe;
+
+  const metrics = safe.metrics && typeof safe.metrics === 'object' ? safe.metrics : {};
+  const roomCount = Number(metrics.rooms || 0);
+  if (roomCount <= 0 || Number(metrics.activeUploads || 0) !== 0) return safe;
+
+  const bundle = readRoommaidCloseHistoryBundleFast_(normalizeBusinessDate_(businessDate), String(site || '').trim());
+  const uploads = (Array.isArray(bundle && bundle.historyRows) ? bundle.historyRows : [])
+    .filter(row => String(row && row['기록구분'] || '').trim() === NOVA.RECORD_TYPES.ROOM_STATUS_UPLOAD)
+    .filter(row => String(row && row['처리상태'] || '').trim().toUpperCase() === 'APPLIED')
+    .filter(row => String(row && row['삭제여부'] || 'N').trim().toUpperCase() !== 'Y')
+    .sort((a, b) => Number(b && b['변경버전'] || 0) - Number(a && a['변경버전'] || 0)
+      || String(b && b['등록일시'] || '').localeCompare(String(a && a['등록일시'] || '')));
+  const upload = uploads[0] || null;
+  if (!upload) return safe;
+
+  const detail = parseHistoryDetailSafe_(upload);
+  const uploadTotal = Number(detail && detail.totalRooms || 0);
+  const roomsByStatus = detail && detail.roomsByStatus && typeof detail.roomsByStatus === 'object' ? detail.roomsByStatus : {};
+  if (!uploadTotal || uploadTotal !== roomCount || !Object.keys(roomsByStatus).length) return safe;
+
+  const dbHistory = (Array.isArray(safe.historyRows) ? safe.historyRows : [])
+    .filter(row => String(row && row['기록구분'] || '').trim() !== NOVA.RECORD_TYPES.ROOM_STATUS_UPLOAD);
+  return Object.assign({}, safe, {
+    ready: true,
+    reasons: [],
+    historyRows: [upload].concat(dbHistory),
+    metrics: Object.assign({}, metrics, { activeUploads: 1, uploadTotalRooms: uploadTotal, legacyUploadCompat: true }),
+    compatibility: Object.assign({}, safe.compatibility || {}, {
+      legacyUploadSnapshot: true,
+      uploadVersion: Number(upload['변경버전'] || 0),
+      uploadRegisteredAt: String(upload['등록일시'] || '').trim()
+    })
+  });
+}
+
 function novaDailyCloseBuildFromDbSource_(source, user, attendanceEmployeeNos, includeRooms) {
   const businessDate = normalizeBusinessDate_(source.businessDate);
   const site = String(source.site || '').trim();
@@ -123,7 +167,10 @@ function saveDailyCloseSnapshotDbFirst(token, payload) { // (DB source -> 기존
     const prepared = [];
     let mustLegacyFallback = false;
     candidates.forEach(site => {
-      const source = novaDailyCloseSourceDbFirst_(token, businessDate, site);
+      const rawSource = novaDailyCloseSourceDbFirst_(token, businessDate, site);
+      const source = safe.roommaidCloseCompat === true
+        ? novaDailyCloseLegacyUploadCompatSource_(rawSource, businessDate, site)
+        : rawSource; // ROOMMAID_CLOSE_SAVE_DB_FIRST_V1
       if (source && source.legacyFallback) {
         mustLegacyFallback = true;
         return;
@@ -173,6 +220,73 @@ function saveDailyCloseSnapshotDbFirst(token, payload) { // (DB source -> 기존
       businessDate,
       sites: results,
       message: `${businessDate} ${results.length}개 사업장의 DB 마감자료를 저장했습니다.`
+    };
+  });
+}
+
+function saveRoommaidCloseJournalDbFirst(token, payload) { // ROOMMAID_CLOSE_SAVE_DB_FIRST_V1
+  return measureResponse_('saveRoommaidCloseJournalDbFirst', () => {
+    requireRole_(token, ['ADMIN', 'ORDER']);
+    const safe = payload || {};
+    const businessDate = normalizeBusinessDate_(safe.businessDate || safe.date);
+    const site = String(safe.site || '').trim();
+    if (!site) throw new Error('마감할 사업장을 선택하세요.');
+    const result = saveDailyCloseSnapshotDbFirst(token, {
+      businessDate,
+      site,
+      attendanceEmployeeNos: uniqueEmployeeNos_(safe.attendanceEmployeeNos || []),
+      requestId: String(safe.requestId || '').trim(),
+      roommaidCloseCompat: true
+    });
+    if (!result || result.ok !== true) throw new Error(result && result.message || '룸메이드 마감일지를 저장하지 못했습니다.');
+    const siteResult = Array.isArray(result.sites)
+      ? result.sites.find(item => String(item && item.site || '').trim() === site) || result.sites[0]
+      : null;
+    const snapshot = siteResult && siteResult.snapshot && typeof siteResult.snapshot === 'object' ? siteResult.snapshot : {};
+    return {
+      ok: true,
+      dbFirst: result.dbFirst === true,
+      businessDate,
+      site,
+      closedAt: String(snapshot.closedAt || siteResult && siteResult.closedAt || '').trim(),
+      message: `${businessDate} ${site} 룸메이드 마감일지를 저장했습니다.`
+    };
+  });
+}
+
+function resetRoommaidCloseJournalDbFirst(token, payload) { // ROOMMAID_CLOSE_SAVE_DB_FIRST_V1
+  return measureResponse_('resetRoommaidCloseJournalDbFirst', () => {
+    requireRole_(token, ['ADMIN', 'ORDER']);
+    const safe = payload || {};
+    const businessDate = normalizeBusinessDate_(safe.businessDate || safe.date);
+    const site = String(safe.site || '').trim();
+    if (!site) throw new Error('초기화할 사업장을 선택하세요.');
+    const requestId = String(safe.requestId || novaDbFirstRequestId_(`ROOMMAID_CLOSE_CANCEL_${site}`)).trim();
+    const db = novaDbFirstRpc_(token, 'nova_roommaid_close_cancel_v1', {
+      p_business_date: businessDate,
+      p_site: site,
+      p_reason: 'ROOMMAID_CLOSE_RESET',
+      p_request_id: requestId
+    }, { allowLegacyFallback: true });
+
+    if (db && db.legacyFallback) return resetRoommaidCloseJournal(token, payload);
+    if (!db || db.ok !== true) throw new Error(db && db.message || '룸메이드 마감자료를 초기화하지 못했습니다.');
+    if (db.noDbSnapshot === true) return resetRoommaidCloseJournal(token, payload);
+
+    let mirror = null;
+    try { mirror = resetRoommaidCloseJournal(token, payload); }
+    catch (error) { console.warn('[NOVA DB] 룸메이드 마감 DB 취소 후 Sheet 미러 지연:', error && error.message || error); }
+    const mirrorOk = Boolean(mirror && mirror.ok === true);
+    return {
+      ok: true,
+      dbFirst: true,
+      businessDate,
+      site,
+      resetCount: Number(mirrorOk ? mirror.resetCount : db.cancelledCount || 1),
+      resetBy: String(db.cancelledBy || '').trim(),
+      resetAt: nowText_(),
+      sheetMirrorPending: !mirrorOk,
+      message: `${businessDate} ${site} 룸메이드 마감자료를 초기화했습니다. 현재 자료를 확인한 후 다시 마감하세요.`
     };
   });
 }
