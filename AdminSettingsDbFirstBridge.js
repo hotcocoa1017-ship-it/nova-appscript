@@ -48,37 +48,55 @@ function novaOperationSettingsMirrorToSheet_(token, values) {
   return mirror;
 }
 
-function getAdminSettingsDataDbFirst(token) { // (관리자 설정: 코드그룹 Sheet + 운영설정 DB authority)
+function getAdminSettingsDataDbFirst(token) { // (운영설정 + 안정형 관리코드 DB authority, 나머지 legacy 보존)
   return measureResponse_('getAdminSettingsDataDbFirst', () => {
     requireRole_(token, ['ADMIN']);
     const legacy = getAdminSettingsData(token);
-    const db = novaOperationSettingsDbRead_(token);
-    if (!db || db.legacyFallback || db.ok !== true || db.confirmed !== true || !db.values) {
-      return Object.assign({}, legacy, {
-        dbFirst: false,
-        operationSettingsDbFirst: false,
-        operationSettingsDbReason: String(db && db.reason || 'DB_NOT_CONFIRMED')
-      });
-    }
+    const result = Object.assign({}, legacy);
 
-    let sheetMirrorPending = novaOperationSettingsMirrorPending_();
-    if (sheetMirrorPending) {
+    const operationDb = novaOperationSettingsDbRead_(token);
+    const operationReady = Boolean(operationDb && !operationDb.legacyFallback && operationDb.ok === true && operationDb.confirmed === true && operationDb.values);
+    let operationMirrorPending = novaOperationSettingsMirrorPending_();
+    if (operationReady && operationMirrorPending) {
       try {
-        novaOperationSettingsMirrorToSheet_(token, db.values);
-        sheetMirrorPending = false;
+        novaOperationSettingsMirrorToSheet_(token, operationDb.values);
+        operationMirrorPending = false;
       } catch (error) {
         console.warn('[NOVA DB] 운영설정 pending Sheet 미러 재시도 실패:', error && error.message || error);
       }
     }
+    if (operationReady) {
+      result.operationValues = Object.assign({}, legacy.operationValues || {}, operationDb.values || {});
+      result.operationSettingsDbFirst = true;
+      result.operationSettingsDbConfirmed = true;
+      result.operationSettingsDbVersion = Number(operationDb.version || 0);
+      result.operationSettingsSheetMirrorPending = operationMirrorPending;
+    } else {
+      result.operationSettingsDbFirst = false;
+      result.operationSettingsDbReason = String(operationDb && operationDb.reason || 'DB_NOT_CONFIRMED');
+    }
 
-    return Object.assign({}, legacy, {
-      operationValues: Object.assign({}, legacy.operationValues || {}, db.values || {}),
-      dbFirst: true,
-      operationSettingsDbFirst: true,
-      operationSettingsDbConfirmed: true,
-      operationSettingsDbVersion: Number(db.version || 0),
-      operationSettingsSheetMirrorPending: sheetMirrorPending
-    });
+    let codeDb = null;
+    try { codeDb = novaAdminCodeSettingsDbRead_(token); }
+    catch (error) { codeDb = { ok: false, reason: error && error.code || 'DB_READ_FAILED' }; }
+    const codeReady = Boolean(codeDb && !codeDb.legacyFallback && codeDb.ok === true && codeDb.confirmed === true && Array.isArray(codeDb.items));
+    let codeMirrorPending = 0;
+    if (codeReady) {
+      try { codeMirrorPending = Number(novaAdminCodeRetryPendingMirrors_(token).pending || 0); }
+      catch (error) { console.warn('[NOVA DB] 관리코드 pending Sheet 미러 확인 실패:', error && error.message || error); }
+      result.groups = novaAdminCodeOverlayGroups_(legacy.groups, codeDb);
+      result.adminCodeSettingsDbFirst = true;
+      result.adminCodeSettingsDbConfirmed = true;
+      result.adminCodeSettingsDbVersion = Number(codeDb.version || 0);
+      result.adminCodeSettingsDbRowCount = Number(codeDb.rowCount || 0);
+      result.adminCodeSettingsSheetMirrorPending = codeMirrorPending;
+    } else {
+      result.adminCodeSettingsDbFirst = false;
+      result.adminCodeSettingsDbReason = String(codeDb && codeDb.reason || 'DB_NOT_CONFIRMED');
+    }
+
+    result.dbFirst = operationReady || codeReady;
+    return result;
   });
 }
 
