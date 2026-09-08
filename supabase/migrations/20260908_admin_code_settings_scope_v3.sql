@@ -60,7 +60,7 @@ declare
   v_group text:=trim(coalesce(p_group,'')); v_code text:=upper(trim(coalesce(p_code,'')));
   v_label text:=trim(coalesce(p_label,'')); v_note text:=trim(coalesce(p_note,''));
   v_order integer:=greatest(0,coalesce(p_order,9999));
-  v_enabled boolean:=upper(trim(coalesce(p_enabled,'Y')) <> 'N';
+  v_enabled boolean:=upper(trim(coalesce(p_enabled,'Y'))) <> 'N';
   v_protected boolean:=false; v_existing boolean:=false;
   v_request_id text:=trim(coalesce(p_request_id,'')); v_dedup record; v_version bigint:=1; v_response jsonb;
 begin
