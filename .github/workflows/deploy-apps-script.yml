@@ -23,9 +23,7 @@ env:
 
 # NOVA_CANONICAL_CI_V2
 # main is the canonical production source. CI validates source as-is and never reapplies historical patch generators.
-# Compatibility markers for legacy validators only; these commands are intentionally NOT executed:
-# python3 scripts/patch_roommaid_notification_bell.py
-# python3 scripts/fix_patch_site_scope_v2.py
+# Validation is read-only; historical patch generators are retained only as manual recovery history.
 
 jobs:
   deploy:
