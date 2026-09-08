@@ -40,6 +40,8 @@ let bridge=null,registration=null,syncBusy=false,gateTimer=null,gateClosedSessio
 function isiOS(){return /iphone|ipad|ipod/i.test(navigator.userAgent)}
 function standalone(){return matchMedia('(display-mode: standalone)').matches || navigator.standalone===true}
 function b64uToBytes(v){const p='='.repeat((4-v.length%4)%4),b=atob((v+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(b,c=>c.charCodeAt(0))}
+function sameBytes(a,b){if(!a||!b||a.length!==b.length)return false;for(let i=0;i<a.length;i++)if(a[i]!==b[i])return false;return true}
+function subscriptionUsesCurrentVapid(s){try{const k=s?.options?.applicationServerKey;if(!k)return false;return sameBytes(new Uint8Array(k),b64uToBytes(VAPID))}catch(_){return false}} // NOVA_PUSH_SUBSCRIPTION_KEY_GUARD_V1
 function subscriptionJSON(s){const j=s.toJSON();return {endpoint:j.endpoint,keys:{p256dh:j.keys?.p256dh||'',auth:j.keys?.auth||''}}}
 async function badge(n){try{if('setAppBadge' in navigator){if(Number(n)>0)await navigator.setAppBadge(Number(n));else await navigator.clearAppBadge()}}catch(_){}}
 function claims(jwt){try{const p=String(jwt||'').split('.')[1]||'',b=p.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(p.length/4)*4,'='),raw=atob(b);return JSON.parse(new TextDecoder().decode(Uint8Array.from(raw,c=>c.charCodeAt(0))))}catch(_){return{}}}
@@ -79,12 +81,17 @@ async function upsertSubscription(sub){
 async function currentPushSubscription(reg){
   let sub=await reg.pushManager.getSubscription();
   const version=String(localStorage.getItem(VAPID_VERSION_KEY)||'');
-  if(sub&&version!==VAPID_VERSION){
+  const keyMismatch=Boolean(sub&&!subscriptionUsesCurrentVapid(sub));
+  if(sub&&(version!==VAPID_VERSION||keyMismatch)){
     try{await sub.unsubscribe()}catch(e){console.warn('[NOVA PWA] old push unsubscribe',e)}
     sub=null;
   }
   if(Notification.permission==='granted'&&!sub){
     sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64uToBytes(VAPID)});
+    if(!subscriptionUsesCurrentVapid(sub)){
+      try{await sub.unsubscribe()}catch(_){}
+      throw new Error('Push 구독 VAPID 키 검증 실패');
+    }
   }
   return sub;
 }

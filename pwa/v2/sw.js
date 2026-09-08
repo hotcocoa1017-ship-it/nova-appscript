@@ -1,5 +1,5 @@
 // deploy-trigger: NOVA Push recovery V4 2026-09-08 rev2
-const CACHE='nova-pwa-v2-vercel-6'; // NOVA_PUSH_VAPID_RECOVERY_V4
+const CACHE='nova-pwa-v2-vercel-7'; // NOVA_PUSH_VAPID_RECOVERY_V4_KEY_GUARD_V1
 const ICON='https://evoetxfjmkkjptucwxsv.supabase.co/storage/v1/object/public/nova-pwa-v2/icon-192.png';
 const BADGE='https://evoetxfjmkkjptucwxsv.supabase.co/storage/v1/object/public/nova-pwa-v2/badge-96.png';
 self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(['./index.html','./manifest.webmanifest'])).then(()=>self.skipWaiting()))});
