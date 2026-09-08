@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -44,5 +45,10 @@ if 'patch_qm_checklist_definition_shape_v1_20260908.py' not in s:
         raise SystemExit(98)
     s = s.replace(old, new, 1)
 p.write_text(s, encoding='utf-8')
+
+# QM 진행 모달을 닫을 때 남아 있던 직접 Sheet 초안 저장도
+# 기존 QM draft DB-first helper를 먼저 사용하고 Sheet는 장애 fallback/호환 미러로만 유지합니다.
+subprocess.run([sys.executable, 'scripts/patch_qm_modal_close_draft_dbfirst_v1_20260908.py'], check=True)
+subprocess.run([sys.executable, 'scripts/validate_qm_modal_close_draft_dbfirst_v1_20260908.py'], check=True)
 
 print('QM checklist DB definition shape patch applied.')
