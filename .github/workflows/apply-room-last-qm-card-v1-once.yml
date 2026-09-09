@@ -1,0 +1,68 @@
+name: Apply Room Last QM Card V1 Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-room-last-qm-card-v1-once.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Apply focused client patch
+        run: python3 scripts/patch_room_last_qm_card_v1_20260909.py
+
+      - name: Validate focused feature and NOVA regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_room_last_qm_card_v1_20260909.py
+          python3 scripts/validate_room_state_sync_hardening_20260906.py
+          python3 scripts/validate_qm_finalize_dbfirst_v2_20260907.py
+          python3 scripts/validate_room_upload_db_first_v4_20260907.py
+          python3 scripts/validate_whole_db_transition_v2_20260908.py
+          python3 scripts/validate_nova_release.py
+
+      - name: Validate Client JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text=Path('Client.html').read_text(encoding='utf-8')
+          scripts=re.findall(r'<script[^>]*>(.*?)</script>',text,flags=re.S|re.I)
+          if not scripts: raise SystemExit('No script blocks found')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts),encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+
+      - name: Commit canonical source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Client.html
+          if git diff --cached --quiet; then
+            echo "No Client source changes to commit."
+          else
+            git commit -m "Show last valid QM date on room cards [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch canonical production deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-apps-script.yml --repo "$GITHUB_REPOSITORY" --ref main -f deploy=true
