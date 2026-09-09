@@ -1,0 +1,91 @@
+name: Apply Mobile My Houseman Orders V1 Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-mobile-my-houseman-orders-v1-once.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Apply focused mobile my-orders patch
+        run: python3 scripts/patch_mobile_my_houseman_orders_v1_20260909.py
+
+      - name: Validate focused feature
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          t=Path('Client.html').read_text(encoding='utf-8')
+          required=[
+            'MOBILE_MY_HOUSEMAN_ORDERS_V1',
+            'nova_mobile_my_houseman_orders_v1',
+            "['MY_REQUESTS', '내 요청']",
+            "['ACTIVE', '진행'], ['DONE', '완료'], ['ALL', '전체'], ['MY_REQUESTS', '내 요청']",
+            'function renderMobileMyRequestCard_',
+            'function loadMobileMyRequests_',
+            "qmMobileBrowseView_() === 'MY_REQUESTS'",
+            "state.mobile.filter === 'MY_REQUESTS'"
+          ]
+          missing=[x for x in required if x not in t]
+          if missing: raise SystemExit('Missing mobile my-orders markers: '+repr(missing))
+          sql=Path('supabase/migrations/20260909_mobile_my_houseman_orders_v1.sql').read_text(encoding='utf-8')
+          for x in ['nova_mobile_my_houseman_orders_v1','registered_by = v_actor','grant execute on function public.nova_mobile_my_houseman_orders_v1(date,text) to authenticated']:
+            if x not in sql: raise SystemExit('Missing migration marker: '+x)
+          print('Mobile my houseman orders focused validation PASS')
+          PY
+
+      - name: Validate NOVA regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_qm_finalize_dbfirst_v2_20260907.py
+          python3 scripts/validate_room_upload_db_first_v4_20260907.py
+          python3 scripts/validate_whole_db_transition_v2_20260908.py
+          python3 scripts/validate_nova_release.py
+
+      - name: Validate Client JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text=Path('Client.html').read_text(encoding='utf-8')
+          scripts=re.findall(r'<script[^>]*>(.*?)</script>',text,flags=re.S|re.I)
+          if not scripts: raise SystemExit('No script blocks found')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts),encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+
+      - name: Commit canonical source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Client.html
+          if git diff --cached --quiet; then
+            echo "No Client source changes to commit."
+          else
+            git commit -m "Add my houseman requests to ROOMMAID and QM mobile [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Dispatch canonical production deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-apps-script.yml --repo "$GITHUB_REPOSITORY" --ref main -f deploy=true
