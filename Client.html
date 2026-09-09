@@ -206,6 +206,21 @@
     outline-offset: 2px;
   }
 
+
+  /* ROOM_LAST_QM_CARD_V1 · 객실번호 옆 마지막 유효 QM 점검일 */
+  .room-last-qm-check {
+    margin-left: 7px;
+    color: #6b7280;
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: -0.2px;
+    white-space: nowrap;
+  }
+  @media (max-width: 760px) {
+    .room-last-qm-check { margin-left: 6px; font-size: 11px; }
+  }
+
 </style>
 <script>
 (() => {
@@ -241,7 +256,7 @@
     // 기존 Sheet snapshot/version은 이력·fallback 용도로 유지하되 DB hydrate/reconcile 이후에는
     // Sheet delta가 최신 DB 상태를 되돌리지 못하도록 동일 merge 경로에서 보호합니다.
     'roomStatus', 'lastRoomStatus', 'previousRoomStatus', 'previousCleaningStatus', 'previousRoommaidEmployeeNo', 'previousSecondaryRoommaidEmployeeNo',
-    'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo', 'cleaningStartedAt', 'cleaningCompletedAt', 'operationalStatus', 'preassigned', 'vip', 'importantRoom', 'version', 'updatedAt'
+    'cleaningStatus', 'cleaningType', 'assignmentType', 'roommaidEmployeeNo', 'secondaryRoommaidEmployeeNo', 'qmEmployeeNo', 'cleaningStartedAt', 'cleaningCompletedAt', 'lastQmBusinessDate', 'lastQmEmployeeNo', 'operationalStatus', 'preassigned', 'vip', 'importantRoom', 'version', 'updatedAt'
   ]);
   const NOVA_REALTIME_CLEANING_TARGET_ROOM_STATUSES_ = Object.freeze([
     'CHECKED_OUT', 'CHECKED_OUT_RC', 'CHECKED_OUT_HU', 'STOCK', 'STOCK_RC', 'STOCK_HU'
@@ -401,6 +416,8 @@
       qmEmployeeNo: String(row.qm_employee_no ?? row.qmEmployeeNo ?? ''),
       cleaningStartedAt: row.cleaning_started_at || row.cleaningStartedAt || '',
       cleaningCompletedAt: row.cleaning_completed_at || row.cleaningCompletedAt || '',
+      lastQmBusinessDate: String(row.last_qm_business_date ?? row.lastQmBusinessDate ?? ''),
+      lastQmEmployeeNo: String(row.last_qm_employee_no ?? row.lastQmEmployeeNo ?? ''),
       operationalStatus: String(row.operational_status ?? row.operationalStatus ?? ''),
       version: Number(row.version || 0),
       updatedAt: row.updated_at || row.updatedAt || ''
@@ -428,6 +445,8 @@
     putText('qmEmployeeNo', 'qm_employee_no', 'qmEmployeeNo');
     putText('cleaningStartedAt', 'cleaning_started_at', 'cleaningStartedAt');
     putText('cleaningCompletedAt', 'cleaning_completed_at', 'cleaningCompletedAt');
+    putText('lastQmBusinessDate', 'last_qm_business_date', 'lastQmBusinessDate');
+    putText('lastQmEmployeeNo', 'last_qm_employee_no', 'lastQmEmployeeNo');
     putText('operationalStatus', 'operational_status', 'operationalStatus');
     if (hasOwn('preassigned')) mapped.preassigned = row.preassigned === true;
     if (hasOwn('vip')) mapped.vip = row.vip === true;
@@ -6071,10 +6090,20 @@
     return indicatorRoomCycleView_(room, false).label;
   }
 
+  function indicatorLastQmDisplayDate_(room) { // ROOM_LAST_QM_CARD_V1 · 미판매 유지 객실의 마지막 유효 점검일
+    const value = String(room?.lastQmBusinessDate || '').trim();
+    if (!value) return '';
+    const roomStatusCode = indicatorCodeValue_(state.indicator.data?.codes?.roomStatuses, room?.roomStatus || '').toUpperCase();
+    if (!['VACANT_CLEAN', 'STOCK', 'STOCK_RC', 'STOCK_HU'].includes(roomStatusCode)) return '';
+    const matched = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return matched ? `${matched[2]}/${matched[3]}` : '';
+  }
+
   function roomCardHtml_(room) { // (객실카드 HTML·당일 최대 2개 정비주기 표시)
     const selected = state.indicator.selectedRoomNo === room.roomNo ? ' selected' : '';
     const currentCycle = indicatorRoomCycleView_(room, false);
     const previousCycle = room.previousCycle ? indicatorRoomCycleView_(room, true) : null;
+    const lastQmDisplayDate = indicatorLastQmDisplayDate_(room);
     const cleaningActive = isCleaningActiveStatus_(room.cleaningStatus, state.indicator.data?.codes?.cleaningStatuses)
       || isCleaningActiveStatus_(currentCycle.cleaningStatusCode || currentCycle.cleaningLabel, state.indicator.data?.codes?.cleaningStatuses);
     const currentCleaningStatusCode = String(currentCycle.cleaningStatusCode || codeValue_(state.indicator.data?.codes?.cleaningStatuses, room.cleaningStatus || 'UNKNOWN')).toUpperCase();
@@ -6093,7 +6122,7 @@
     return `
       <article class="room-card${selected}${cleaningActive ? ' room-card-cleaning' : ''}${operationalStatus ? ` room-card-operational room-card-operational-${operationalStatusClass}` : ''}${saving ? ' room-card-saving' : ''}${previousCycle ? ' room-card-two-cycle' : ''}" data-room-no="${escapeAttr(room.roomNo)}" data-cleaning-status="${escapeAttr(currentCleaningStatusCode)}" data-cleaning-active="${cleaningActive ? 'true' : 'false'}" data-room-operational-status="${escapeAttr(operationalStatus)}">
         <div class="room-card-top">
-          <div class="room-card-title"><span class="room-number">${escapeHtml(room.roomNo)}</span>${operationalStatusLabel ? `<span class="room-card-operational-label ${escapeAttr(operationalStatusClass)}">${escapeHtml(operationalStatusLabel)}</span>` : ''}</div>
+          <div class="room-card-title"><span class="room-number">${escapeHtml(room.roomNo)}</span>${lastQmDisplayDate ? `<span class="room-last-qm-check">최종점검 ${escapeHtml(lastQmDisplayDate)}</span>` : ''}${operationalStatusLabel ? `<span class="room-card-operational-label ${escapeAttr(operationalStatusClass)}">${escapeHtml(operationalStatusLabel)}</span>` : ''}</div>
           <button type="button" class="room-more" data-room-detail aria-label="객실 상세">⋯</button>
         </div>
         ${operationBadges ? `<div class="room-operation-badges">${operationBadges}</div>` : ''}
