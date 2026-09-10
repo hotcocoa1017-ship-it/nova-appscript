@@ -6,6 +6,7 @@ client = (ROOT / 'Client.html').read_text(encoding='utf-8')
 rt = (ROOT / 'RealtimeDailySync.js').read_text(encoding='utf-8')
 migration = (ROOT / 'supabase/migrations/20260910_room_upload_reliability_guard_v5.sql').read_text(encoding='utf-8')
 lockdown = (ROOT / 'supabase/migrations/20260910_room_upload_legacy_rpc_lockdown_v1.sql').read_text(encoding='utf-8')
+v4_lockdown = (ROOT / 'supabase/migrations/20260910_room_upload_v4_direct_lockdown_v1.sql').read_text(encoding='utf-8')
 
 checks = {
     'room recovery ttl': 'ROOM_UPLOAD_RECOVERY_TTL_V1' in room and '24 * 60 * 60 * 1000' in room,
@@ -27,7 +28,8 @@ checks = {
     'V5 stage columns': 'sheet_mirror_status' in migration and 'db_committed_at' in migration,
     'legacy V2 authenticated closed': 'nova_room_upload_apply_v2(text, text, jsonb, jsonb, bigint, bigint, text)' in lockdown and 'from public, anon, authenticated' in lockdown,
     'legacy V3 authenticated closed': 'nova_room_upload_apply_v3(text, text, jsonb, jsonb, bigint, bigint, text)' in lockdown and lockdown.count('from public, anon, authenticated') >= 2,
-    'V4 compatibility retained': 'nova_room_upload_apply_v4' not in lockdown,
+    'V4 direct authenticated closed': 'nova_room_upload_apply_v4(text, text, jsonb, jsonb, jsonb, bigint, text)' in v4_lockdown and 'from public, anon, authenticated' in v4_lockdown,
+    'V5 remains sole browser mutation endpoint': 'nova_room_upload_apply_v5' not in lockdown and 'nova_room_upload_apply_v5' not in v4_lockdown,
 }
 
 failed = [name for name, ok in checks.items() if not ok]
