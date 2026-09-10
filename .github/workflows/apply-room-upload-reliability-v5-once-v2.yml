@@ -1,0 +1,88 @@
+name: Apply room upload reliability V5 once v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-room-upload-reliability-v5-once-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nova-room-upload-reliability-v5
+  cancel-in-progress: false
+
+env:
+  APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply focused reliability patch
+        run: |
+          python3 scripts/patch_room_upload_reliability_v5_20260910.py
+          python3 scripts/patch_room_upload_reliability_v5_followup_20260910.py
+      - name: Validate reliability and regressions
+        run: |
+          python3 scripts/validate_room_upload_reliability_v5_20260910.py
+          python3 scripts/validate_room_upload_db_first_v4_20260907.py
+          python3 scripts/validate_room_upload_realtime_sync_20260907.py
+          python3 scripts/validate_room_state_sync_hardening_20260906.py
+          python3 scripts/validate_whole_db_transition_v2_20260908.py
+          python3 scripts/validate_nova_release.py
+      - name: Validate JavaScript syntax
+        run: |
+          node --check 09_RoomStatusUpload.js
+          node --check RealtimeDailySync.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text=Path('Client.html').read_text(encoding='utf-8')
+          scripts=re.findall(r'<script[^>]*>(.*?)</script>',text,flags=re.S|re.I)
+          if not scripts: raise SystemExit('No Client script block')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts),encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+      - name: Verify patch scope
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only)"
+          printf '%s\n' "$changed"
+          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(09_RoomStatusUpload\.js|Client\.html|RealtimeDailySync\.js|scripts/validate_room_upload_realtime_sync_20260907\.py)$' || true)"
+          test -z "$unexpected"
+          test -n "$changed"
+      - name: Commit canonical source
+        run: |
+          git config user.name 'NOVA Automation'
+          git config user.email 'nova-automation@users.noreply.github.com'
+          git add 09_RoomStatusUpload.js Client.html RealtimeDailySync.js scripts/validate_room_upload_realtime_sync_20260907.py
+          git commit -m 'Harden room upload recovery and mirror safety [skip ci]'
+          git push origin HEAD:main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install clasp
+        run: npm install --global @google/clasp
+      - name: Configure Apps Script authentication
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"; else printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"; fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+      - name: Deploy production Apps Script
+        run: |
+          set -euo pipefail
+          count="$(clasp versions | grep -Ec '^[[:space:]]*[0-9]+[[:space:]]*-' || true)"
+          test "$count" -lt 200
+          clasp push --force
+          clasp create-deployment --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" --description "NOVA room upload reliability V5 rollout"
