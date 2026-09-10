@@ -1,4 +1,4 @@
-# retry: validator fixture fixed
+# retry: source-only patch
 name: Apply Room Upload XLSX Token Hardening V1 Once
 
 on:
@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           git config user.name "nova-automation"
           git config user.email "nova-automation@users.noreply.github.com"
-          git add 09_RoomStatusUpload.js .github/workflows/deploy-apps-script.yml scripts/validate_room_upload_xlsx_token_hardening_20260910.py
+          git add 09_RoomStatusUpload.js scripts/validate_room_upload_xlsx_token_hardening_20260910.py
           git commit -m "Harden XLSX room status token parsing [skip ci]"
           git push origin HEAD:fix/room-upload-xlsx-token-hardening-20260910
 
