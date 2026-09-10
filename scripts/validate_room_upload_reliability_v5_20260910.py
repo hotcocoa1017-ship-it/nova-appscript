@@ -7,6 +7,7 @@ rt = (ROOT / 'RealtimeDailySync.js').read_text(encoding='utf-8')
 migration = (ROOT / 'supabase/migrations/20260910_room_upload_reliability_guard_v5.sql').read_text(encoding='utf-8')
 lockdown = (ROOT / 'supabase/migrations/20260910_room_upload_legacy_rpc_lockdown_v1.sql').read_text(encoding='utf-8')
 v4_lockdown = (ROOT / 'supabase/migrations/20260910_room_upload_v4_direct_lockdown_v1.sql').read_text(encoding='utf-8')
+health = (ROOT / 'supabase/migrations/20260910_room_upload_reliability_health_v1.sql').read_text(encoding='utf-8')
 
 checks = {
     'room recovery ttl': 'ROOM_UPLOAD_RECOVERY_TTL_V1' in room and '24 * 60 * 60 * 1000' in room,
@@ -30,6 +31,17 @@ checks = {
     'legacy V3 authenticated closed': 'nova_room_upload_apply_v3(text, text, jsonb, jsonb, bigint, bigint, text)' in lockdown and lockdown.count('from public, anon, authenticated') >= 2,
     'V4 direct authenticated closed': 'nova_room_upload_apply_v4(text, text, jsonb, jsonb, jsonb, bigint, text)' in v4_lockdown and 'from public, anon, authenticated' in v4_lockdown,
     'V5 remains sole browser mutation endpoint': 'nova_room_upload_apply_v5' not in lockdown and 'nova_room_upload_apply_v5' not in v4_lockdown,
+    'reliability health RPC': 'ROOM_UPLOAD_RELIABILITY_HEALTH_V1' in health and 'nova_room_upload_health_v1' in health,
+    'health V5-only sample': "s.guard_version = 'ROOM_UPLOAD_SITE_GUARD_V1'" in health and "trim(coalesce(s.request_id, '')) <> ''" in health,
+    'health 10 minute stuck grace': "interval '10 minutes'" in health and "'graceMinutes', 10" in health,
+    'health empirical 99.9 target': "'empiricalSuccessRatePercent'" in health and "'targetPercent', 99.9" in health,
+    'health site scope': 'v_user.allowed_sites' in health and "message='사업장 권한이 없습니다.'" in health,
+    'health least privilege': 'revoke all on function public.nova_room_upload_health_v1(integer, text) from public;' in health and 'revoke all on function public.nova_room_upload_health_v1(integer, text) from anon;' in health and 'grant execute on function public.nova_room_upload_health_v1(integer, text) to authenticated;' in health,
+    'health read only': all(needle not in health.lower() for needle in [
+        'insert into public.nova_room_upload_snapshots',
+        'update public.nova_room_upload_snapshots',
+        'delete from public.nova_room_upload_snapshots',
+    ]),
 }
 
 failed = [name for name, ok in checks.items() if not ok]
