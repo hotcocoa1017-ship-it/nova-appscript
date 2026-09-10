@@ -30,11 +30,33 @@ validator = validator.replace('atomic V4 commit', 'atomic V5 guarded commit')
 validator = validator.replace('UI routed through V4', 'UI routed through guarded DB-first path')
 validator = validator.replace('# Client order: DB snapshot -> legacy-rule prepare -> atomic V4 DB commit -> DB re-read -> Sheet mirror.', '# Client order: DB snapshot -> legacy-rule prepare -> guarded V5 DB commit -> DB re-read -> Sheet mirror.')
 
+# The durable recovery helper intentionally contains its own earlier afterState read.
+# Scope ordering checks to the canonical novaRoomUploadDbFirstV4_ function so recovery code cannot create a false failure.
+old_order = """require_order(client, 'beforeState = await novaRoomUploadStateV3_', \"callServer('prepareRoomStatusUploadDbFirst'\", 'DB snapshot before prepare')
+require_order(client, \"callServer('prepareRoomStatusUploadDbFirst'\", \"committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v5'\", 'prepare before DB commit')
+require_order(client, \"committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v5'\", 'afterState = await novaRoomUploadStateV3_', 'DB commit before latest-state read')
+require_order(client, 'afterState = await novaRoomUploadStateV3_', \"callServer('mirrorRoomStatusUploadDbFirst'\", 'latest DB read before Sheet mirror')
+"""
+new_order = """upload_flow_start = client.index('  async function novaRoomUploadDbFirstV4_(previewId, resetMode) {')
+upload_flow_end = client.find('\\n  async function ', upload_flow_start + 10)
+if upload_flow_end < 0:
+    upload_flow_end = len(client)
+upload_flow = client[upload_flow_start:upload_flow_end]
+require_order(upload_flow, 'beforeState = await novaRoomUploadStateV3_', \"callServer('prepareRoomStatusUploadDbFirst'\", 'DB snapshot before prepare')
+require_order(upload_flow, \"callServer('prepareRoomStatusUploadDbFirst'\", \"committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v5'\", 'prepare before DB commit')
+require_order(upload_flow, \"committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v5'\", 'afterState = await novaRoomUploadStateV3_', 'DB commit before latest-state read')
+require_order(upload_flow, 'afterState = await novaRoomUploadStateV3_', \"callServer('mirrorRoomStatusUploadDbFirst'\", 'latest DB read before Sheet mirror')
+"""
+if old_order in validator:
+    validator = validator.replace(old_order, new_order, 1)
+elif 'upload_flow_start = client.index' not in validator:
+    raise SystemExit('validator upload-flow order block not found')
+
 start = validator.find('# Fail-closed check without brittle regex escaping.')
 end = validator.find('# Legacy apply remains untouched for compatibility before DB mutation.')
 if start < 0 or end < 0 or end <= start:
     raise SystemExit('validator fail-closed section not found')
-new_section = '''# Fail-closed check: the guarded commit path never falls back to Sheet-first.\ncommit_pos = client.index("committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v5'")\nafter_pos = client.index('if (!committed?.ok || committed?.dbFirst !== true)', commit_pos)\ncommit_window = client[commit_pos:after_pos]\nrequire(commit_window, 'if (error?.missingRpc)', 'explicit missing-RPC fail-closed branch')\nforbid(commit_window, "return callServer('applyRoomStatusUpload'", 'legacy mutation fallback inside guarded commit')\nrequire(commit_window, '객실업로드 V5 DB 안전경로를 사용할 수 없습니다.', 'V5 missing-RPC stop message')\nrequire(commit_window, '// 네트워크 결과불명/버전충돌/권한오류에서는 Sheet-first를 병행하지 않습니다.', 'fail-closed explanation')\nrequire(commit_window, 'throw error;', 'post-mutation errors rethrown')\n\n'''
+new_section = '''# Fail-closed check: the guarded commit path never falls back to Sheet-first.\ncommit_pos = upload_flow.index("committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v5'")\nafter_pos = upload_flow.index('if (!committed?.ok || committed?.dbFirst !== true)', commit_pos)\ncommit_window = upload_flow[commit_pos:after_pos]\nrequire(commit_window, 'if (error?.missingRpc)', 'explicit missing-RPC fail-closed branch')\nforbid(commit_window, "return callServer('applyRoomStatusUpload'", 'legacy mutation fallback inside guarded commit')\nrequire(commit_window, '객실업로드 V5 DB 안전경로를 사용할 수 없습니다.', 'V5 missing-RPC stop message')\nrequire(commit_window, '// 네트워크 결과불명/버전충돌/권한오류에서는 Sheet-first를 병행하지 않습니다.', 'fail-closed explanation')\nrequire(commit_window, 'throw error;', 'post-mutation errors rethrown')\n\n'''
 validator = validator[:start] + new_section + validator[end:]
 validator = validator.replace(
     "print('PASS: room upload DB-first V4 app bridge preserves legacy rules/side effects, commits DB before operational Sheet writes, uses exact per-room versions, fails closed on ambiguous results, and passes JS syntax checks.')",
