@@ -104,6 +104,7 @@ if 'ROOM_UPLOAD_XLSX_TOKEN_HARDENING_V1 · 엑셀 셀 객실번호 엄격·보�
 ROOM.write_text(text, encoding='utf-8')
 
 validator = r'''from pathlib import Path
+import re
 import sys
 
 SRC = Path('09_RoomStatusUpload.js').read_text(encoding='utf-8')
@@ -131,11 +132,10 @@ fixtures = {
     '6111호': ['6111'],
     '6111 / 6109': ['6111', '6109'],
     '6111호, 6109호': ['6111', '6109'],
-    '6111\\n6109': ['6111', '6109'],
+    '6111\n6109': ['6111', '6109'],
 }
-import re
 for raw, expected in fixtures.items():
-    got = re.findall(r'(?<!\\d)\\d{4}(?!\\d)', raw)
+    got = re.findall(r'(?<!\d)\d{4}(?!\d)', raw)
     if got != expected:
         raise SystemExit(f'ERROR: fixture extraction mismatch for {raw!r}: {got} != {expected}')
 
