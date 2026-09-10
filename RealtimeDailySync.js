@@ -27,8 +27,16 @@ const NOVA_REALTIME_FINAL = Object.freeze({
 function syncNovaRealtimeCurrentBusinessDate(businessDate, site, options) { // (당일 Sheets -> PostgreSQL 증분동기화)
   const dateText = novaRealtimeFinalBusinessDate_(businessDate);
   const siteText = String(site || '').trim();
-  const rooms = novaRealtimeFinalBuildRooms_(dateText, siteText, '');
+  let rooms = novaRealtimeFinalBuildRooms_(dateText, siteText, '');
   if (!rooms.length) throw new Error(`Realtime 동기화 대상 객실이 없습니다. (${dateText}${siteText ? ' · ' + siteText : ''})`);
+  const heldSites = Array.from(new Set(rooms.map(row => String(row.site || '').trim()).filter(Boolean)))
+    .filter(targetSite => typeof isRoomUploadRealtimeForwardHeld_ === 'function' && isRoomUploadRealtimeForwardHeld_(dateText, targetSite));
+  if (heldSites.length) {
+    rooms = rooms.filter(row => !heldSites.includes(String(row.site || '').trim())); // ROOM_UPLOAD_FORWARD_SYNC_HOLD_V1
+  }
+  if (!rooms.length) {
+    return { ok: true, skipped: true, reason: 'ROOM_UPLOAD_DB_FIRST_MIRROR_PENDING', businessDate: dateText, heldSites };
+  }
   const sites = Array.from(new Set(rooms.map(row => row.site).filter(Boolean))).sort();
   const users = novaRealtimeFinalBuildUsers_(sites);
   const safeOptions = options || {};

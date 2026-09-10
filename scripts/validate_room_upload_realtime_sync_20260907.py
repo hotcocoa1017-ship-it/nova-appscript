@@ -114,12 +114,12 @@ for needle, label in [
 ]:
     require(mirror_block, needle, label)
 
-# Client order: DB snapshot -> legacy-rule prepare -> atomic V4 DB commit -> DB re-read -> Sheet mirror.
+# Client order: DB snapshot -> legacy-rule prepare -> guarded V5 DB commit -> DB re-read -> Sheet mirror.
 for needle, label in [
     ('async function novaRoomUploadRpcV4_', 'direct RPC helper'),
     ("novaRoomUploadRpcV4_('nova_room_upload_state_v3'", 'state V3 read'),
     ("callServer('prepareRoomStatusUploadDbFirst'", 'server prepare call'),
-    ("novaRoomUploadRpcV4_('nova_room_upload_apply_v4'", 'atomic V4 commit'),
+    ("novaRoomUploadRpcV4_('nova_room_upload_apply_v5'", 'atomic V5 guarded commit'),
     ('p_expected_versions: prepared.expectedVersions', 'per-room optimistic versions'),
     ('p_request_id: stable.requestId', 'stable request id'),
     ('sessionStorage.getItem(key)', 'request-id retry persistence'),
@@ -127,25 +127,29 @@ for needle, label in [
     ("error.code = 'ROOM_UPLOAD_DB_COMMITTED_MIRROR_PENDING'", 'post-commit mirror-pending error'),
     ("callServer('mirrorRoomStatusUploadDbFirst'", 'post-commit Sheet mirror'),
     ("if (novaRealtimeIsEnabled_() && result?.dbFirst !== true)", 'legacy-only forward convergence'),
-    ('const result = await novaRoomUploadDbFirstV4_(previewId, resetMode);', 'UI routed through V4'),
+    ('const result = await novaRoomUploadDbFirstV4_(previewId, resetMode);', 'UI routed through guarded DB-first path'),
 ]:
     require(client, needle, label)
 
-require_order(client, 'beforeState = await novaRoomUploadStateV3_', "callServer('prepareRoomStatusUploadDbFirst'", 'DB snapshot before prepare')
-require_order(client, "callServer('prepareRoomStatusUploadDbFirst'", "committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v4'", 'prepare before DB commit')
-require_order(client, "committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v4'", 'afterState = await novaRoomUploadStateV3_', 'DB commit before latest-state read')
-require_order(client, 'afterState = await novaRoomUploadStateV3_', "callServer('mirrorRoomStatusUploadDbFirst'", 'latest DB read before Sheet mirror')
+upload_flow_start = client.index('  async function novaRoomUploadDbFirstV4_(previewId, resetMode) {')
+upload_flow_end = client.find('\n  async function ', upload_flow_start + 10)
+if upload_flow_end < 0:
+    upload_flow_end = len(client)
+upload_flow = client[upload_flow_start:upload_flow_end]
+require_order(upload_flow, 'beforeState = await novaRoomUploadStateV3_', "callServer('prepareRoomStatusUploadDbFirst'", 'DB snapshot before prepare')
+require_order(upload_flow, "callServer('prepareRoomStatusUploadDbFirst'", "committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v5'", 'prepare before DB commit')
+require_order(upload_flow, "committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v5'", 'afterState = await novaRoomUploadStateV3_', 'DB commit before latest-state read')
+require_order(upload_flow, 'afterState = await novaRoomUploadStateV3_', "callServer('mirrorRoomStatusUploadDbFirst'", 'latest DB read before Sheet mirror')
 
-# Fail-closed check without brittle regex escaping.
-commit_pos = client.index("committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v4'")
-after_pos = client.index('if (!committed?.ok || committed?.dbFirst !== true)', commit_pos)
-commit_window = client[commit_pos:after_pos]
-require(commit_window, 'if (error?.missingRpc)', 'only explicit missing-RPC fallback branch')
-require(commit_window, "return callServer('applyRoomStatusUpload'", 'safe missing-RPC legacy fallback')
+# Fail-closed check: the guarded commit path never falls back to Sheet-first.
+commit_pos = upload_flow.index("committed = await novaRoomUploadRpcV4_('nova_room_upload_apply_v5'")
+after_pos = upload_flow.index('if (!committed?.ok || committed?.dbFirst !== true)', commit_pos)
+commit_window = upload_flow[commit_pos:after_pos]
+require(commit_window, 'if (error?.missingRpc)', 'explicit missing-RPC fail-closed branch')
+forbid(commit_window, "return callServer('applyRoomStatusUpload'", 'legacy mutation fallback inside guarded commit')
+require(commit_window, '객실업로드 V5 DB 안전경로를 사용할 수 없습니다.', 'V5 missing-RPC stop message')
 require(commit_window, '// 네트워크 결과불명/버전충돌/권한오류에서는 Sheet-first를 병행하지 않습니다.', 'fail-closed explanation')
 require(commit_window, 'throw error;', 'post-mutation errors rethrown')
-if commit_window.count("return callServer('applyRoomStatusUpload'") != 1:
-    raise SystemExit('ERROR: V4 commit catch must contain exactly one legacy fallback, and only for missing RPC')
 
 # Legacy apply remains untouched for compatibility before DB mutation.
 require(upload, 'function applyRoomStatusUpload(token, previewId, options)', 'legacy fallback function')
@@ -161,4 +165,4 @@ with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8', delete=Fal
     client_js = handle.name
 subprocess.run(['node', '--check', client_js], check=True)
 
-print('PASS: room upload DB-first V4 app bridge preserves legacy rules/side effects, commits DB before operational Sheet writes, uses exact per-room versions, fails closed on ambiguous results, and passes JS syntax checks.')
+print('PASS: room upload guarded V5 client + V4 app bridge preserve business rules, commit DB before Sheet writes, never fall back to Sheet-first, and pass JS syntax checks.')

@@ -5,7 +5,7 @@ const NOVA_ROOM_UPLOAD = Object.freeze({
   CACHE_PREFIX: 'NOVA_ROOM_UPLOAD_',
   CACHE_SECONDS: 3600,
   PREVIEW_STORE_SHEET: 'NOVA_업로드미리보기_임시',
-  PREVIEW_STORE_TTL_MS: 60 * 60 * 1000,
+  PREVIEW_STORE_TTL_MS: 24 * 60 * 60 * 1000, // ROOM_UPLOAD_RECOVERY_TTL_V1
   PREVIEW_STORE_CHUNK_CHARS: 40000,
   MAX_FILE_BYTES: 5 * 1024 * 1024,
   ROOMMAID_ASSIGNMENT_SHEET: '룸메이드 객실배정',
@@ -104,6 +104,47 @@ function previewRoomStatusUpload(formObject) { // (객실현황 파일 분석 �
   });
 }
 
+
+
+// ROOM_UPLOAD_FORWARD_SYNC_HOLD_V1
+const NOVA_ROOM_UPLOAD_FORWARD_HOLD_PREFIX_ = 'NOVA_ROOM_UPLOAD_FORWARD_HOLD_UNTIL_';
+function roomUploadForwardHoldKey_(businessDate, site) {
+  return `${NOVA_ROOM_UPLOAD_FORWARD_HOLD_PREFIX_}${String(businessDate || '').trim()}|${String(site || '').trim()}`;
+}
+function setRoomUploadRealtimeForwardHold_(businessDate, site, ttlMs) {
+  const dateText = String(businessDate || '').trim();
+  const siteText = String(site || '').trim();
+  if (!dateText || !siteText) return 0;
+  const until = Date.now() + Math.max(60 * 1000, Number(ttlMs || 0));
+  PropertiesService.getScriptProperties().setProperty(roomUploadForwardHoldKey_(dateText, siteText), String(until));
+  return until;
+}
+function clearRoomUploadRealtimeForwardHold_(businessDate, site) {
+  const dateText = String(businessDate || '').trim();
+  const siteText = String(site || '').trim();
+  if (!dateText || !siteText) return;
+  PropertiesService.getScriptProperties().deleteProperty(roomUploadForwardHoldKey_(dateText, siteText));
+}
+function isRoomUploadRealtimeForwardHeld_(businessDate, site) {
+  const key = roomUploadForwardHoldKey_(businessDate, site);
+  const props = PropertiesService.getScriptProperties();
+  const until = Number(props.getProperty(key) || 0);
+  if (!until) return false;
+  if (until <= Date.now()) {
+    props.deleteProperty(key);
+    return false;
+  }
+  return true;
+}
+function markRoomUploadDbCommittedHold(token, payload) {
+  const user = requireRole_(token, ['ADMIN', 'ORDER']);
+  const safe = payload || {};
+  const businessDate = normalizeBusinessDate_(safe.businessDate);
+  const site = String(safe.site || '').trim();
+  if (!site) throw new Error('객실업로드 DB 확정 보호에 사업장이 필요합니다.');
+  const until = setRoomUploadRealtimeForwardHold_(businessDate, site, 24 * 60 * 60 * 1000);
+  return { ok: true, businessDate, site, until, requestedBy: user.employeeNo };
+}
 
 // ROOM_UPLOAD_DB_FIRST_APP_V4
 // 업로드 계산은 기존 상태결정 helper를 그대로 재사용하고 DB commit 전에는 Sheet를 쓰지 않습니다.
@@ -234,6 +275,7 @@ function prepareRoomStatusUploadDbFirst(token, previewId, options) {
       createdAt: Date.now()
     };
     saveRoomUploadPreview_(planId, plan);
+    setRoomUploadRealtimeForwardHold_(plan.businessDate, plan.site, 15 * 60 * 1000); // ROOM_UPLOAD_FORWARD_SYNC_HOLD_V1
 
     return {
       ok: true,
@@ -378,23 +420,24 @@ function mirrorRoomStatusUploadDbFirst(token, previewId, planId, payload) {
       const targetRowsContiguous = targetRowNumbers.length === newRows.length
         && targetRowNumbers.length > 0
         && targetRowNumbers.every((rowNumber, index) => rowNumber === targetRowNumbers[0] + index);
-      let roomWriteMode = 'FULL_REWRITE';
-      let firstWrittenRow = keptRows.length + 2;
-      if (targetRowsContiguous) {
+      let roomWriteMode = '';
+      let firstWrittenRow = 0;
+      if (targetRowNumbers.length === 0) {
+        firstWrittenRow = Math.max(2, sheet.getLastRow() + 1);
+        ensureSheetRowCapacity_(sheet, firstWrittenRow + newRows.length - 1);
+        sheet.getRange(firstWrittenRow, 1, newRows.length, lastColumn).setValues(newRows);
+        roomWriteMode = 'APPEND_NEW_BLOCK'; // ROOM_UPLOAD_APPEND_NEW_BLOCK_V1
+      } else if (targetRowsContiguous) {
         firstWrittenRow = targetRowNumbers[0];
         ensureSheetRowCapacity_(sheet, firstWrittenRow + newRows.length - 1);
         sheet.getRange(firstWrittenRow, 1, newRows.length, lastColumn).setValues(newRows);
         roomWriteMode = 'IN_PLACE_BLOCK';
       } else {
-        const allRows = keptRows.concat(newRows);
-        if (sheet.getLastRow() > 1) {
-          sheet.getRange(2, 1, sheet.getLastRow() - 1, lastColumn).clearContent();
-        }
-        if (allRows.length) {
-          ensureSheetRowCapacity_(sheet, allRows.length + 1);
-          sheet.getRange(2, 1, allRows.length, lastColumn).setValues(allRows);
-        }
+        throw new Error(`현재객실현황 ${plan.businessDate} · ${plan.site} 블록 구조가 비정상입니다. 누적 시트 전체 재작성은 안전상 중단했습니다. (기존 ${targetRowNumbers.length}행 / 예정 ${newRows.length}행)`); // ROOM_UPLOAD_MIRROR_FAIL_CLOSED_V1
       }
+
+      SpreadsheetApp.flush();
+      verifyRoomStatusUploadMirrorBlock_(sheet, firstWrittenRow, newRows, headerMap, lastColumn, plan.businessDate, plan.site); // ROOM_UPLOAD_MIRROR_READBACK_V1
 
       const updatedAt = nowText_();
       const maintenanceReset = plan.resetExisting
@@ -487,7 +530,7 @@ function mirrorRoomStatusUploadDbFirst(token, previewId, planId, payload) {
       const result = {
         ok: true,
         dbFirst: true,
-        uploadRpcVersion: 'V4',
+        uploadRpcVersion: 'V5',
         version: dbVersion,
         businessDate: plan.businessDate,
         site: plan.site,
@@ -523,7 +566,7 @@ function mirrorRoomStatusUploadDbFirst(token, previewId, planId, payload) {
       cache.put(completionKey, JSON.stringify({
         ok: true,
         dbFirst: true,
-        uploadRpcVersion: 'V4',
+        uploadRpcVersion: 'V5',
         version: dbVersion,
         businessDate: plan.businessDate,
         site: plan.site,
@@ -532,6 +575,7 @@ function mirrorRoomStatusUploadDbFirst(token, previewId, planId, payload) {
         resetExisting: plan.resetExisting,
         message: result.message
       }), 3600);
+      clearRoomUploadRealtimeForwardHold_(plan.businessDate, plan.site); // ROOM_UPLOAD_FORWARD_SYNC_HOLD_V1
       removeRoomUploadPreview_(planId, true);
       removeRoomUploadPreview_(previewId, true);
       return result;
@@ -539,6 +583,42 @@ function mirrorRoomStatusUploadDbFirst(token, previewId, planId, payload) {
       lock.releaseLock();
     }
   });
+}
+
+
+// ROOM_UPLOAD_MIRROR_READBACK_V1
+function verifyRoomStatusUploadMirrorBlock_(sheet, firstWrittenRow, expectedRows, headerMap, lastColumn, businessDate, site) {
+  const rows = Array.isArray(expectedRows) ? expectedRows : [];
+  if (!rows.length || !Number(firstWrittenRow)) throw new Error('객실업로드 Sheet 검증 대상이 없습니다.');
+  const actualRows = sheet.getRange(Number(firstWrittenRow), 1, rows.length, Number(lastColumn)).getDisplayValues();
+  if (actualRows.length !== rows.length) throw new Error('객실업로드 Sheet 반영 행수 검증에 실패했습니다.');
+  const fields = [
+    '업무일자','사업장','객실번호','객실상태','마지막객실상태','이전객실상태','이전청소상태',
+    '이전룸메이드사번','이전보조룸메이드사번','청소상태','정비유형','배정유형','룸메이드사번',
+    '보조룸메이드사번','QM사번','마지막변경버전','동','객실운영상태','선배정여부','VIP여부','중요객실여부'
+  ];
+  const seen = new Set();
+  rows.forEach((expectedRow, index) => {
+    const expected = rowObjectFromValues_(expectedRow, headerMap);
+    const actual = rowObjectFromValues_(actualRows[index], headerMap);
+    const roomNo = normalizeRoomNo_(actual['객실번호']);
+    if (!roomNo || seen.has(roomNo)) throw new Error(`객실업로드 Sheet 검증 실패: ${index + 1}번째 행 객실번호가 누락 또는 중복입니다.`);
+    seen.add(roomNo);
+    fields.forEach(field => {
+      const expectedText = String(expected[field] ?? '').trim();
+      const actualText = String(actual[field] ?? '').trim();
+      if (expectedText !== actualText) {
+        throw new Error(`객실업로드 Sheet 검증 실패: ${roomNo}호 ${field} 값이 DB 확정값과 다릅니다.`);
+      }
+    });
+  });
+  if (seen.size !== rows.length) throw new Error('객실업로드 Sheet 검증 실패: 객실 수가 일치하지 않습니다.');
+  if ([...seen].some(roomNo => !/^\d{4}$/.test(roomNo))) throw new Error('객실업로드 Sheet 검증 실패: 객실번호 형식이 올바르지 않습니다.');
+  const first = rowObjectFromValues_(actualRows[0], headerMap);
+  if (String(first['업무일자'] || '').trim() !== String(businessDate || '').trim() || String(first['사업장'] || '').trim() !== String(site || '').trim()) {
+    throw new Error('객실업로드 Sheet 검증 실패: 업무일자 또는 사업장이 일치하지 않습니다.');
+  }
+  return { ok: true, rows: seen.size };
 }
 
 function applyRoomStatusUpload(token, previewId, options) { // (검증된 객실현황 최종 반영·초기화 후 교체)
