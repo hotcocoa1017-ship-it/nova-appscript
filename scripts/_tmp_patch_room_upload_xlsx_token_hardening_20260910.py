@@ -1,7 +1,6 @@
 from pathlib import Path
 
 ROOM = Path('09_RoomStatusUpload.js')
-WORKFLOW = Path('.github/workflows/deploy-apps-script.yml')
 VALIDATOR = Path('scripts/validate_room_upload_xlsx_token_hardening_20260910.py')
 
 text = ROOM.read_text(encoding='utf-8')
@@ -127,7 +126,6 @@ require('parserWarnings.push(', 'preview warning for recovered cells')
 require('buildParsedUpload_(occurrences, Array.from(unknownRooms), headings, [], parserWarnings)', 'warnings preserved into upload validation')
 require('const canApply = !missingSheets.length && !duplicateRooms.length && !unknownRooms.length', 'unknown room still blocks apply')
 
-# Regression fixtures document the previously missed shapes the source must now parse through extractRoomTokens_.
 fixtures = {
     '6111호': ['6111'],
     '6111 / 6109': ['6111', '6109'],
@@ -142,14 +140,5 @@ for raw, expected in fixtures.items():
 print('PASS: XLSX status-sheet room tokens are recovered from decorated/multi-value cells, master-like unknown rooms still block apply, and recovery is surfaced in preview warnings.')
 '''
 VALIDATOR.write_text(validator, encoding='utf-8')
-
-workflow = WORKFLOW.read_text(encoding='utf-8')
-validator_line = '            scripts/validate_room_upload_xlsx_token_hardening_20260910.py\n'
-anchor = '            scripts/validate_room_upload_db_first_v4_20260907.py\n'
-if validator_line not in workflow:
-    if anchor not in workflow:
-        raise SystemExit('canonical workflow validator anchor not found')
-    workflow = workflow.replace(anchor, anchor + validator_line, 1)
-WORKFLOW.write_text(workflow, encoding='utf-8')
 
 print('PATCHED: ROOM_UPLOAD_XLSX_TOKEN_HARDENING_V1')
