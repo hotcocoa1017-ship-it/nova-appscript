@@ -1,0 +1,27 @@
+name: Validate Monthly QM Quality Status V1
+
+on:
+  pull_request:
+    paths:
+      - 'MonthlyDbFirstBridge.js'
+      - 'scripts/validate_monthly_qm_quality_status_v1_20260911.py'
+      - '.github/workflows/validate-monthly-qm-quality-status-v1.yml'
+  push:
+    branches: [main, 'feat/monthly-qm-quality-status-v1']
+    paths:
+      - 'MonthlyDbFirstBridge.js'
+      - 'scripts/validate_monthly_qm_quality_status_v1_20260911.py'
+      - '.github/workflows/validate-monthly-qm-quality-status-v1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate monthly QM quality status invariants
+        run: python3 scripts/validate_monthly_qm_quality_status_v1_20260911.py
+      - name: Validate JavaScript syntax
+        run: node --check MonthlyDbFirstBridge.js
