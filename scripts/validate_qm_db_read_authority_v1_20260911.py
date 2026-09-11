@@ -1,5 +1,4 @@
 from pathlib import Path
-import re
 
 root = Path(__file__).resolve().parents[1]
 server = (root / 'QmDbReadAuthority.js').read_text(encoding='utf-8')
@@ -10,10 +9,11 @@ for marker in [
     'QM_DB_READ_AUTHORITY_V1',
     'function getQmDbReadAuthoritySnapshot',
     "requireRole_(token, ['QM'])",
-    "novaQmDbReadAuthorityFetchRooms_",
-    "novaQmDbReadAuthorityMergeRooms_",
-    "buildQmSummary_(rooms)",
-    "rooms.map(qmMobileBrowseRoomDto_)"
+    'novaQmDbReadAuthorityFetchRooms_',
+    'novaQmDbReadAuthorityMergeRooms_',
+    'buildQmSummary_(rooms)',
+    'rooms.map(qmMobileBrowseRoomDto_)',
+    'employeeNo,'
 ]:
     if marker not in server:
         raise SystemExit(f'missing server marker: {marker}')
@@ -28,18 +28,27 @@ for forbidden in [
 
 for marker in [
     'QM_DB_READ_AUTHORITY_V1',
-    'const previousCallServer = window.callServer',
-    "method === 'getQmMobileBrowseRooms'",
-    "method !== 'getMobileSnapshot'",
-    "getQmDbReadAuthoritySnapshot",
-    'window.callServer = wrappedCallServer'
+    "localStorage.getItem('novaToken')",
+    '.getQmDbReadAuthoritySnapshot(token, options)',
+    "'[data-qm-browse-view].active'",
+    "'data-qm-browse-inspect'",
+    "'data-room-action': 'CONTINUE'",
+    "'data-room-action': 'START'",
+    "'data-room-action': 'REWORK'",
+    'new MutationObserver',
+    "document.getElementById('mobileDate')",
+    "document.getElementById('mobileSite')",
 ]:
     if marker not in client:
         raise SystemExit(f'missing client marker: {marker}')
 
-for forbidden in ['preventDefault(', 'stopPropagation(', 'stopImmediatePropagation(']:
+# Passive reconciliation only: existing delegated Client.html click handlers must remain authoritative.
+for forbidden in [
+    'preventDefault(', 'stopPropagation(', 'stopImmediatePropagation(',
+    'window.callServer =', 'const previousCallServer = window.callServer'
+]:
     if forbidden in client:
-        raise SystemExit(f'QM read overlay intercepts UI events: {forbidden}')
+        raise SystemExit(f'QM read overlay intercepts existing client path: {forbidden}')
 
 include = "<?!= include_('QmDbReadAuthorityClient'); ?>"
 if include not in index:
