@@ -1,0 +1,126 @@
+<script>
+(() => {
+  'use strict';
+
+  // ROOMMAID_CLEANING_CARD_RETENTION_V1
+  // 청소시작 직후 DB에는 CLEANING이 확정됐지만 후속 목록 재조회가 일시적으로
+  // 해당 객실을 누락하는 경우, 청소중 카드를 짧게 유지해 사용자가 청소완료를 계속할 수 있게 한다.
+  // 실제 완료 클릭, 안정된 재등장, 만료 시 즉시 해제한다.
+  const RETAIN_MIN_MS = 10000;
+  const RETAIN_MAX_MS = 90000;
+  const retained = new Map();
+  let observer = null;
+  let observedList = null;
+  let repairScheduled = false;
+
+  const mobileList = () => document.getElementById('mobileList');
+
+  function roomNoFromCard_(card) {
+    if (!card) return '';
+    const action = card.querySelector('[data-room-action][data-room-no]');
+    if (action?.dataset?.roomNo) return String(action.dataset.roomNo).trim();
+    const strong = card.querySelector('.mobile-card-top strong');
+    const text = String(strong?.childNodes?.[0]?.textContent || strong?.textContent || '').trim();
+    const match = text.match(/^([A-Za-z0-9-]+)/);
+    return match ? match[1] : '';
+  }
+
+  function findRoomCard_(roomNo) {
+    const list = mobileList();
+    if (!list || !roomNo) return null;
+    return Array.from(list.querySelectorAll('.mobile-room-card')).find(card => roomNoFromCard_(card) === roomNo) || null;
+  }
+
+  function isCleaningCard_(card, roomNo) {
+    if (!card) return false;
+    if (card.classList.contains('mobile-card-cleaning')) return true;
+    return Array.from(card.querySelectorAll('[data-room-action="COMPLETE"][data-room-no]'))
+      .some(button => String(button.dataset.roomNo || '').trim() === roomNo);
+  }
+
+  function scheduleRepair_() {
+    if (repairScheduled) return;
+    repairScheduled = true;
+    requestAnimationFrame(() => {
+      repairScheduled = false;
+      repair_();
+    });
+  }
+
+  function repair_() {
+    const list = mobileList();
+    if (!list || !retained.size) return;
+    const now = Date.now();
+
+    for (const [roomNo, entry] of retained) {
+      if (now - entry.startedAt > RETAIN_MAX_MS) {
+        retained.delete(roomNo);
+        continue;
+      }
+
+      const current = findRoomCard_(roomNo);
+      if (current) {
+        if (now - entry.startedAt >= RETAIN_MIN_MS && isCleaningCard_(current, roomNo) && !current.dataset.roommaidRetentionRestored) {
+          // 원본 목록이 다시 CLEANING 객실을 안정적으로 제공하기 시작하면 임시 보호 해제.
+          retained.delete(roomNo);
+        }
+        continue;
+      }
+
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = entry.html;
+      const restored = wrapper.firstElementChild;
+      if (!restored) continue;
+      restored.dataset.roommaidRetentionRestored = 'Y';
+      restored.dataset.roommaidRetentionRoom = roomNo;
+      list.prepend(restored);
+    }
+  }
+
+  function captureAfterStart_(roomNo) {
+    const startedAt = Date.now();
+    const poll = () => {
+      const card = findRoomCard_(roomNo);
+      if (card && isCleaningCard_(card, roomNo)) {
+        retained.set(roomNo, { html: card.outerHTML, startedAt });
+        scheduleRepair_();
+        return;
+      }
+      if (Date.now() - startedAt < 1500) window.setTimeout(poll, 60);
+    };
+    window.setTimeout(poll, 0);
+  }
+
+  document.addEventListener('click', event => {
+    const button = event.target.closest('[data-room-action][data-room-no]');
+    if (!button) return;
+    const action = String(button.dataset.roomAction || '').trim().toUpperCase();
+    const roomNo = String(button.dataset.roomNo || '').trim();
+    if (!roomNo) return;
+
+    if (action === 'START') {
+      captureAfterStart_(roomNo);
+    } else if (action === 'COMPLETE') {
+      retained.delete(roomNo);
+    }
+  }, true);
+
+  function ensureObserver_() {
+    const list = mobileList();
+    if (!list) return false;
+    if (observedList === list && observer) return true;
+    if (observer) observer.disconnect();
+    observer = new MutationObserver(() => scheduleRepair_());
+    observer.observe(list, { childList: true, subtree: false });
+    observedList = list;
+    return true;
+  }
+
+  const rootObserver = new MutationObserver(() => {
+    ensureObserver_();
+    if (retained.size) scheduleRepair_();
+  });
+  rootObserver.observe(document.body, { childList: true, subtree: true });
+  ensureObserver_();
+})();
+</script>
