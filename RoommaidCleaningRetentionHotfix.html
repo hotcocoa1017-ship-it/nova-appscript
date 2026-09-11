@@ -10,6 +10,7 @@
   const RETAIN_MAX_MS = 90000;
   const retained = new Map();
   let observer = null;
+  let observedList = null;
   let repairScheduled = false;
 
   const mobileList = () => document.getElementById('mobileList');
@@ -33,7 +34,8 @@
   function isCleaningCard_(card, roomNo) {
     if (!card) return false;
     if (card.classList.contains('mobile-card-cleaning')) return true;
-    return Boolean(card.querySelector(`[data-room-action="COMPLETE"][data-room-no="${CSS.escape(roomNo)}"]`));
+    return Array.from(card.querySelectorAll('[data-room-action="COMPLETE"][data-room-no]'))
+      .some(button => String(button.dataset.roomNo || '').trim() === roomNo);
   }
 
   function scheduleRepair_() {
@@ -106,14 +108,16 @@
   function ensureObserver_() {
     const list = mobileList();
     if (!list) return false;
+    if (observedList === list && observer) return true;
     if (observer) observer.disconnect();
     observer = new MutationObserver(() => scheduleRepair_());
     observer.observe(list, { childList: true, subtree: false });
+    observedList = list;
     return true;
   }
 
   const rootObserver = new MutationObserver(() => {
-    if (!observer || !document.body.contains(mobileList())) ensureObserver_();
+    ensureObserver_();
     if (retained.size) scheduleRepair_();
   });
   rootObserver.observe(document.body, { childList: true, subtree: true });
