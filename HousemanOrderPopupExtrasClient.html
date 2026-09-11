@@ -115,11 +115,11 @@
     if (!grid) return;
     host.hidden = false;
 
-    // 첫 사진을 최우선 자동표시하고, 나머지는 순차 후행하여 UI 스레드와 서버를 몰아치지 않습니다.
+    // 첫 썸네일을 최우선 자동표시하고, 나머지는 순차 후행하여 UI 스레드와 서버를 몰아치지 않습니다.
     for (let index = 0; index < photos.length; index += 1) {
       if (!host.isConnected || sequence !== state.sequence) return;
       await loadInlinePhoto_(grid, orderId, photos[index], index, token, sequence).catch(error => {
-        console.warn('[NOVA Houseman Popup] 사진 자동표시 실패:', error?.message || error);
+        console.warn('[NOVA Houseman Popup] 썸네일 자동표시 실패:', error?.message || error);
       });
       if (index === 0 && photos.length > 1) await delay_(30);
     }
@@ -166,11 +166,11 @@
     section = document.createElement('section');
     section.className = 'nova-hm-popup-photo-section';
     section.innerHTML = `
-      <div class="nova-hm-popup-photo-head"><strong>요청 사진</strong><small>${photos.length}장 · 자동 표시</small></div>
+      <div class="nova-hm-popup-photo-head"><strong>요청 사진</strong><small>${photos.length}장 · 썸네일 자동 표시</small></div>
       <div class="nova-hm-popup-photo-grid">
         ${photos.map((photo, index) => `
           <div class="nova-hm-popup-photo-item" data-nova-hm-photo-index="${index}">
-            <div class="nova-hm-popup-photo-frame">사진 불러오는 중…</div>
+            <div class="nova-hm-popup-photo-frame">썸네일 불러오는 중…</div>
             <div class="nova-hm-popup-photo-meta">${escapeHtml_(photo.name || `요청사진 ${index + 1}`)}</div>
           </div>`).join('')}
       </div>`;
@@ -184,20 +184,24 @@
     if (!item || !frame || sequence !== state.sequence) return;
 
     try {
-      const result = await callAppsScript_('getHousemanRequestPhoto', token, {
+      // HOUSEMAN_POPUP_SERVER_THUMBNAIL_V3: 팝업에서는 원본 조회 API를 호출하지 않습니다.
+      const result = await callAppsScript_('getHousemanOrderPopupThumbnail', token, {
         orderId,
         fileId: String(photo.fileId || '')
       });
-      if (!result?.ok || !result.base64 || !item.isConnected || sequence !== state.sequence) return;
+      if (!result?.ok || (!result.signedUrl && !result.base64) || !item.isConnected || sequence !== state.sequence) return;
       const mimeType = String(result.photo?.mimeType || photo.mimeType || 'image/jpeg').trim() || 'image/jpeg';
       const img = document.createElement('img');
-      img.alt = `하우스맨 요청사진 ${index + 1}`;
+      img.alt = `하우스맨 요청사진 썸네일 ${index + 1}`;
       img.decoding = 'async';
       img.loading = index === 0 ? 'eager' : 'lazy';
-      img.src = `data:${mimeType};base64,${String(result.base64)}`;
+      img.dataset.thumbnailSource = String(result.source || 'THUMBNAIL');
+      img.src = result.signedUrl
+        ? String(result.signedUrl)
+        : `data:${mimeType};base64,${String(result.base64)}`;
       frame.replaceChildren(img);
     } catch (error) {
-      if (frame.isConnected) frame.textContent = '사진을 불러오지 못했습니다.';
+      if (frame.isConnected) frame.textContent = '썸네일을 불러오지 못했습니다.';
       throw error;
     }
   }
