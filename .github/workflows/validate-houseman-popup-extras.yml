@@ -6,6 +6,7 @@ on:
     paths:
       - 'HousemanOrderPopupExtras.js'
       - 'HousemanOrderPopupExtrasClient.html'
+      - 'HousemanPopupThumbQuarter.html'
       - 'Index.html'
       - 'scripts/validate_houseman_popup_creator_photo_v1_20260911.py'
       - '.github/workflows/validate-houseman-popup-extras.yml'
@@ -55,13 +56,19 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-          text = Path('HousemanOrderPopupExtrasClient.html').read_text(encoding='utf-8')
-          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
-          if len(scripts) != 1:
-              raise SystemExit(f'Expected one script block, found {len(scripts)}')
-          Path('/tmp/HousemanOrderPopupExtrasClient.js').write_text(scripts[0], encoding='utf-8')
+          pairs = [
+              ('HousemanOrderPopupExtrasClient.html', '/tmp/HousemanOrderPopupExtrasClient.js'),
+              ('HousemanPopupThumbQuarter.html', '/tmp/HousemanPopupThumbQuarter.js'),
+          ]
+          for source, target in pairs:
+              text = Path(source).read_text(encoding='utf-8')
+              scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+              if len(scripts) != 1:
+                  raise SystemExit(f'Expected one script block in {source}, found {len(scripts)}')
+              Path(target).write_text(scripts[0], encoding='utf-8')
           PY
           node --check /tmp/HousemanOrderPopupExtrasClient.js
+          node --check /tmp/HousemanPopupThumbQuarter.js
 
       - name: Verify validation is read-only
         shell: bash
