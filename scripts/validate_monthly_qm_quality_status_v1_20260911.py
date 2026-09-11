@@ -4,11 +4,10 @@ src = Path('MonthlyDbFirstBridge.js').read_text(encoding='utf-8')
 
 required = [
     'MONTHLY_QM_QUALITY_STATUS_V1',
-    "nova_monthly_qm_quality_v1",
-    "QM_QUALITY_PASS",
-    "QM_QUALITY_FAIL",
-    "statusLabel: '불량'",
-    "statusLabel: '양호'",
+    'nova_monthly_qm_quality_v1',
+    'QM_QUALITY_PASS',
+    'QM_QUALITY_FAIL',
+    "const statusLabel = result === 'FAIL' ? '불량' : '양호';",
     "statusLabel: '점검중'",
     "['QM_START', 'QM_COMPLETE']",
     'monthlyQmQualityFailureText_',
