@@ -28,12 +28,248 @@ function readMonthlyHistoryRowsDbFirst_(token, request, allowedRecordTypesOverri
   return legacyRows.concat(dbRows);
 }
 
+// MONTHLY_QM_QUALITY_STATUS_V1
+// 월별조회 > QM은 점검 시작/완료 타임라인보다 최종 체크리스트 판정(양호/불량)을 우선 표시합니다.
+// 객실상태·QM 최종제출·재정비 로직은 변경하지 않는 읽기 전용 표시 보강입니다.
+function monthlyQmQualityPeriod_(request) {
+  const startDate = request.period === 'DAILY'
+    ? request.date
+    : `${request.year}-${String(request.month).padStart(2, '0')}-01`;
+  const endDate = request.period === 'DAILY'
+    ? request.date
+    : Utilities.formatDate(new Date(request.year, request.month, 0), NOVA.TIMEZONE, NOVA.DATE_FORMAT);
+  return { startDate, endDate };
+}
+
+function monthlyQmQualityFailureText_(inspection) {
+  const direct = String(inspection && inspection.failSummary || '').trim();
+  if (direct) return direct;
+  const parts = [];
+  const answers = Array.isArray(inspection && inspection.answers) ? inspection.answers : [];
+  answers.forEach(answer => {
+    if (String(answer && answer.result || '').trim().toUpperCase() !== 'FAIL') return;
+    const label = String(answer && (answer.itemLabel || answer.label || answer.code) || '체크리스트 불량').trim();
+    const note = String(answer && answer.note || '').trim();
+    parts.push(note ? `${label}: ${note}` : label);
+  });
+  const defects = Array.isArray(inspection && inspection.defects) ? inspection.defects : [];
+  defects.forEach(defect => {
+    const label = String(defect && (defect.itemLabel || defect.placeLabel) || '추가 하자').trim();
+    const note = String(defect && defect.note || '').trim();
+    parts.push(note ? `${label}: ${note}` : label);
+  });
+  return Array.from(new Set(parts.filter(Boolean))).join(' / ');
+}
+
+function monthlyQmQualityRoomKey_(item) {
+  return [
+    String(item && item.businessDate || '').trim(),
+    String(item && item.site || '').trim(),
+    String(item && item.roomNo || '').trim()
+  ].join('|');
+}
+
+function monthlyQmQualityItem_(inspection, users) {
+  const qmEmployeeNo = String(inspection && inspection.qmEmployeeNo || '').trim();
+  const user = users[qmEmployeeNo];
+  const result = String(inspection && inspection.resultStatus || '').trim().toUpperCase() === 'FAIL' ? 'FAIL' : 'PASS';
+  const failureText = result === 'FAIL' ? monthlyQmQualityFailureText_(inspection) : '';
+  const statusCode = result === 'FAIL' ? 'QM_QUALITY_FAIL' : 'QM_QUALITY_PASS';
+  const statusLabel = result === 'FAIL' ? '불량' : '양호';
+  const completedAt = String(inspection && inspection.completedAt || '').trim();
+  const startedAt = String(inspection && inspection.startedAt || '').trim();
+  return {
+    rowNumber: 0,
+    recordId: String(inspection && inspection.inspectionId || '').trim(),
+    typeCode: 'QM',
+    typeLabel: 'QM',
+    businessDate: String(inspection && inspection.businessDate || '').trim(),
+    site: String(inspection && inspection.site || '').trim(),
+    roomNo: String(inspection && inspection.roomNo || '').trim(),
+    employeeNos: qmEmployeeNo ? [qmEmployeeNo] : [],
+    employeeNo: qmEmployeeNo,
+    employeeName: user ? user.name : (qmEmployeeNo || '-'),
+    employeeDisplay: user ? `${user.name} (${qmEmployeeNo})` : (qmEmployeeNo || '-'),
+    registeredByEmployeeNo: qmEmployeeNo,
+    registeredByName: user ? user.name : (qmEmployeeNo || '-'),
+    acceptedByEmployeeNo: '',
+    handlerEmployeeNo: qmEmployeeNo,
+    handlerName: user ? user.name : (qmEmployeeNo || '-'),
+    statusCode,
+    statusLabel,
+    qualityResult: result,
+    requestSource: '',
+    version: Number(inspection && inspection.sourceVersion || 0),
+    assignedEmployeeNo: '',
+    assignedName: '',
+    items: [],
+    note: '',
+    canManage: false,
+    canEdit: false,
+    canAssign: false,
+    canCancel: false,
+    canDelete: false,
+    detailText: result === 'FAIL' ? (failureText ? `불량 : ${failureText}` : '불량') : '양호',
+    registeredAt: completedAt,
+    acceptedAt: '',
+    startedAt,
+    completedAt,
+    eventAt: completedAt || startedAt,
+    durationMinutes: Number.isFinite(Number(inspection && inspection.durationMinutes))
+      ? Number(inspection.durationMinutes)
+      : minutesBetween_(startedAt, completedAt),
+    cleaningType: '',
+    cleaningTypeLabel: '',
+    creditUnit: 0,
+    part: '',
+    itemSummary: '',
+    requester: '',
+    photos: [],
+    photoCount: 0,
+    important: false,
+    handover: false
+  };
+}
+
+function monthlyQmQualityCompleted_(item) {
+  return ['QM_QUALITY_PASS', 'QM_QUALITY_FAIL'].includes(String(item && item.statusCode || '').trim().toUpperCase())
+    || monthlyItemCompleted_(item);
+}
+
+function monthlyQmQualityStatusMatches_(item, status) {
+  const value = String(status || '').trim();
+  if (!value || value === '전체') return true;
+  if (value === '완료') return monthlyQmQualityCompleted_(item);
+  if (value === '진행중') return !monthlyQmQualityCompleted_(item);
+  if (value === '양호') return item.statusCode === 'QM_QUALITY_PASS';
+  if (value === '불량') return item.statusCode === 'QM_QUALITY_FAIL';
+  return item.statusCode === value || item.statusLabel === value;
+}
+
+function monthlyQmQualitySummary_(items) {
+  const completed = items.filter(monthlyQmQualityCompleted_).length;
+  const durations = items.map(item => item.durationMinutes).filter(value => Number.isFinite(value) && value >= 0);
+  return {
+    total: items.length,
+    completed,
+    active: Math.max(0, items.length - completed),
+    unable: 0,
+    uniqueRooms: new Set(items.map(item => `${item.site}|${item.roomNo}`).filter(value => !value.endsWith('|'))).size,
+    uniqueStaff: new Set(items.flatMap(item => item.employeeNos || [])).size,
+    recognizedUnits: 0,
+    averageMinutes: durations.length
+      ? Math.round((durations.reduce((sum, value) => sum + value, 0) / durations.length) * 10) / 10
+      : null
+  };
+}
+
+function monthlyQmQualityStaffSummary_(items, users) {
+  const groups = {};
+  items.forEach(item => {
+    const employeeNo = String(item.employeeNo || '').trim();
+    if (!employeeNo) return;
+    if (!groups[employeeNo]) {
+      const user = users[employeeNo];
+      groups[employeeNo] = {
+        employeeNo,
+        name: user ? user.name : employeeNo,
+        job: user ? user.job : '',
+        total: 0,
+        completed: 0,
+        durations: []
+      };
+    }
+    const group = groups[employeeNo];
+    group.total += 1;
+    if (monthlyQmQualityCompleted_(item)) group.completed += 1;
+    if (Number.isFinite(item.durationMinutes) && item.durationMinutes >= 0) group.durations.push(item.durationMinutes);
+  });
+  return Object.values(groups).map(group => ({
+    employeeNo: group.employeeNo,
+    name: group.name,
+    job: group.job,
+    total: group.total,
+    completed: group.completed,
+    unable: 0,
+    recognizedUnits: 0,
+    averageMinutes: group.durations.length
+      ? Math.round((group.durations.reduce((sum, value) => sum + value, 0) / group.durations.length) * 10) / 10
+      : null
+  })).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, 'ko'));
+}
+
+function applyMonthlyQmQualityStatus_(token, request, bundle) {
+  if (String(request && request.type || '').trim().toUpperCase() !== 'QM') return bundle;
+  const period = monthlyQmQualityPeriod_(request);
+  let result;
+  try {
+    result = novaDbFirstRpc_(token, 'nova_monthly_qm_quality_v1', {
+      p_start_date: period.startDate,
+      p_end_date: period.endDate,
+      p_site: request.site
+    }, { readOnly: true, allowLegacyFallback: false });
+  } catch (error) {
+    console.warn('[NOVA MONTHLY QM] 품질상태 조회 실패 · 기존 이력 표시 유지:', error && error.message ? error.message : error);
+    return bundle;
+  }
+  if (!result || result.ok === false || !Array.isArray(result.items)) return bundle;
+
+  const users = getUserIndex_().byEmployeeNo;
+  const inspections = result.items;
+  const finalRoomKeys = new Set(inspections.map(monthlyQmQualityRoomKey_));
+  const baseItems = (bundle.items || []).map(item => {
+    if (item.typeCode !== 'QM') return item;
+    const statusCode = String(item.statusCode || '').trim().toUpperCase();
+    if (statusCode === 'QM_START' && !finalRoomKeys.has(monthlyQmQualityRoomKey_(item))) {
+      return Object.assign({}, item, { statusCode: 'QM_CHECKING', statusLabel: '점검중', detailText: '점검중' });
+    }
+    if (statusCode === 'QM_COMPLETE' && !finalRoomKeys.has(monthlyQmQualityRoomKey_(item))) {
+      return Object.assign({}, item, { statusLabel: '점검완료', detailText: '점검완료' });
+    }
+    return item;
+  }).filter(item => {
+    if (item.typeCode !== 'QM') return true;
+    const statusCode = String(item.statusCode || '').trim().toUpperCase();
+    return !(finalRoomKeys.has(monthlyQmQualityRoomKey_(item)) && ['QM_START', 'QM_COMPLETE'].includes(statusCode));
+  });
+
+  const qualityItems = inspections.map(item => monthlyQmQualityItem_(item, users));
+  const candidates = baseItems.concat(qualityItems).sort(compareMonthlyItems_);
+  const options = buildMonthlyOptions_(candidates, users);
+  options.sites = Array.from(new Set([...(options.sites || []), ...getMonthlyConfiguredSites_()]))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'ko'));
+
+  const filtered = candidates
+    .filter(item => !request.site || item.site === request.site)
+    .filter(item => !request.employeeNo || (item.employeeNos || []).includes(request.employeeNo))
+    .filter(item => !request.search || monthlyItemSearchText_(item).includes(request.search))
+    .filter(item => monthlyQmQualityStatusMatches_(item, request.status))
+    .sort(compareMonthlyItems_);
+
+  bundle.items = filtered;
+  bundle.summary = monthlyQmQualitySummary_(filtered);
+  bundle.staffSummary = monthlyQmQualityStaffSummary_(filtered, users);
+  bundle.options = options;
+  return bundle;
+}
+
+function buildMonthlyHistoryBundleDbFirst_(token, request) {
+  if (String(request && request.type || '').trim().toUpperCase() !== 'QM') {
+    return buildMonthlyHistoryBundle_(request);
+  }
+  // 품질상태가 기존 이벤트 필터에서 먼저 제거되지 않도록 QM은 원본 이력을 넓게 읽은 뒤 마지막에 필터합니다.
+  const baseRequest = Object.assign({}, request, { employeeNo: '', status: '', search: '' });
+  const bundle = buildMonthlyHistoryBundle_(baseRequest);
+  return applyMonthlyQmQualityStatus_(token, request, bundle);
+}
+
 function getMonthlyHistoryDbFirst(token, filters) {
   return measureResponse_('getMonthlyHistoryDbFirst', () => {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const request = normalizeMonthlyFilters_(filters, user);
     request.__dbFirstToken = token;
-    const bundle = buildMonthlyHistoryBundle_(request);
+    const bundle = buildMonthlyHistoryBundleDbFirst_(token, request);
     const pageCount = Math.max(1, Math.ceil(bundle.items.length / request.pageSize));
     const page = Math.min(request.page, pageCount);
     const start = (page - 1) * request.pageSize;
@@ -58,7 +294,7 @@ function getMonthlyHistoryExportDbFirst(token, filters) {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const request = normalizeMonthlyFilters_(Object.assign({}, filters, { page: 1, pageSize: 500 }), user);
     request.__dbFirstToken = token;
-    const bundle = buildMonthlyHistoryBundle_(request);
+    const bundle = buildMonthlyHistoryBundleDbFirst_(token, request);
     if (bundle.items.length > 20000) throw new Error('조회 결과가 20,000건을 초과합니다. 사업장·직원·상태 조건을 추가해 범위를 줄여주세요.');
     return {
       ok: true, dbFirst: true,
@@ -75,7 +311,7 @@ function writeMonthlyViewSheetDbFirst(token, filters) {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const request = normalizeMonthlyFilters_(Object.assign({}, filters, { page: 1, pageSize: 500 }), user);
     request.__dbFirstToken = token;
-    const bundle = buildMonthlyHistoryBundle_(request);
+    const bundle = buildMonthlyHistoryBundleDbFirst_(token, request);
     if (bundle.items.length > 20000) throw new Error('월별조회 시트에 표시할 데이터가 20,000건을 초과합니다. 조회조건을 좁혀주세요.');
     writeMonthlyViewSheetData_(request, bundle);
     return { ok: true, dbFirst: true, message: `월별조회 시트에 ${bundle.items.length.toLocaleString('ko-KR')}건을 반영했습니다.`, count: bundle.items.length };
