@@ -3,10 +3,9 @@
   'use strict';
 
   // QM_DB_READ_AUTHORITY_V1
-  // Client.html 내부 callServer는 로컬 스코프이므로 가로채지 않습니다.
-  // 기존 화면/이벤트가 먼저 렌더된 뒤, 읽기 전용 DB 현재상태로 QM 작업 버튼만 후행 보정합니다.
+  // QM_DB_BUTTON_STABILITY_V1 · 기존 렌더가 목록을 다시 그려도 paint 전에 캐시된 DB 상태를 즉시 재적용합니다.
   const ROOT_ID = 'mobileList';
-  const CACHE_MS = 2200;
+  const CACHE_MS = 30000;
   let timer = null;
   let busy = false;
   let cacheKey = '';
@@ -29,6 +28,11 @@
     return String(localStorage.getItem('novaToken') || '').trim();
   }
 
+  function authorityKey_(scope, view) {
+    const selected = selection_();
+    return [scope, view || '', selected.businessDate, selected.site].join('|');
+  }
+
   function roomNoFromCard_(card) {
     const strong = card?.querySelector('.mobile-card-top strong');
     if (!strong) return '';
@@ -43,13 +47,7 @@
     if (!token || !selected.businessDate || !selected.site || !window.google?.script?.run) {
       return Promise.resolve(null);
     }
-    const options = {
-      scope,
-      view: view || '',
-      businessDate: selected.businessDate,
-      site: selected.site
-    };
-    const key = [scope, view || '', selected.businessDate, selected.site].join('|');
+    const key = authorityKey_(scope, view);
     if (cacheValue && key === cacheKey && Date.now() - cacheAt <= CACHE_MS) {
       return Promise.resolve(cacheValue);
     }
@@ -68,7 +66,12 @@
           console.warn('[NOVA QM] DB 버튼상태 확인 실패 · 기존 화면 유지:', error?.message || error);
           resolve(null);
         })
-        .getQmDbReadAuthoritySnapshot(token, options);
+        .getQmDbReadAuthoritySnapshot(token, {
+          scope,
+          view: view || '',
+          businessDate: selected.businessDate,
+          site: selected.site
+        });
     });
   }
 
@@ -112,8 +115,7 @@
   }
 
   function browseDesiredPresent_(card, desired) {
-    if (desired === 'CONTINUE') return Boolean(card.querySelector('[data-qm-browse-inspect]'));
-    if (desired === 'START') return Boolean(card.querySelector('[data-qm-browse-inspect]'));
+    if (desired === 'CONTINUE' || desired === 'START') return Boolean(card.querySelector('[data-qm-browse-inspect]'));
     if (desired === 'DONE') return Array.from(card.querySelectorAll('.mobile-actions button')).some(button => button.disabled && String(button.textContent || '').trim() === '점검완료');
     if (desired === 'OTHER') return Array.from(card.querySelectorAll('.mobile-actions button')).some(button => button.disabled && String(button.textContent || '').trim() === '다른 QM 배정');
     return !card.querySelector('[data-qm-browse-inspect], [data-nova-qm-db-authority="1"]');
@@ -123,19 +125,13 @@
     const desired = browseDesired_(room, employeeNo);
     const signature = `BROWSE:${String(room.version || 0)}:${desired}:${String(room.qmEmployeeNo || '')}`;
     if (card.dataset.novaQmDbAuthoritySignature === signature && browseDesiredPresent_(card, desired)) return;
-
     const host = actionsHost_(card);
     removeAuthorityActionButtons_(host, 'BROWSE');
     let button = null;
-    if (desired === 'DONE') {
-      button = makeButton_('점검완료', {}, false, true);
-    } else if (desired === 'OTHER') {
-      button = makeButton_('다른 QM 배정', {}, false, true);
-    } else if (desired === 'CONTINUE') {
-      button = makeButton_('점검 계속', { 'data-qm-browse-inspect': room.roomNo }, true);
-    } else if (desired === 'START') {
-      button = makeButton_('점검 시작', { 'data-qm-browse-inspect': room.roomNo }, true);
-    }
+    if (desired === 'DONE') button = makeButton_('점검완료', {}, false, true);
+    else if (desired === 'OTHER') button = makeButton_('다른 QM 배정', {}, false, true);
+    else if (desired === 'CONTINUE') button = makeButton_('점검 계속', { 'data-qm-browse-inspect': room.roomNo }, true);
+    else if (desired === 'START') button = makeButton_('점검 시작', { 'data-qm-browse-inspect': room.roomNo }, true);
     if (button) host.prepend(button);
     if (!host.children.length) host.remove();
     card.dataset.novaQmDbAuthoritySignature = signature;
@@ -158,9 +154,7 @@
       return Boolean(card.querySelector('[data-room-action="CONTINUE"]'))
         && Boolean(card.querySelector('[data-room-action="REWORK"]'));
     }
-    if (desired === 'NONE') {
-      return !card.querySelector('[data-room-action="START"], [data-room-action="CONTINUE"], [data-room-action="REWORK"]');
-    }
+    if (desired === 'NONE') return !card.querySelector('[data-room-action="START"], [data-room-action="CONTINUE"], [data-room-action="REWORK"]');
     return true;
   }
 
@@ -169,28 +163,44 @@
     if (desired === 'IGNORE') return;
     const signature = `TARGET:${String(room.version || 0)}:${desired}:${String(room.operationalStatus || '')}`;
     if (card.dataset.novaQmDbAuthoritySignature === signature && targetDesiredPresent_(card, desired)) return;
-
     const host = actionsHost_(card);
     removeAuthorityActionButtons_(host, 'TARGETS');
     if (desired === 'START') {
-      host.prepend(makeButton_('점검 시작', {
-        'data-room-action': 'START',
-        'data-room-no': room.roomNo
-      }, true));
+      host.prepend(makeButton_('점검 시작', { 'data-room-action': 'START', 'data-room-no': room.roomNo }, true));
     } else if (desired === 'CONTINUE_REWORK') {
-      const rework = makeButton_('즉시 재정비', {
-        'data-room-action': 'REWORK',
-        'data-room-no': room.roomNo
-      });
-      const continuing = makeButton_('점검 계속', {
-        'data-room-action': 'CONTINUE',
-        'data-room-no': room.roomNo
-      }, true);
-      host.prepend(rework);
-      host.prepend(continuing);
+      host.prepend(makeButton_('즉시 재정비', { 'data-room-action': 'REWORK', 'data-room-no': room.roomNo }));
+      host.prepend(makeButton_('점검 계속', { 'data-room-action': 'CONTINUE', 'data-room-no': room.roomNo }, true));
     }
     if (!host.children.length) host.remove();
     card.dataset.novaQmDbAuthoritySignature = signature;
+  }
+
+  function applyAuthority_(authority, root, view) {
+    if (!authority || !root?.isConnected) return;
+    const employeeNo = String(authority.employeeNo || '').trim();
+    const rooms = Array.isArray(authority.rooms) ? authority.rooms : [];
+    const byRoom = new Map(rooms.map(room => [String(room.roomNo || '').trim(), room]));
+    const browse = ['CLEANED', 'VACANT'].includes(view);
+    const cards = browse
+      ? root.querySelectorAll('.mobile-room-card.qm-browse-inspection')
+      : root.querySelectorAll('.mobile-room-card:not(.qm-browse-inspection)');
+    cards.forEach(card => {
+      const room = byRoom.get(roomNoFromCard_(card));
+      if (!room) return;
+      if (browse) patchBrowseCard_(card, room, employeeNo);
+      else patchTargetCard_(card, room, employeeNo);
+    });
+  }
+
+  function applyCachedNow_() {
+    const root = document.getElementById(ROOT_ID);
+    if (!root || !cacheValue) return;
+    const view = activeView_();
+    if (view === 'MY_REQUESTS') return;
+    const browse = ['CLEANED', 'VACANT'].includes(view);
+    const expectedKey = authorityKey_(browse ? 'BROWSE' : 'MOBILE', browse ? view : '');
+    if (expectedKey !== cacheKey) return;
+    applyAuthority_(cacheValue, root, view);
   }
 
   async function reconcile_() {
@@ -199,26 +209,11 @@
     if (!root || !document.querySelector('[data-qm-browse-view]')) return;
     const view = activeView_();
     if (view === 'MY_REQUESTS') return;
-
     busy = true;
     try {
       const browse = ['CLEANED', 'VACANT'].includes(view);
       const authority = await callAuthority_(browse ? 'BROWSE' : 'MOBILE', browse ? view : '');
-      if (!authority || !root.isConnected) return;
-      const employeeNo = String(authority.employeeNo || '').trim();
-      const rooms = Array.isArray(authority.rooms) ? authority.rooms : [];
-      const byRoom = new Map(rooms.map(room => [String(room.roomNo || '').trim(), room]));
-      const cards = browse
-        ? root.querySelectorAll('.mobile-room-card.qm-browse-inspection')
-        : root.querySelectorAll('.mobile-room-card:not(.qm-browse-inspection)');
-
-      cards.forEach(card => {
-        const roomNo = roomNoFromCard_(card);
-        const room = byRoom.get(roomNo);
-        if (!room) return;
-        if (browse) patchBrowseCard_(card, room, employeeNo);
-        else patchTargetCard_(card, room, employeeNo);
-      });
+      applyAuthority_(authority, root, view);
     } finally {
       busy = false;
     }
@@ -244,23 +239,24 @@
       return;
     }
     new MutationObserver(() => {
-      if (!busy) schedule_(90, false);
+      // MutationObserver는 paint 전에 실행되므로 캐시가 있으면 즉시 복원하여 버튼 깜빡임을 제거합니다.
+      applyCachedNow_();
+      if (!busy) schedule_(0, false);
     }).observe(root, { childList: true, subtree: true });
-    schedule_(40, true);
+    schedule_(0, true);
   }
 
   document.addEventListener('click', event => {
     const tab = event.target?.closest?.('[data-qm-browse-view]');
-    if (tab) schedule_(180, true);
+    if (tab) schedule_(0, true);
+    const action = event.target?.closest?.('[data-room-action], [data-qm-browse-inspect]');
+    if (action) cacheAt = 0;
   }, true);
   document.addEventListener('change', event => {
-    if (event.target?.id === 'mobileDate' || event.target?.id === 'mobileSite') schedule_(180, true);
+    if (event.target?.id === 'mobileDate' || event.target?.id === 'mobileSite') schedule_(0, true);
   }, true);
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', observeWhenReady_, { once: true });
-  } else {
-    observeWhenReady_();
-  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', observeWhenReady_, { once: true });
+  else observeWhenReady_();
 })();
 </script>
