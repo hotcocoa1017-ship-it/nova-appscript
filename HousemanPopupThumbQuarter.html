@@ -1,0 +1,67 @@
+<style>
+/* HOUSEMAN_POPUP_THUMB_QUARTER_V2 · 기존 팝업 로직 비침습 표시 최적화 */
+.nova-hm-popup-photo-grid{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important}
+.nova-hm-popup-photo-item{min-width:0!important;max-width:none!important}
+.nova-hm-popup-photo-item:first-child:nth-last-child(1){grid-column:auto!important}
+.nova-hm-popup-photo-frame{min-height:0!important;aspect-ratio:4/3!important}
+.nova-hm-popup-photo-meta{padding:4px 5px!important;font-size:9px!important}
+@media(max-width:760px){
+  .nova-hm-popup-photo-grid{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:5px!important}
+  .nova-hm-popup-photo-frame{min-height:0!important}
+}
+</style>
+<script>
+(() => {
+  'use strict';
+  const MAX_SIDE = 256;
+  const JPEG_QUALITY = 0.52;
+  const SEEN = new WeakSet();
+
+  function compressImage_(img) {
+    if (!img || SEEN.has(img) || !String(img.src || '').startsWith('data:image/')) return;
+    SEEN.add(img);
+    const run = () => {
+      try {
+        const w = Number(img.naturalWidth || 0);
+        const h = Number(img.naturalHeight || 0);
+        if (!w || !h) return;
+        const scale = Math.min(1, MAX_SIDE / Math.max(w, h));
+        const outW = Math.max(1, Math.round(w * scale));
+        const outH = Math.max(1, Math.round(h * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = outW;
+        canvas.height = outH;
+        const ctx = canvas.getContext('2d', { alpha: false });
+        if (!ctx) return;
+        ctx.drawImage(img, 0, 0, outW, outH);
+        const compact = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+        if (compact && compact.length < String(img.src || '').length) img.src = compact;
+      } catch (error) {
+        console.warn('[NOVA Houseman Popup] 표시용 사진 축소 생략:', error?.message || error);
+      }
+    };
+    if (img.complete && img.naturalWidth) run();
+    else img.addEventListener('load', run, { once: true });
+  }
+
+  function scan_(root) {
+    const scope = root && root.querySelectorAll ? root : document;
+    scope.querySelectorAll('.nova-hm-popup-photo-frame img').forEach(compressImage_);
+  }
+
+  const observer = new MutationObserver(records => {
+    for (const record of records) {
+      record.addedNodes.forEach(node => {
+        if (!(node instanceof Element)) return;
+        if (node.matches?.('.nova-hm-popup-photo-frame img')) compressImage_(node);
+        scan_(node);
+      });
+    }
+  });
+
+  document.addEventListener('DOMContentLoaded', () => {
+    scan_(document);
+    observer.observe(document.body, { childList: true, subtree: true });
+  }, { once: true });
+})();
+</script>
