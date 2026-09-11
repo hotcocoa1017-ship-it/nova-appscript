@@ -1,0 +1,229 @@
+<style>
+/* HOUSEMAN_POPUP_CREATOR_PHOTO_V1 · 팝업 오픈 후 비동기 부가정보 표시 */
+.nova-hm-popup-extra-value{display:flex;align-items:center;gap:6px;min-width:0}
+.nova-hm-popup-extra-value small{color:#6b7280;font-size:11px;font-weight:700}
+.nova-hm-popup-photo-section{margin-top:12px;padding-top:12px;border-top:1px solid #e5e7eb}
+.nova-hm-popup-photo-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.nova-hm-popup-photo-head strong{font-size:13px}.nova-hm-popup-photo-head small{color:#6b7280;font-size:11px;font-weight:700}
+.nova-hm-popup-photo-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.nova-hm-popup-photo-item{min-width:0;overflow:hidden;border:1px solid #e5e7eb;border-radius:10px;background:#f8fafc}
+.nova-hm-popup-photo-item:first-child:nth-last-child(1){grid-column:1/-1}
+.nova-hm-popup-photo-frame{display:grid;place-items:center;width:100%;min-height:120px;aspect-ratio:4/3;background:#f3f4f6;color:#6b7280;font-size:11px;font-weight:700}
+.nova-hm-popup-photo-frame img{display:block;width:100%;height:100%;object-fit:contain;background:#111}
+.nova-hm-popup-photo-meta{padding:6px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#6b7280;font-size:10px;font-weight:700}
+.nova-hm-popup-extra-card{display:grid;grid-template-columns:84px minmax(0,1fr);gap:8px 10px;margin:0 0 12px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:10px;background:#f8fafc;font-size:12px}
+.nova-hm-popup-extra-card strong{font-weight:800}
+@media(max-width:760px){.nova-hm-popup-photo-grid{grid-template-columns:1fr}.nova-hm-popup-photo-item:first-child:nth-last-child(1){grid-column:auto}.nova-hm-popup-photo-frame{min-height:160px}.nova-hm-popup-extra-card{grid-template-columns:72px minmax(0,1fr)}}
+</style>
+<script>
+(() => {
+  'use strict';
+
+  // HOUSEMAN_POPUP_NONBLOCKING_V1
+  // 클릭 이벤트를 가로채지 않고 기존 팝업이 열린 뒤에만 부가 조회를 시작합니다.
+  const state = { sequence: 0, armedOrderId: '', armedKind: '', timer: null };
+  const MAIN_SELECTOR = '.order-mini-row[data-order-id]';
+  const MONTHLY_SELECTOR = '[data-monthly-order-manage]';
+  const HOST_ID = 'novaHousemanPopupExtras';
+
+  document.addEventListener('click', captureHousemanPopupSource_, true);
+
+  function captureHousemanPopupSource_(event) {
+    const target = event.target;
+    const mainRow = target && target.closest ? target.closest(MAIN_SELECTOR) : null;
+    const monthlyButton = target && target.closest ? target.closest(MONTHLY_SELECTOR) : null;
+    const orderId = mainRow
+      ? String(mainRow.dataset.orderId || '').trim()
+      : monthlyButton
+        ? String(monthlyButton.dataset.monthlyOrderManage || '').trim()
+        : '';
+    if (!orderId) return;
+
+    state.sequence += 1;
+    state.armedOrderId = orderId;
+    state.armedKind = mainRow ? 'INDICATOR' : 'MONTHLY';
+    const sequence = state.sequence;
+    if (state.timer) window.clearTimeout(state.timer);
+    // 기존 클릭 처리와 openModal 렌더가 먼저 실행된 뒤 탐색합니다.
+    state.timer = window.setTimeout(() => attachWhenModalReady_(orderId, sequence, 0), 0);
+  }
+
+  function attachWhenModalReady_(orderId, sequence, attempt) {
+    if (sequence !== state.sequence || orderId !== state.armedOrderId) return;
+    const modalRoot = document.getElementById('modalRoot');
+    const card = modalRoot && !modalRoot.classList.contains('hidden')
+      ? modalRoot.querySelector('.modal-card')
+      : null;
+    const heading = String(card?.querySelector('.modal-header h2')?.textContent || '').trim();
+    if (!card || !/하우스맨/.test(heading)) {
+      if (attempt < 40) {
+        state.timer = window.setTimeout(
+          () => attachWhenModalReady_(orderId, sequence, attempt + 1),
+          attempt < 8 ? 20 : 45
+        );
+      }
+      return;
+    }
+    if (card.querySelector(`#${HOST_ID}`)) return;
+
+    const host = createHost_(card, orderId);
+    if (!host) return;
+
+    // 이 시점에는 팝업이 이미 DOM에 표시되어 있습니다. 네트워크/서버 조회는 후행 실행합니다.
+    window.setTimeout(() => hydratePopupExtras_(host, orderId, sequence), 0);
+  }
+
+  function createHost_(card, orderId) {
+    const body = card.querySelector('.modal-body');
+    if (!body) return null;
+    const host = document.createElement('section');
+    host.id = HOST_ID;
+    host.dataset.orderId = orderId;
+    host.hidden = true;
+
+    const detailTable = body.querySelector('.detail-table');
+    if (detailTable) {
+      host.dataset.layout = 'DETAIL';
+      detailTable.insertAdjacentElement('afterend', host);
+    } else {
+      host.dataset.layout = 'CARD';
+      const first = body.firstElementChild;
+      if (first) body.insertBefore(host, first);
+      else body.appendChild(host);
+    }
+    return host;
+  }
+
+  async function hydratePopupExtras_(host, orderId, sequence) {
+    const token = String(localStorage.getItem('novaToken') || '').trim();
+    if (!token || !host.isConnected || sequence !== state.sequence) return;
+
+    let extras;
+    try {
+      extras = await callAppsScript_('getHousemanOrderPopupExtras', token, { orderId });
+    } catch (error) {
+      console.warn('[NOVA Houseman Popup] 부가정보 조회 지연:', error?.message || error);
+      return;
+    }
+    if (!extras?.ok || !host.isConnected || sequence !== state.sequence || String(host.dataset.orderId || '') !== orderId) return;
+
+    renderRegisteredBy_(host, extras);
+    const photos = Array.isArray(extras.photos) ? extras.photos.filter(photo => photo && photo.fileId) : [];
+    if (!photos.length) return;
+
+    const grid = renderPhotoShell_(host, photos);
+    if (!grid) return;
+    host.hidden = false;
+
+    // 첫 사진을 최우선 자동표시하고, 나머지는 순차 후행하여 UI 스레드와 서버를 몰아치지 않습니다.
+    for (let index = 0; index < photos.length; index += 1) {
+      if (!host.isConnected || sequence !== state.sequence) return;
+      await loadInlinePhoto_(grid, orderId, photos[index], index, token, sequence).catch(error => {
+        console.warn('[NOVA Houseman Popup] 사진 자동표시 실패:', error?.message || error);
+      });
+      if (index === 0 && photos.length > 1) await delay_(30);
+    }
+  }
+
+  function renderRegisteredBy_(host, extras) {
+    const employeeNo = String(extras.registeredByEmployeeNo || '').trim();
+    const name = String(extras.registeredByName || employeeNo || '-').trim() || '-';
+    const display = employeeNo && employeeNo !== name
+      ? `${escapeHtml_(name)} <small>(${escapeHtml_(employeeNo)})</small>`
+      : escapeHtml_(name);
+    const body = host.closest('.modal-body');
+    const detailTable = body?.querySelector('.detail-table');
+
+    if (detailTable) {
+      const labels = Array.from(detailTable.querySelectorAll('.detail-label'));
+      const registeredAtLabel = labels.find(label => String(label.textContent || '').trim() === '등록·수정');
+      const existing = detailTable.querySelector('[data-nova-hm-registered-by="1"]');
+      if (!existing) {
+        const label = document.createElement('div');
+        label.className = 'detail-label';
+        label.dataset.novaHmRegisteredBy = '1';
+        label.textContent = '등록자';
+        const value = document.createElement('div');
+        value.dataset.novaHmRegisteredByValue = '1';
+        value.className = 'nova-hm-popup-extra-value';
+        value.innerHTML = display;
+        const anchorValue = registeredAtLabel?.nextElementSibling;
+        if (anchorValue) anchorValue.after(label, value);
+        else detailTable.append(label, value);
+      }
+      host.hidden = false;
+      return;
+    }
+
+    host.className = 'nova-hm-popup-extra-card';
+    host.innerHTML = `<strong>등록자</strong><div>${display}</div>`;
+    host.hidden = false;
+  }
+
+  function renderPhotoShell_(host, photos) {
+    let section = host.querySelector('.nova-hm-popup-photo-section');
+    if (section) return section.querySelector('.nova-hm-popup-photo-grid');
+    section = document.createElement('section');
+    section.className = 'nova-hm-popup-photo-section';
+    section.innerHTML = `
+      <div class="nova-hm-popup-photo-head"><strong>요청 사진</strong><small>${photos.length}장 · 자동 표시</small></div>
+      <div class="nova-hm-popup-photo-grid">
+        ${photos.map((photo, index) => `
+          <div class="nova-hm-popup-photo-item" data-nova-hm-photo-index="${index}">
+            <div class="nova-hm-popup-photo-frame">사진 불러오는 중…</div>
+            <div class="nova-hm-popup-photo-meta">${escapeHtml_(photo.name || `요청사진 ${index + 1}`)}</div>
+          </div>`).join('')}
+      </div>`;
+    host.appendChild(section);
+    return section.querySelector('.nova-hm-popup-photo-grid');
+  }
+
+  async function loadInlinePhoto_(grid, orderId, photo, index, token, sequence) {
+    const item = grid.querySelector(`[data-nova-hm-photo-index="${index}"]`);
+    const frame = item?.querySelector('.nova-hm-popup-photo-frame');
+    if (!item || !frame || sequence !== state.sequence) return;
+
+    try {
+      const result = await callAppsScript_('getHousemanRequestPhoto', token, {
+        orderId,
+        fileId: String(photo.fileId || '')
+      });
+      if (!result?.ok || !result.base64 || !item.isConnected || sequence !== state.sequence) return;
+      const mimeType = String(result.photo?.mimeType || photo.mimeType || 'image/jpeg').trim() || 'image/jpeg';
+      const img = document.createElement('img');
+      img.alt = `하우스맨 요청사진 ${index + 1}`;
+      img.decoding = 'async';
+      img.loading = index === 0 ? 'eager' : 'lazy';
+      img.src = `data:${mimeType};base64,${String(result.base64)}`;
+      frame.replaceChildren(img);
+    } catch (error) {
+      if (frame.isConnected) frame.textContent = '사진을 불러오지 못했습니다.';
+      throw error;
+    }
+  }
+
+  function callAppsScript_(method, ...args) {
+    return new Promise((resolve, reject) => {
+      if (!window.google?.script?.run) return reject(new Error('서버 연결을 사용할 수 없습니다.'));
+      const runner = google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(error => reject(new Error(error?.message || String(error || '서버 오류'))));
+      if (typeof runner[method] !== 'function') return reject(new Error(`${method} 함수를 사용할 수 없습니다.`));
+      runner[method](...args);
+    });
+  }
+
+  function delay_(ms) {
+    return new Promise(resolve => window.setTimeout(resolve, Math.max(0, Number(ms || 0))));
+  }
+
+  function escapeHtml_(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+})();
+</script>
