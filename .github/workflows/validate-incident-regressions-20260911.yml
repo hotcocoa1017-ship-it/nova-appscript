@@ -1,0 +1,28 @@
+name: Validate 2026-09-11 Incident Regressions
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate 2026-09-11 regression protections
+        run: python3 scripts/validate_incident_regressions_20260911.py
+      - name: Verify validator is read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Incident regression validation modified source."
+            git status --short
+            exit 2
+          fi
