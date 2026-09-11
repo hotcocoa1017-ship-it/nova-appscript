@@ -30,14 +30,23 @@ required_client = [
     ".order-mini-row[data-order-id]",
     '[data-monthly-order-manage]',
     "callAppsScript_('getHousemanOrderPopupExtras'",
-    "callAppsScript_('getHousemanRequestPhoto'",
-    '사진 불러오는 중…',
     "img.loading = index === 0 ? 'eager' : 'lazy'",
     'window.setTimeout(() => hydratePopupExtras_',
 ]
 for marker in required_client:
     if marker not in client:
         raise SystemExit(f'missing client marker: {marker}')
+
+photo_routes = [
+    "callAppsScript_('getHousemanRequestPhoto'",
+    "callAppsScript_('getHousemanOrderPopupThumbnail'",
+]
+if not any(marker in client for marker in photo_routes):
+    raise SystemExit('missing validated popup photo route')
+
+loading_markers = ['사진 불러오는 중…', '썸네일 불러오는 중…']
+if not any(marker in client for marker in loading_markers):
+    raise SystemExit('missing inline photo loading marker')
 
 # Passive observer only: it must not delay, cancel or replace the existing popup click path.
 for forbidden in ['preventDefault(', 'stopPropagation(', 'stopImmediatePropagation(']:
