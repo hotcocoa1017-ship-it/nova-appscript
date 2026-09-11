@@ -95,48 +95,89 @@
 
   function removeAuthorityActionButtons_(host, mode) {
     const selector = mode === 'BROWSE'
-      ? '[data-qm-browse-inspect]'
+      ? '[data-qm-browse-inspect], [data-nova-qm-db-authority="1"]'
       : '[data-room-action="START"], [data-room-action="CONTINUE"], [data-room-action="REWORK"]';
     host.querySelectorAll(selector).forEach(button => button.remove());
   }
 
-  function patchBrowseCard_(card, room, employeeNo) {
-    const host = actionsHost_(card);
+  function browseDesired_(room, employeeNo) {
     const status = String(room.cleaningStatus || '').trim().toUpperCase();
     const qmNo = String(room.qmEmployeeNo || '').trim();
     const current = String(employeeNo || '').trim();
-    removeAuthorityActionButtons_(host, 'BROWSE');
+    if (status === 'QM_COMPLETED') return 'DONE';
+    if (qmNo && qmNo !== current) return 'OTHER';
+    if (status === 'QM_CHECKING' && qmNo === current) return 'CONTINUE';
+    if (['COMPLETED', 'QM_WAITING'].includes(status)) return 'START';
+    return 'NONE';
+  }
 
+  function browseDesiredPresent_(card, desired) {
+    if (desired === 'CONTINUE') return Boolean(card.querySelector('[data-qm-browse-inspect]'));
+    if (desired === 'START') return Boolean(card.querySelector('[data-qm-browse-inspect]'));
+    if (desired === 'DONE') return Array.from(card.querySelectorAll('.mobile-actions button')).some(button => button.disabled && String(button.textContent || '').trim() === '점검완료');
+    if (desired === 'OTHER') return Array.from(card.querySelectorAll('.mobile-actions button')).some(button => button.disabled && String(button.textContent || '').trim() === '다른 QM 배정');
+    return !card.querySelector('[data-qm-browse-inspect], [data-nova-qm-db-authority="1"]');
+  }
+
+  function patchBrowseCard_(card, room, employeeNo) {
+    const desired = browseDesired_(room, employeeNo);
+    const signature = `BROWSE:${String(room.version || 0)}:${desired}:${String(room.qmEmployeeNo || '')}`;
+    if (card.dataset.novaQmDbAuthoritySignature === signature && browseDesiredPresent_(card, desired)) return;
+
+    const host = actionsHost_(card);
+    removeAuthorityActionButtons_(host, 'BROWSE');
     let button = null;
-    if (status === 'QM_COMPLETED') {
+    if (desired === 'DONE') {
       button = makeButton_('점검완료', {}, false, true);
-    } else if (qmNo && qmNo !== current) {
+    } else if (desired === 'OTHER') {
       button = makeButton_('다른 QM 배정', {}, false, true);
-    } else if (status === 'QM_CHECKING' && qmNo === current) {
+    } else if (desired === 'CONTINUE') {
       button = makeButton_('점검 계속', { 'data-qm-browse-inspect': room.roomNo }, true);
-    } else if (['COMPLETED', 'QM_WAITING'].includes(status)) {
+    } else if (desired === 'START') {
       button = makeButton_('점검 시작', { 'data-qm-browse-inspect': room.roomNo }, true);
     }
     if (button) host.prepend(button);
     if (!host.children.length) host.remove();
+    card.dataset.novaQmDbAuthoritySignature = signature;
+  }
+
+  function targetDesired_(room, employeeNo) {
+    const qmNo = String(room.qmEmployeeNo || '').trim();
+    const current = String(employeeNo || '').trim();
+    if (!qmNo || qmNo !== current) return 'IGNORE';
+    const status = String(room.cleaningStatus || '').trim().toUpperCase();
+    const operational = String(room.operationalStatus || '').trim().toUpperCase();
+    if (['QM_WAITING', 'COMPLETED'].includes(status)) return 'START';
+    if (status === 'QM_CHECKING' && operational !== 'REWORK') return 'CONTINUE_REWORK';
+    return 'NONE';
+  }
+
+  function targetDesiredPresent_(card, desired) {
+    if (desired === 'START') return Boolean(card.querySelector('[data-room-action="START"]'));
+    if (desired === 'CONTINUE_REWORK') {
+      return Boolean(card.querySelector('[data-room-action="CONTINUE"]'))
+        && Boolean(card.querySelector('[data-room-action="REWORK"]'));
+    }
+    if (desired === 'NONE') {
+      return !card.querySelector('[data-room-action="START"], [data-room-action="CONTINUE"], [data-room-action="REWORK"]');
+    }
+    return true;
   }
 
   function patchTargetCard_(card, room, employeeNo) {
-    const qmNo = String(room.qmEmployeeNo || '').trim();
-    const current = String(employeeNo || '').trim();
-    if (!qmNo || qmNo !== current) return;
+    const desired = targetDesired_(room, employeeNo);
+    if (desired === 'IGNORE') return;
+    const signature = `TARGET:${String(room.version || 0)}:${desired}:${String(room.operationalStatus || '')}`;
+    if (card.dataset.novaQmDbAuthoritySignature === signature && targetDesiredPresent_(card, desired)) return;
 
     const host = actionsHost_(card);
-    const status = String(room.cleaningStatus || '').trim().toUpperCase();
-    const operational = String(room.operationalStatus || '').trim().toUpperCase();
     removeAuthorityActionButtons_(host, 'TARGETS');
-
-    if (['QM_WAITING', 'COMPLETED'].includes(status)) {
+    if (desired === 'START') {
       host.prepend(makeButton_('점검 시작', {
         'data-room-action': 'START',
         'data-room-no': room.roomNo
       }, true));
-    } else if (status === 'QM_CHECKING' && operational !== 'REWORK') {
+    } else if (desired === 'CONTINUE_REWORK') {
       const rework = makeButton_('즉시 재정비', {
         'data-room-action': 'REWORK',
         'data-room-no': room.roomNo
@@ -149,6 +190,7 @@
       host.prepend(continuing);
     }
     if (!host.children.length) host.remove();
+    card.dataset.novaQmDbAuthoritySignature = signature;
   }
 
   async function reconcile_() {
