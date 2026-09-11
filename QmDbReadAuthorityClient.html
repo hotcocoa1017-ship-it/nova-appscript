@@ -1,0 +1,56 @@
+<script>
+(() => {
+  'use strict';
+
+  // QM_DB_READ_AUTHORITY_V1
+  // 기존 callServer/렌더/버튼 이벤트를 교체하지 않고 QM 조회 결과의 현재상태만 DB 원본으로 덮어씁니다.
+  const previousCallServer = window.callServer;
+  if (typeof previousCallServer !== 'function' || previousCallServer.__novaQmDbReadAuthorityV1) return;
+
+  async function callAuthority_(token, options) {
+    try {
+      const result = await previousCallServer('getQmDbReadAuthoritySnapshot', token, options || {});
+      return result?.ok && result?.dbAuthority ? result : null;
+    } catch (error) {
+      console.warn('[NOVA QM] DB 읽기 원본 조회 실패 · 기존 조회결과 유지:', error?.message || error);
+      return null;
+    }
+  }
+
+  async function wrappedCallServer(method, ...args) {
+    // 공실/당일청소완료 탭은 기존 Sheet 조회를 기다리지 않고 DB 원본을 직접 사용합니다.
+    if (method === 'getQmMobileBrowseRooms') {
+      const token = args[0];
+      const options = Object.assign({}, args[1] || {}, { scope: 'BROWSE' });
+      const authority = await callAuthority_(token, options);
+      if (authority) return authority;
+      return previousCallServer(method, ...args);
+    }
+
+    const result = await previousCallServer(method, ...args);
+    if (method !== 'getMobileSnapshot' || String(result?.role || '').trim().toUpperCase() !== 'QM') {
+      return result;
+    }
+
+    const token = args[0];
+    const selection = result?.selection || args[1] || {};
+    const authority = await callAuthority_(token, {
+      scope: 'MOBILE',
+      businessDate: selection.businessDate,
+      site: selection.site
+    });
+    if (!authority) return result;
+
+    return Object.assign({}, result, {
+      rooms: Array.isArray(authority.rooms) ? authority.rooms : (result.rooms || []),
+      summary: authority.summary || result.summary,
+      dbReadAuthority: true,
+      serverTime: authority.serverTime || result.serverTime
+    });
+  }
+
+  wrappedCallServer.__novaQmDbReadAuthorityV1 = true;
+  wrappedCallServer.__novaPreviousCallServer = previousCallServer;
+  window.callServer = wrappedCallServer;
+})();
+</script>
