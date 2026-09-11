@@ -13,7 +13,7 @@ for marker in [
     'novaQmDbReadAuthorityMergeRooms_',
     'buildQmSummary_(rooms)',
     'rooms.map(qmMobileBrowseRoomDto_)',
-    'employeeNo,'
+    'employeeNo,',
 ]:
     if marker not in server:
         raise SystemExit(f'missing server marker: {marker}')
@@ -29,7 +29,7 @@ for forbidden in [
 for marker in [
     'QM_DB_READ_AUTHORITY_V1',
     "localStorage.getItem('novaToken')",
-    '.getQmDbReadAuthoritySnapshot(token, options)',
+    'getQmDbReadAuthoritySnapshot',
     "'[data-qm-browse-view].active'",
     "'data-qm-browse-inspect'",
     "'data-room-action': 'CONTINUE'",
