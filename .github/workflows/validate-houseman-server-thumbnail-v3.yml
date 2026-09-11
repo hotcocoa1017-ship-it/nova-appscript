@@ -1,0 +1,77 @@
+name: Validate Houseman Server Thumbnail V3
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'HousemanOrderPopupThumbnail.js'
+      - 'HousemanOrderPopupExtrasClient.html'
+      - 'supabase/functions/nova-houseman-photo-v1/index.ts'
+      - 'scripts/validate_houseman_server_thumbnail_v3_20260911.py'
+      - '.github/workflows/validate-houseman-server-thumbnail-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify minimal blast radius
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth=1
+          changed="$(git diff --name-only origin/main...HEAD)"
+          printf '%s\n' "$changed"
+          for protected in Client.html 07_Houseman.js 16_QmChecklist.js HousemanRequestPhoto.js HousemanRequestPhotoDirect.js HousemanPopupThumbQuarter.html; do
+            if printf '%s\n' "$changed" | grep -Fxq "$protected"; then
+              echo "::error::Protected core path was modified: $protected"
+              exit 2
+            fi
+          done
+
+      - name: Validate server thumbnail invariants
+        run: python3 scripts/validate_houseman_server_thumbnail_v3_20260911.py
+
+      - name: Validate existing houseman popup invariants
+        run: python3 scripts/validate_houseman_popup_creator_photo_v1_20260911.py
+
+      - name: Validate existing houseman UI invariants
+        run: python3 scripts/validate_indicator_houseman_order_ui_20260908.py
+
+      - name: Validate production release regression gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate Apps Script JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check HousemanOrderPopupThumbnail.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('HousemanOrderPopupExtrasClient.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if len(scripts) != 1:
+              raise SystemExit(f'Expected one script block, found {len(scripts)}')
+          Path('/tmp/HousemanOrderPopupExtrasClient.js').write_text(scripts[0], encoding='utf-8')
+          PY
+          node --check /tmp/HousemanOrderPopupExtrasClient.js
+
+      - name: Verify validation is read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Validation modified repository source."
+            git status --short
+            exit 2
+          fi
