@@ -1,0 +1,224 @@
+<script>
+(() => {
+  'use strict';
+
+  // QM_DB_READ_AUTHORITY_V1
+  // Client.html 내부 callServer는 로컬 스코프이므로 가로채지 않습니다.
+  // 기존 화면/이벤트가 먼저 렌더된 뒤, 읽기 전용 DB 현재상태로 QM 작업 버튼만 후행 보정합니다.
+  const ROOT_ID = 'mobileList';
+  const CACHE_MS = 2200;
+  let timer = null;
+  let busy = false;
+  let cacheKey = '';
+  let cacheAt = 0;
+  let cacheValue = null;
+
+  function activeView_() {
+    const active = document.querySelector('[data-qm-browse-view].active');
+    return String(active?.dataset?.qmBrowseView || 'TARGETS').trim().toUpperCase();
+  }
+
+  function selection_() {
+    return {
+      businessDate: String(document.getElementById('mobileDate')?.value || '').trim(),
+      site: String(document.getElementById('mobileSite')?.value || '').trim()
+    };
+  }
+
+  function token_() {
+    return String(localStorage.getItem('novaToken') || '').trim();
+  }
+
+  function roomNoFromCard_(card) {
+    const strong = card?.querySelector('.mobile-card-top strong');
+    if (!strong) return '';
+    const clone = strong.cloneNode(true);
+    clone.querySelectorAll('*').forEach(node => node.remove());
+    return String(clone.textContent || '').trim();
+  }
+
+  function callAuthority_(scope, view) {
+    const token = token_();
+    const selected = selection_();
+    if (!token || !selected.businessDate || !selected.site || !window.google?.script?.run) {
+      return Promise.resolve(null);
+    }
+    const options = {
+      scope,
+      view: view || '',
+      businessDate: selected.businessDate,
+      site: selected.site
+    };
+    const key = [scope, view || '', selected.businessDate, selected.site].join('|');
+    if (cacheValue && key === cacheKey && Date.now() - cacheAt <= CACHE_MS) {
+      return Promise.resolve(cacheValue);
+    }
+    return new Promise(resolve => {
+      google.script.run
+        .withSuccessHandler(result => {
+          const valid = result?.ok && result?.dbAuthority ? result : null;
+          if (valid) {
+            cacheKey = key;
+            cacheAt = Date.now();
+            cacheValue = valid;
+          }
+          resolve(valid);
+        })
+        .withFailureHandler(error => {
+          console.warn('[NOVA QM] DB 버튼상태 확인 실패 · 기존 화면 유지:', error?.message || error);
+          resolve(null);
+        })
+        .getQmDbReadAuthoritySnapshot(token, options);
+    });
+  }
+
+  function actionsHost_(card) {
+    let host = card.querySelector('.mobile-actions');
+    if (!host) {
+      host = document.createElement('div');
+      host.className = 'mobile-actions';
+      card.appendChild(host);
+    }
+    return host;
+  }
+
+  function makeButton_(text, attrs, primary = false, disabled = false) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = text;
+    if (primary) button.classList.add('primary');
+    Object.entries(attrs || {}).forEach(([name, value]) => button.setAttribute(name, String(value)));
+    button.disabled = Boolean(disabled);
+    button.dataset.novaQmDbAuthority = '1';
+    return button;
+  }
+
+  function removeAuthorityActionButtons_(host, mode) {
+    const selector = mode === 'BROWSE'
+      ? '[data-qm-browse-inspect]'
+      : '[data-room-action="START"], [data-room-action="CONTINUE"], [data-room-action="REWORK"]';
+    host.querySelectorAll(selector).forEach(button => button.remove());
+  }
+
+  function patchBrowseCard_(card, room, employeeNo) {
+    const host = actionsHost_(card);
+    const status = String(room.cleaningStatus || '').trim().toUpperCase();
+    const qmNo = String(room.qmEmployeeNo || '').trim();
+    const current = String(employeeNo || '').trim();
+    removeAuthorityActionButtons_(host, 'BROWSE');
+
+    let button = null;
+    if (status === 'QM_COMPLETED') {
+      button = makeButton_('점검완료', {}, false, true);
+    } else if (qmNo && qmNo !== current) {
+      button = makeButton_('다른 QM 배정', {}, false, true);
+    } else if (status === 'QM_CHECKING' && qmNo === current) {
+      button = makeButton_('점검 계속', { 'data-qm-browse-inspect': room.roomNo }, true);
+    } else if (['COMPLETED', 'QM_WAITING'].includes(status)) {
+      button = makeButton_('점검 시작', { 'data-qm-browse-inspect': room.roomNo }, true);
+    }
+    if (button) host.prepend(button);
+    if (!host.children.length) host.remove();
+  }
+
+  function patchTargetCard_(card, room, employeeNo) {
+    const qmNo = String(room.qmEmployeeNo || '').trim();
+    const current = String(employeeNo || '').trim();
+    if (!qmNo || qmNo !== current) return;
+
+    const host = actionsHost_(card);
+    const status = String(room.cleaningStatus || '').trim().toUpperCase();
+    const operational = String(room.operationalStatus || '').trim().toUpperCase();
+    removeAuthorityActionButtons_(host, 'TARGETS');
+
+    if (['QM_WAITING', 'COMPLETED'].includes(status)) {
+      host.prepend(makeButton_('점검 시작', {
+        'data-room-action': 'START',
+        'data-room-no': room.roomNo
+      }, true));
+    } else if (status === 'QM_CHECKING' && operational !== 'REWORK') {
+      const rework = makeButton_('즉시 재정비', {
+        'data-room-action': 'REWORK',
+        'data-room-no': room.roomNo
+      });
+      const continuing = makeButton_('점검 계속', {
+        'data-room-action': 'CONTINUE',
+        'data-room-no': room.roomNo
+      }, true);
+      host.prepend(rework);
+      host.prepend(continuing);
+    }
+    if (!host.children.length) host.remove();
+  }
+
+  async function reconcile_() {
+    if (busy) return;
+    const root = document.getElementById(ROOT_ID);
+    if (!root || !document.querySelector('[data-qm-browse-view]')) return;
+    const view = activeView_();
+    if (view === 'MY_REQUESTS') return;
+
+    busy = true;
+    try {
+      const browse = ['CLEANED', 'VACANT'].includes(view);
+      const authority = await callAuthority_(browse ? 'BROWSE' : 'MOBILE', browse ? view : '');
+      if (!authority || !root.isConnected) return;
+      const employeeNo = String(authority.employeeNo || '').trim();
+      const rooms = Array.isArray(authority.rooms) ? authority.rooms : [];
+      const byRoom = new Map(rooms.map(room => [String(room.roomNo || '').trim(), room]));
+      const cards = browse
+        ? root.querySelectorAll('.mobile-room-card.qm-browse-inspection')
+        : root.querySelectorAll('.mobile-room-card:not(.qm-browse-inspection)');
+
+      cards.forEach(card => {
+        const roomNo = roomNoFromCard_(card);
+        const room = byRoom.get(roomNo);
+        if (!room) return;
+        if (browse) patchBrowseCard_(card, room, employeeNo);
+        else patchTargetCard_(card, room, employeeNo);
+      });
+    } finally {
+      busy = false;
+    }
+  }
+
+  function schedule_(delay = 80, invalidate = false) {
+    if (invalidate) {
+      cacheValue = null;
+      cacheKey = '';
+      cacheAt = 0;
+    }
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      timer = null;
+      void reconcile_();
+    }, Math.max(0, Number(delay || 0)));
+  }
+
+  function observeWhenReady_() {
+    const root = document.getElementById(ROOT_ID);
+    if (!root) {
+      window.setTimeout(observeWhenReady_, 120);
+      return;
+    }
+    new MutationObserver(() => {
+      if (!busy) schedule_(90, false);
+    }).observe(root, { childList: true, subtree: true });
+    schedule_(40, true);
+  }
+
+  document.addEventListener('click', event => {
+    const tab = event.target?.closest?.('[data-qm-browse-view]');
+    if (tab) schedule_(180, true);
+  }, true);
+  document.addEventListener('change', event => {
+    if (event.target?.id === 'mobileDate' || event.target?.id === 'mobileSite') schedule_(180, true);
+  }, true);
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', observeWhenReady_, { once: true });
+  } else {
+    observeWhenReady_();
+  }
+})();
+</script>
