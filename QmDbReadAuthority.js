@@ -20,11 +20,12 @@ function getQmDbReadAuthoritySnapshot(token, options) {
     const sheetRooms = getCurrentRoomsForMobile_(businessDate, site, userIndex.byEmployeeNo);
     const dbRooms = novaQmDbReadAuthorityFetchRooms_(token, businessDate, site);
     const mergedRooms = novaQmDbReadAuthorityMergeRooms_(sheetRooms, dbRooms, userIndex.byEmployeeNo, businessDate, site);
+    const employeeNo = String(user.employeeNo || '').trim();
 
     let rooms = mergedRooms;
     if (scope === 'MOBILE') {
       rooms = mergedRooms
-        .filter(room => String(room.qmEmployeeNo || '').trim() === String(user.employeeNo || '').trim())
+        .filter(room => String(room.qmEmployeeNo || '').trim() === employeeNo)
         .sort(compareMobileQmRooms_);
       return {
         ok: true,
@@ -32,6 +33,7 @@ function getQmDbReadAuthoritySnapshot(token, options) {
         scope,
         businessDate,
         site,
+        employeeNo,
         rooms,
         summary: buildQmSummary_(rooms),
         serverTime: nowText_()
@@ -60,6 +62,7 @@ function getQmDbReadAuthoritySnapshot(token, options) {
       view,
       businessDate,
       site,
+      employeeNo,
       rooms: rooms.map(qmMobileBrowseRoomDto_),
       summary: { count: rooms.length },
       serverTime: nowText_()
