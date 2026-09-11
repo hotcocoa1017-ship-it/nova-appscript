@@ -41,6 +41,61 @@ function monthlyQmQualityPeriod_(request) {
   return { startDate, endDate };
 }
 
+function novaMonthlyQmQualityRead_(token, period, site) { // MONTHLY_QM_QUALITY_DIRECT_READ_V2
+  let auth;
+  try {
+    auth = novaDbFirstRealtimeAuth_(token);
+  } catch (error) {
+    console.warn('[NOVA MONTHLY QM] 품질조회 인증 준비 실패:', error && error.message ? error.message : error);
+    return null;
+  }
+  const endpoint = `${String(auth.supabaseUrl || '').replace(/\/+$/, '')}/rest/v1/rpc/nova_monthly_qm_quality_v1`;
+  const bodyText = JSON.stringify({
+    p_start_date: String(period && period.startDate || '').trim(),
+    p_end_date: String(period && period.endDate || '').trim(),
+    p_site: String(site || '').trim()
+  });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let response;
+    try {
+      response = UrlFetchApp.fetch(endpoint, {
+        method: 'post',
+        contentType: 'application/json; charset=utf-8',
+        headers: {
+          Authorization: `Bearer ${auth.token}`,
+          apikey: String(auth.publishableKey || '')
+        },
+        payload: bodyText,
+        muteHttpExceptions: true,
+        followRedirects: true
+      });
+    } catch (networkError) {
+      if (attempt < 2) {
+        Utilities.sleep([140, 420, 900][attempt] || 900);
+        continue;
+      }
+      console.warn('[NOVA MONTHLY QM] 품질조회 네트워크 실패:', networkError && networkError.message ? networkError.message : networkError);
+      return null;
+    }
+    const status = Number(response.getResponseCode() || 0);
+    let data = {};
+    try { data = JSON.parse(response.getContentText('UTF-8') || '{}'); } catch (ignore) { data = {}; }
+    if (status >= 200 && status < 300 && data && data.ok) return data;
+    if (status === 401 && attempt < 2) {
+      try { auth = novaDbFirstRealtimeAuth_(token); } catch (error) { return null; }
+      Utilities.sleep(120);
+      continue;
+    }
+    if ((status === 429 || status >= 500) && attempt < 2) {
+      Utilities.sleep([160, 420, 900][attempt] || 900);
+      continue;
+    }
+    console.warn('[NOVA MONTHLY QM] 품질조회 DB 응답 실패:', status, data && (data.message || data.error || data.hint || data.code) || '');
+    return null;
+  }
+  return null;
+}
+
 function monthlyQmQualityFailureText_(inspection) {
   const direct = String(inspection && inspection.failSummary || '').trim();
   if (direct) return direct;
@@ -213,17 +268,7 @@ function monthlyQmQualityStaffSummary_(items, users) {
 function applyMonthlyQmQualityStatus_(token, request, bundle) {
   if (String(request && request.type || '').trim().toUpperCase() !== 'QM') return bundle;
   const period = monthlyQmQualityPeriod_(request);
-  let result;
-  try {
-    result = novaDbFirstRpc_(token, 'nova_monthly_qm_quality_v1', {
-      p_start_date: period.startDate,
-      p_end_date: period.endDate,
-      p_site: request.site
-    }, { readOnly: true, allowLegacyFallback: false });
-  } catch (error) {
-    console.warn('[NOVA MONTHLY QM] 품질상태 조회 실패 · 기존 이력 표시 유지:', error && error.message ? error.message : error);
-    return bundle;
-  }
+  const result = novaMonthlyQmQualityRead_(token, period, request.site);
   if (!result || result.ok === false || !Array.isArray(result.items)) return bundle;
 
   const users = getUserIndex_().byEmployeeNo;
