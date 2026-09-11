@@ -33,7 +33,7 @@ jobs:
           set -euo pipefail
           grep -q "include_('HousemanOrderPopupExtrasClient')" Index.html
           grep -q "getHousemanOrderPopupExtras" HousemanOrderPopupExtras.js
-          grep -q "HOUSEMAN_POPUP_EXTRAS_V1" HousemanOrderPopupExtrasClient.html
+          grep -q "HOUSEMAN_POPUP_CREATOR_PHOTO_V1" HousemanOrderPopupExtrasClient.html
           python3 scripts/validate_indicator_houseman_order_ui_20260908.py
 
       - name: Setup Node
