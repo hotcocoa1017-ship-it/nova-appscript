@@ -1,11 +1,11 @@
 from pathlib import Path
 
 src = Path('MonthlyDbFirstBridge.js').read_text(encoding='utf-8')
-bridge = Path('DbFirstBridge.js').read_text(encoding='utf-8')
 
 required = [
     'MONTHLY_QM_QUALITY_STATUS_V2',
     'MONTHLY_QM_STATUS_DISPLAY_V2',
+    'MONTHLY_QM_QUALITY_DIRECT_READ_V2',
     'nova_monthly_qm_quality_v1',
     'QM_QUALITY_PASS',
     'QM_QUALITY_FAIL',
@@ -14,6 +14,7 @@ required = [
     "['QM_START', 'QM_COMPLETE']",
     'monthlyQmQualityCompleted_',
     'buildMonthlyHistoryBundleDbFirst_',
+    'novaMonthlyQmQualityRead_',
     '최종정비자',
     '청소완료',
     'roommaidName',
@@ -24,11 +25,16 @@ for marker in required:
     if marker not in src:
         raise SystemExit(f'Missing monthly QM quality marker: {marker}')
 
-# 신규 조회 RPC가 DB-first 허용목록에 반드시 등록되어야 한다.
-if "'nova_monthly_qm_quality_v1'" not in bridge:
-    raise SystemExit('nova_monthly_qm_quality_v1 is missing from DB-first RPC allowlist')
+# 전용 조회경로는 인증된 read-only RPC만 호출하고 mutation API는 포함하지 않는다.
+for required_read_marker in [
+    '/rest/v1/rpc/nova_monthly_qm_quality_v1',
+    'novaDbFirstRealtimeAuth_',
+    "method: 'post'",
+    'muteHttpExceptions: true',
+]:
+    if required_read_marker not in src:
+        raise SystemExit(f'Missing dedicated read marker: {required_read_marker}')
 
-# 이 변경은 조회 표시 전용이어야 하며 객실 상태/재정비/점검 최종제출을 쓰지 않는다.
 for forbidden in [
     'updateMobileRoomOperation',
     'nova_qm_inspection_finalize_v2',
