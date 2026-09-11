@@ -1,0 +1,92 @@
+name: Deploy NOVA Once - Houseman Popup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/deploy-once-houseman-popup.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-apps-script-production
+  cancel-in-progress: false
+
+env:
+  APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
+
+jobs:
+  deploy-once:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release gate
+        run: python3 scripts/validate_nova_release.py
+
+      - name: Validate houseman popup extras
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "include_('HousemanOrderPopupExtrasClient')" Index.html
+          grep -q "getHousemanOrderPopupExtras" HousemanOrderPopupExtras.js
+          grep -q "HOUSEMAN_POPUP_EXTRAS_V1" HousemanOrderPopupExtrasClient.html
+          python3 scripts/validate_indicator_houseman_order_ui_20260908.py
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp
+
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo "::error::Apps Script OAuth secret is missing."
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+
+      - name: Check Apps Script version capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          versions="$(clasp versions)"
+          printf '%s\n' "$versions"
+          version_count="$(printf '%s\n' "$versions" | grep -Ec '^[[:space:]]*[0-9]+[[:space:]]*-' || true)"
+          echo "Apps Script versions: ${version_count}/200"
+          if [ "$version_count" -ge 200 ]; then
+            echo "::error::Apps Script version limit reached (${version_count}/200)."
+            exit 4
+          fi
+
+      - name: Push source to Apps Script
+        run: clasp push --force
+
+      - name: Update existing web app deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp create-deployment \
+            --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" \
+            --description "NOVA houseman popup extras deploy ${GITHUB_SHA::12}"
+
+      - name: Deployment summary
+        run: |
+          echo "NOVA Apps Script deployed successfully."
+          echo "Commit: $GITHUB_SHA"
