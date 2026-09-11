@@ -28,9 +28,9 @@ function readMonthlyHistoryRowsDbFirst_(token, request, allowedRecordTypesOverri
   return legacyRows.concat(dbRows);
 }
 
-// MONTHLY_QM_QUALITY_STATUS_V1
+// MONTHLY_QM_QUALITY_STATUS_V2
 // 월별조회 > QM은 점검 시작/완료 타임라인보다 최종 체크리스트 판정(양호/불량)을 우선 표시합니다.
-// 객실상태·QM 최종제출·재정비 로직은 변경하지 않는 읽기 전용 표시 보강입니다.
+// 업무내용은 해당 점검 직전 최종정비자와 청소완료일을 표시하며 객실상태·QM 최종제출·재정비 로직은 변경하지 않습니다.
 function monthlyQmQualityPeriod_(request) {
   const startDate = request.period === 'DAILY'
     ? request.date
@@ -69,15 +69,27 @@ function monthlyQmQualityRoomKey_(item) {
   ].join('|');
 }
 
-function monthlyQmQualityItem_(inspection, users) {
+function monthlyQmQualityItem_(inspection, users) { // MONTHLY_QM_STATUS_DISPLAY_V2
   const qmEmployeeNo = String(inspection && inspection.qmEmployeeNo || '').trim();
   const user = users[qmEmployeeNo];
   const result = String(inspection && inspection.resultStatus || '').trim().toUpperCase() === 'FAIL' ? 'FAIL' : 'PASS';
-  const failureText = result === 'FAIL' ? monthlyQmQualityFailureText_(inspection) : '';
   const statusCode = result === 'FAIL' ? 'QM_QUALITY_FAIL' : 'QM_QUALITY_PASS';
   const statusLabel = result === 'FAIL' ? '불량' : '양호';
   const completedAt = String(inspection && inspection.completedAt || '').trim();
   const startedAt = String(inspection && inspection.startedAt || '').trim();
+  const roommaidNames = [
+    String(inspection && inspection.roommaidName || '').trim(),
+    String(inspection && inspection.secondaryRoommaidName || '').trim()
+  ].filter(Boolean);
+  const roommaidEmployeeNos = [
+    String(inspection && inspection.roommaidEmployeeNo || '').trim(),
+    String(inspection && inspection.secondaryRoommaidEmployeeNo || '').trim()
+  ].filter(Boolean);
+  const finalCleanerText = roommaidNames.length
+    ? roommaidNames.join(' · ')
+    : (roommaidEmployeeNos.length ? roommaidEmployeeNos.join(' · ') : '-');
+  const cleaningCompletedAt = String(inspection && inspection.cleaningCompletedAt || '').trim();
+  const detailText = `최종정비자 ${finalCleanerText} · 청소완료 ${cleaningCompletedAt || '-'}`;
   return {
     rowNumber: 0,
     recordId: String(inspection && inspection.inspectionId || '').trim(),
@@ -109,7 +121,7 @@ function monthlyQmQualityItem_(inspection, users) {
     canAssign: false,
     canCancel: false,
     canDelete: false,
-    detailText: result === 'FAIL' ? (failureText ? `불량 : ${failureText}` : '불량') : '양호',
+    detailText,
     registeredAt: completedAt,
     acceptedAt: '',
     startedAt,
