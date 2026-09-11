@@ -31,7 +31,6 @@ const NOVA_DB_FIRST_BRIDGE_V1 = Object.freeze({
     'nova_qm_checklist_item_disable_v1', // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
     'nova_qm_checklist_place_disable_v1', // NOVA_QM_CHECKLIST_CODES_DB_FIRST_V1
     'nova_monthly_history_v1',
-    'nova_monthly_qm_quality_v1', // MONTHLY_QM_QUALITY_STATUS_V2
     'nova_roommaid_performance_history_v1',
     'nova_roommaid_close_history_v1'
   ])
@@ -280,7 +279,7 @@ function saveHousemanZoneAssignmentDbFirst(token, payload) { // NOVA_SHIFT_ZONE_
     const employeeNo = String(safe.employeeNo || '').trim();
     const action = String(safe.action || 'SAVE').trim().toUpperCase();
     if (!site || !employeeNo) throw new Error('담당동 저장정보를 확인해 주세요.');
-    const requestId = String(safe.requestId || novaDbFirstRequestId_(`ZONE_${action}_V3')).trim();
+    const requestId = String(safe.requestId || novaDbFirstRequestId_(`ZONE_${action}_V3`)).trim();
 
     const db = novaDbFirstRpc_(token, 'nova_houseman_zone_save_v1', {
       p_business_date: businessDate,
