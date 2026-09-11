@@ -1,6 +1,8 @@
 name: Validate QM DB Read Authority V1
 
 on:
+  push:
+    branches: [fix/qm-db-read-authority-v3]
   pull_request:
     paths:
       - 'QmDbReadAuthority.js'
