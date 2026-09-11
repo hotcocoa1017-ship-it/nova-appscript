@@ -1,0 +1,57 @@
+<script>
+(() => {
+  'use strict';
+
+  // QM_DBFIRST_SAVE_UNBLOCK_V1
+  // Supabase DB-first 점검은 이미 시작됐지만 레거시 Sheet mirror만 지연된 경우,
+  // 임시 저장/점검 완료 버튼이 영구 잠기지 않도록 UI 잠금만 최소 범위로 해제합니다.
+  // 실제 저장/완료 API와 startPending 보호 로직은 변경하지 않습니다.
+  const ROOT_ID = 'modalRoot';
+  const LEGACY_MIRROR_TITLE = 'Supabase 점검 시작은 완료됐습니다. 기존 이력 동기화가 끝나면 저장할 수 있습니다.';
+  let scheduled = false;
+
+  function scheduleUnlock_() {
+    if (scheduled) return;
+    scheduled = true;
+    queueMicrotask(() => {
+      scheduled = false;
+      unlockLegacyMirrorOnly_();
+    });
+  }
+
+  function unlockLegacyMirrorOnly_() {
+    const root = document.getElementById(ROOT_ID);
+    if (!root || root.classList.contains('hidden')) return;
+
+    const submit = root.querySelector('#qmChecklistSubmit');
+    const saveOnly = root.querySelector('#qmInspectionSaveOnly');
+    if (!submit || !saveOnly) return;
+
+    const title = String(submit.getAttribute('title') || '').trim();
+    if (title !== LEGACY_MIRROR_TITLE) return;
+
+    // startPending("점검 시작 처리 중입니다.") 또는 저장/완료 처리 중 잠금은 건드리지 않습니다.
+    saveOnly.disabled = false;
+    submit.disabled = false;
+    submit.removeAttribute('title');
+    submit.dataset.novaQmDbFirstSaveUnblock = '1';
+  }
+
+  const root = document.getElementById(ROOT_ID);
+  if (!root) return;
+
+  new MutationObserver(scheduleUnlock_).observe(root, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['disabled', 'title', 'class']
+  });
+
+  document.addEventListener('click', event => {
+    const target = event.target;
+    if (!target?.closest) return;
+    if (target.closest('#qmChecklistSubmit, #qmInspectionSaveOnly')) return;
+    scheduleUnlock_();
+  }, true);
+})();
+</script>
