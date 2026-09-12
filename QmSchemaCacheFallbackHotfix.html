@@ -1,10 +1,9 @@
 <script>
 (() => {
   'use strict';
-  // QM_SCHEMA_CACHE_FALLBACK_V4
+  // QM_SCHEMA_CACHE_FALLBACK_V5
   // PGRST002는 PostgREST schema cache 단계 실패라 PostgreSQL RPC가 실행되기 전입니다.
-  // 시작 RPC는 동일 DB API를 다시 타는 일반 fallback 대신 Apps Script의 검증된 Sheet 시작/초안 경로로 즉시 복구합니다.
-  // 사용자 응답은 DB 재동기화를 기다리지 않고 즉시 반환하며, 재동기화는 별도 후행 호출로 분리합니다.
+  // 시작 RPC는 DB-first 체크리스트 조회를 전혀 타지 않는 Apps Script 긴급 Sheet 경로로 즉시 복구합니다.
   // draft/finalize는 기존 PGRST202 safe fallback을 그대로 사용합니다.
   const originalFetch = window.fetch.bind(window);
   const beginPath = '/rest/v1/rpc/nova_qm_begin_inspection_v1';
@@ -46,25 +45,6 @@
     }
   }
 
-  function deferRealtimeSync_(token, body, result) {
-    if (!result || result.realtimeSyncDeferred !== true) return;
-    window.setTimeout(() => {
-      try {
-        google.script.run
-          .withSuccessHandler(() => console.warn('[NOVA QM] schema-cache 시작복구 후 DB 재동기화 완료'))
-          .withFailureHandler(error => console.warn('[NOVA QM] schema-cache 시작복구 후 DB 재동기화 지연:', error && error.message || error))
-          .syncNovaRealtimeRoomForAction(token, {
-            businessDate: String(body.p_business_date || result.room && result.room.businessDate || ''),
-            site: String(body.p_site || result.room && result.room.site || ''),
-            roomNo: String(body.p_room_no || result.room && result.room.roomNo || ''),
-            action: 'QM_START'
-          });
-      } catch (error) {
-        console.warn('[NOVA QM] schema-cache 시작복구 후 DB 재동기화 예약 실패:', error && error.message || error);
-      }
-    }, 0);
-  }
-
   function startFallback_(init) {
     const body = parseBody_(init);
     const token = String(localStorage.getItem('novaToken') || '').trim();
@@ -91,9 +71,8 @@
       google.script.run
         .withSuccessHandler(result => {
           if (result && result.ok && result.draft && result.draft.draftId) {
-            console.warn('[NOVA QM] PGRST002 점검시작 · Apps Script 안전경로 복구 완료');
+            console.warn('[NOVA QM] PGRST002 점검시작 · 긴급 Sheet 경로 복구 완료');
             finish(response_(result, 200, 'OK'));
-            deferRealtimeSync_(token, body, result);
             return;
           }
           finish(response_({
@@ -105,13 +84,12 @@
           code: 'QM_SCHEMA_CACHE_FALLBACK_FAILED',
           message: String(error && error.message || error || 'QM 점검 시작 복구 중 오류가 발생했습니다.')
         }, 409, 'Conflict')))
-        .startQmInspectionSchemaCacheFallback(token, {
+        .startQmInspectionEmergencyLegacy(token, {
           businessDate: String(body.p_business_date || ''),
           site: String(body.p_site || ''),
           roomNo: String(body.p_room_no || ''),
           view: String(body.p_view || 'TARGETS'),
-          requestId: String(body.p_request_id || ''),
-          schemaCacheCode: 'PGRST002'
+          requestId: String(body.p_request_id || '')
         });
     });
   }
@@ -125,7 +103,7 @@
     if (!schemaCacheFailure_(data)) return response;
 
     if (url_(input).includes(beginPath)) {
-      console.warn('[NOVA QM] PGRST002 점검시작 · DB API 이중재시도 대신 안전경로 전환');
+      console.warn('[NOVA QM] PGRST002 점검시작 · 긴급 Sheet 경로 전환');
       return startFallback_(init);
     }
 
