@@ -12,10 +12,12 @@ const ALLOWED = new Set([
   "nova_qm_prepare_new_draft_v1",
   "nova_save_qm_draft",
   "nova_qm_inspection_finalize_v2",
+  "nova_create_qm_houseman_order",
+  "nova_mobile_my_houseman_orders_v1",
 ]);
 
 const DB_URL = String(Deno.env.get("SUPABASE_DB_URL") || "").trim();
-// QM_FAST_PATH_EDGE_V2 · warm Edge instance에서 DB pool을 재사용해 매 요청 connect/end 비용을 제거합니다.
+// QM_FAST_PATH_EDGE_V3 · QM 핵심저장 + QM 하우스맨 등록/내요청을 PostgREST schema cache와 분리합니다.
 const SQL = DB_URL ? postgres(DB_URL, {
   prepare: false,
   max: 2,
@@ -30,7 +32,7 @@ function json(status: number, body: Record<string, unknown>) {
       ...CORS,
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
-      "X-NOVA-QM-Transport": "direct-db-edge-v2",
+      "X-NOVA-QM-Transport": "direct-db-edge-v3",
     },
   });
 }
@@ -65,7 +67,6 @@ function appError(message: string, code = "22023") {
 
 function parseJsonValue(value: unknown): unknown {
   let current = value;
-  // 과거 이중 JSON 문자열도 2단계까지만 안전하게 복원합니다.
   for (let i = 0; i < 2 && typeof current === "string"; i += 1) {
     const text = current.trim();
     if (!text) return null;
@@ -170,14 +171,38 @@ Deno.serve(async (req: Request) => {
         return rows[0]?.result ?? null;
       }
 
-      const payload = jsonObject(args.p_payload, "QM finalize payload");
-      const rows = await tx`
-        select public.nova_qm_inspection_finalize_v2(
-          ${JSON.stringify(payload)}::jsonb,
-          ${String(args.p_request_id || "")}
-        ) as result
-      `;
-      return rows[0]?.result ?? null;
+      if (rpc === "nova_qm_inspection_finalize_v2") {
+        const payload = jsonObject(args.p_payload, "QM finalize payload");
+        const rows = await tx`
+          select public.nova_qm_inspection_finalize_v2(
+            ${JSON.stringify(payload)}::jsonb,
+            ${String(args.p_request_id || "")}
+          ) as result
+        `;
+        return rows[0]?.result ?? null;
+      }
+
+      if (rpc === "nova_create_qm_houseman_order") {
+        const payload = jsonObject(args.p_payload, "QM houseman payload");
+        const rows = await tx`
+          select public.nova_create_qm_houseman_order(
+            ${JSON.stringify(payload)}::jsonb
+          ) as result
+        `;
+        return rows[0]?.result ?? null;
+      }
+
+      if (rpc === "nova_mobile_my_houseman_orders_v1") {
+        const rows = await tx`
+          select public.nova_mobile_my_houseman_orders_v1(
+            ${String(args.p_business_date || "")}::date,
+            ${String(args.p_site || "")}
+          ) as result
+        `;
+        return rows[0]?.result ?? null;
+      }
+
+      throw appError("지원하지 않는 QM DB 작업입니다.");
     });
 
     if (result === null || typeof result === "undefined") {
@@ -190,7 +215,7 @@ Deno.serve(async (req: Request) => {
         ...CORS,
         "Content-Type": "application/json; charset=utf-8",
         "Cache-Control": "no-store",
-        "X-NOVA-QM-Transport": "direct-db-edge-v2",
+        "X-NOVA-QM-Transport": "direct-db-edge-v3",
       },
     });
   } catch (error: any) {
