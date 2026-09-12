@@ -132,17 +132,17 @@ jobs:
           fi
 
       - name: Setup Node
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy == true) }}
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Install clasp
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy == true) }}
         run: npm install --global @google/clasp
 
       - name: Configure Apps Script authentication
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy == true) }}
         shell: bash
         env:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
@@ -161,7 +161,7 @@ jobs:
           clasp show-authorized-user --json
 
       - name: Check Apps Script version capacity
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy == true) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -175,11 +175,11 @@ jobs:
           fi
 
       - name: Push source to Apps Script
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy == true) }}
         run: clasp push --force
 
       - name: Update existing web app deployment
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy == true) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -188,13 +188,13 @@ jobs:
             --description "NOVA automated deploy ${GITHUB_SHA::12}"
 
       - name: Deployment summary
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy == true }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy == true) }}
         run: |
           echo "NOVA Apps Script source pushed and existing web app deployment updated."
           echo "Commit: $GITHUB_SHA"
 
       - name: Validation-only summary
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.deploy == true) }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy != true }}
         run: |
           echo "NOVA canonical-source validation completed. Deployment was intentionally skipped."
           echo "Commit: $GITHUB_SHA"
