@@ -46,7 +46,7 @@ require(bridge, 'function mirrorShiftZoneDbStateToSheets_', 'legacy mirror helpe
 require(bridge, 'markShiftZoneMirrorPending_(businessDate, site)', 'write mirror retry marker preserved')
 
 # Multiple shifts for the same employee are a valid operating rule.
-require(shift, "foreach" if False else 'Object.keys(assignments).forEach', 'legacy per-shift iteration')
+require(shift, 'Object.keys(NOVA.SHIFTS).forEach', 'legacy per-shift iteration')
 forbidden_cross_shift_phrases = [
     'duplicateAcrossShifts',
     '이미 다른 근무조에',
