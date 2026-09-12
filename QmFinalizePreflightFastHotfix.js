@@ -1,5 +1,5 @@
 /**
- * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V3
+ * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V4
  *
  * 최종제출 preflight가 체크리스트 정의를 다시 읽기 위해 Sheet / Cloud Run / Edge / PostgREST를
  * 왕복하면서 멈추는 경로를 제거합니다. 브라우저는 제출 직전에 이미 동일 체크리스트로
@@ -69,16 +69,91 @@ prepareQmInspectionFinalizeDbFirst = function(token, payload) {
 };
 
 /**
- * QM_FINALIZE_LEGACY_DATE_RECOVERY_V1
+ * QM_RESUMED_DRAFT_DATE_RECOVERY_V1
+ *
+ * 재개된 QM 모달에서 Client state.mobile.businessDate가 비어 있고 draftId도 아직 Client에
+ * 복원되지 않은 경우, 최종제출의 legacy 분기는 ensureQmInspectionDraftReady_ ->
+ * beginQmInspectionDraftInit_ -> startQmInspection 순으로 들어갑니다. 원본 startQmInspection은
+ * payload.businessDate를 가장 먼저 normalize하므로 이 지점에서 "업무일자를 확인해 주세요."가
+ * 발생하면 submit/preflight/finalize 어느 곳에도 도달하지 못합니다.
+ *
+ * 이 예외적인 blank-date 재개 경로에서만, 기존 QM_CHECKLIST IN_PROGRESS 이력 중
+ * 동일 사용자·사업장·객실의 가장 최근 초안 업무일자를 권위값으로 복구합니다.
+ * 이력이 없을 때는 기존 CURRENT 시트의 동일 사용자·사업장·객실 QM 행을 보조값으로 사용합니다.
+ * 날짜가 이미 전달되면 원본 startQmInspection을 그대로 호출합니다.
+ */
+function novaResolveResumedQmBusinessDate_(user, payload) {
+  const safe = payload || {};
+  const site = String(safe.site || user.defaultSite || '').trim();
+  const roomNo = String(safe.roomNo || '').trim();
+  const employeeNo = String(user.employeeNo || '').trim();
+  if (!roomNo || !employeeNo) return '';
+
+  try {
+    const sheet = getRequiredSheet_(NOVA.SHEETS.HISTORY);
+    const lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      const headerMap = getHeaderMap_(sheet);
+      const scanStart = Math.max(2, lastRow - NOVA_QM_CHECKLIST.HISTORY_SCAN_ROWS + 1);
+      const values = sheet.getRange(scanStart, 1, lastRow - scanStart + 1, sheet.getLastColumn()).getDisplayValues();
+      for (let index = values.length - 1; index >= 0; index -= 1) {
+        const data = rowObjectFromValues_(values[index], headerMap);
+        if (String(data['기록구분'] || '').trim() !== NOVA.RECORD_TYPES.QM_CHECKLIST) continue;
+        if (String(data['처리상태'] || '').trim().toUpperCase() !== 'IN_PROGRESS') continue;
+        if (site && String(data['사업장'] || '').trim() !== site) continue;
+        if (String(data['객실번호'] || '').trim() !== roomNo) continue;
+        if (String(data['대상사번'] || '').trim() !== employeeNo) continue;
+        if (String(data['삭제여부'] || 'N').trim().toUpperCase() === 'Y') continue;
+        const businessDate = String(data['업무일자'] || '').trim();
+        if (businessDate) return normalizeBusinessDate_(businessDate);
+      }
+    }
+  } catch (error) {
+    console.warn('[NOVA QM] 재개 초안 업무일자 이력 복구 지연:', error?.message || error);
+  }
+
+  try {
+    const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
+    const lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      const headerMap = getHeaderMap_(sheet);
+      const values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getDisplayValues();
+      for (let index = values.length - 1; index >= 0; index -= 1) {
+        const data = rowObjectFromValues_(values[index], headerMap);
+        if (site && String(data['사업장'] || '').trim() !== site) continue;
+        if (String(data['객실번호'] || '').trim() !== roomNo) continue;
+        if (String(data['QM사번'] || '').trim() !== employeeNo) continue;
+        const status = String(data['청소상태'] || '').trim().toUpperCase();
+        if (!['QM_WAITING', 'COMPLETED', 'QM_CHECKING'].includes(status)) continue;
+        const businessDate = String(data['업무일자'] || '').trim();
+        if (businessDate) return normalizeBusinessDate_(businessDate);
+      }
+    }
+  } catch (error) {
+    console.warn('[NOVA QM] 재개 초안 업무일자 CURRENT 복구 지연:', error?.message || error);
+  }
+
+  return '';
+}
+
+const novaStartQmInspectionOriginal_ = startQmInspection;
+startQmInspection = function(token, payload) {
+  const safe = Object.assign({}, payload || {});
+  if (!String(safe.businessDate || '').trim()) {
+    const user = requireRole_(token, ['QM']);
+    const recoveredBusinessDate = novaResolveResumedQmBusinessDate_(user, safe);
+    if (recoveredBusinessDate) safe.businessDate = recoveredBusinessDate;
+  }
+  return novaStartQmInspectionOriginal_(token, safe);
+};
+
+/**
+ * QM_FINALIZE_LEGACY_DATE_RECOVERY_V2
  *
  * Realtime 설정이 일시적으로 비활성/미초기화된 경우 Client는 기존
- * submitQmChecklistInspection 경로를 사용합니다. 이 경로는 과거에는 businessDate를 가장 먼저
- * normalize하여, 재개 세션에서 Client state가 비어 있으면 DB-first finalize까지 가지도 못하고
- * "업무일자를 확인해 주세요."로 종료됐습니다.
- *
- * 기존 제출 로직/검증은 전혀 변경하지 않고, businessDate가 없을 때만 제출에 이미 포함된
- * draftId의 업무일자를 권위값으로 복구한 뒤 원본 함수를 호출합니다. draft 소유권도 기존 QM
- * 소유권 검증으로 확인합니다. 날짜가 이미 있으면 원본 함수를 그대로 호출합니다.
+ * submitQmChecklistInspection 경로를 사용합니다. businessDate가 비어 있으면 먼저 draftId의
+ * 업무일자를 사용하고, Client에 draftId가 아직 복원되지 않은 재개 세션이면 위와 동일한
+ * IN_PROGRESS 초안 기준으로 업무일자를 복구한 뒤 원본 제출 함수를 호출합니다.
  */
 const novaSubmitQmChecklistInspectionOriginal_ = submitQmChecklistInspection;
 submitQmChecklistInspection = function(token, payload) {
@@ -92,6 +167,10 @@ submitQmChecklistInspection = function(token, payload) {
       safe.businessDate = String(draftInfo?.data?.['업무일자'] || '').trim();
       if (!safe.site) safe.site = String(draftInfo?.data?.['사업장'] || '').trim();
       if (!safe.roomNo) safe.roomNo = String(draftInfo?.data?.['객실번호'] || '').trim();
+    }
+    if (!String(safe.businessDate || '').trim()) {
+      const recoveredBusinessDate = novaResolveResumedQmBusinessDate_(user, safe);
+      if (recoveredBusinessDate) safe.businessDate = recoveredBusinessDate;
     }
   }
   return novaSubmitQmChecklistInspectionOriginal_(token, safe);
