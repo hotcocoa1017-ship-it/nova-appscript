@@ -2,11 +2,11 @@
 (() => {
   'use strict';
 
-  // QM_SCHEMA_CACHE_BYPASS_V4
+  // QM_SCHEMA_CACHE_BYPASS_V5
   // 기존 QM 비즈니스 로직은 그대로 두고 브라우저가 직접 호출하는 QM RPC의 전송계층만
   // PostgREST에서 direct DB Edge로 우회합니다. Edge 자체가 불가한 경우에만 기존 PostgREST로 후퇴합니다.
-  if (!window.__novaQmSchemaCacheBypassV4 && typeof window.fetch === 'function') {
-    window.__novaQmSchemaCacheBypassV4 = true;
+  if (!window.__novaQmSchemaCacheBypassV5 && typeof window.fetch === 'function') {
+    window.__novaQmSchemaCacheBypassV5 = true;
     const nativeFetch = window.fetch.bind(window);
     const rpcNames = new Set([
       'nova_qm_begin_inspection_v1',
@@ -24,27 +24,63 @@
       'QM_DB_DIRECT_EMPTY'
     ]);
 
-    window.fetch = async function(input, init) {
-      const url = typeof input === 'string' ? input : String(input?.url || '');
+    function visibleBusinessDate_() {
+      const dateInput = document.getElementById('mobileDate');
+      const candidates = [
+        String(dateInput?.value || '').trim(),
+        String(sessionStorage.getItem('novaMobileBusinessDate') || '').trim()
+      ];
+      return candidates.find(value => /^\d{4}-\d{2}-\d{2}$/.test(value)) || '';
+    }
+
+    function patchedJsonInit_(input, init) {
       const method = String(init?.method || input?.method || 'GET').trim().toUpperCase();
+      if (method !== 'POST' || typeof init?.body !== 'string') return init;
+      let body;
+      try { body = JSON.parse(init.body); } catch (_) { return init; }
+      const fallbackDate = visibleBusinessDate_();
+      if (!fallbackDate || !body || typeof body !== 'object' || Array.isArray(body)) return init;
+
+      let changed = false;
+      if (String(body.action || '').trim().toUpperCase() === 'QM_COMPLETE' && !String(body.businessDate || '').trim()) {
+        body.businessDate = fallbackDate;
+        changed = true;
+      }
+      if (!String(body.p_business_date || '').trim()
+          && ['nova_save_qm_draft'].some(name => String(input?.url || input || '').includes(`/rest/v1/rpc/${name}`))) {
+        body.p_business_date = fallbackDate;
+        changed = true;
+      }
+      if (body.p_payload && typeof body.p_payload === 'object' && !Array.isArray(body.p_payload)
+          && !String(body.p_payload.businessDate || '').trim()) {
+        body.p_payload.businessDate = fallbackDate;
+        changed = true;
+      }
+      return changed ? Object.assign({}, init || {}, { body: JSON.stringify(body) }) : init;
+    }
+
+    window.fetch = async function(input, init) {
+      const effectiveInit = patchedJsonInit_(input, init);
+      const url = typeof input === 'string' ? input : String(input?.url || '');
+      const method = String(effectiveInit?.method || input?.method || 'GET').trim().toUpperCase();
       const match = method === 'POST'
         ? url.match(/\/rest\/v1\/rpc\/(nova_qm_begin_inspection_v1|nova_qm_prepare_new_draft_v1|nova_save_qm_draft|nova_qm_inspection_finalize_v2|nova_create_qm_houseman_order|nova_mobile_my_houseman_orders_v1|nova_qm_last_qm_cards_v1|nova_qm_clear_v1)(?:\?|$)/)
         : null;
       const rpc = String(match?.[1] || '');
-      if (!rpcNames.has(rpc)) return nativeFetch(input, init);
+      if (!rpcNames.has(rpc)) return nativeFetch(input, effectiveInit);
 
       let args = {};
       try {
-        const rawBody = typeof init?.body === 'string' ? init.body : '';
+        const rawBody = typeof effectiveInit?.body === 'string' ? effectiveInit.body : '';
         args = rawBody ? JSON.parse(rawBody) : {};
       } catch (_) {
-        return nativeFetch(input, init);
+        return nativeFetch(input, effectiveInit);
       }
 
-      const sourceHeaders = new Headers(init?.headers || input?.headers || {});
+      const sourceHeaders = new Headers(effectiveInit?.headers || input?.headers || {});
       const authorization = String(sourceHeaders.get('Authorization') || '');
       const apikey = String(sourceHeaders.get('apikey') || '');
-      if (!authorization || !apikey) return nativeFetch(input, init);
+      if (!authorization || !apikey) return nativeFetch(input, effectiveInit);
 
       try {
         const supabaseOrigin = new URL(url).origin;
@@ -71,7 +107,7 @@
       } catch (error) {
         console.warn(`[NOVA QM] direct DB edge network fallback · ${rpc}:`, error?.message || error);
       }
-      return nativeFetch(input, init);
+      return nativeFetch(input, effectiveInit);
     };
   }
 
@@ -133,7 +169,6 @@
       return;
     }
 
-    // 실제 저장/완료 요청에서 기존 Client가 버튼을 다시 활성화하면 작업 표시만 원복합니다.
     if (operationActive) {
       if (!operationButton?.isConnected) {
         resetOperation_();
@@ -144,8 +179,6 @@
       }
     }
 
-    // DB는 이미 QM_CHECKING + draft 상태이므로 Sheet mirror만 지연된 잠금은 해제합니다.
-    // startPending 잠금은 상태문구로 구분하여 절대 해제하지 않습니다.
     if (!mirrorOnlyLock_(submit, status)) return;
     saveOnly.disabled = false;
     submit.disabled = false;
@@ -155,16 +188,15 @@
     saveOnly.dataset.novaQmDbFirstSaveUnblock = '2';
   }
 
-  // QM_FINALIZE_BUSINESS_DATE_SYNC_V1
-  // 모바일 화면의 업무일자 input은 bootstrap 날짜를 표시할 수 있지만 state.mobile.businessDate가
-  // 비어 있을 수 있습니다. 최종제출 직전에 기존 change 핸들러를 통해 표시 중인 날짜를 state에 동기화합니다.
-  function syncVisibleBusinessDate_() {
+  // QM_FINALIZE_BUSINESS_DATE_TRANSPORT_V2
+  // state와 화면값이 어긋나는 재개 세션에서도 전송 직전 업무일자를 보강합니다.
+  // change 이벤트를 강제로 발생시키지 않아 모바일 snapshot 재조회/재렌더 race를 만들지 않습니다.
+  function rememberVisibleBusinessDate_() {
     const dateInput = document.getElementById('mobileDate');
-    if (!dateInput) return;
-    const visibleDate = String(dateInput.value || sessionStorage.getItem('novaMobileBusinessDate') || '').trim();
-    if (!visibleDate) return;
-    if (dateInput.value !== visibleDate) dateInput.value = visibleDate;
-    dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+    const visibleDate = String(dateInput?.value || sessionStorage.getItem('novaMobileBusinessDate') || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(visibleDate)) return;
+    sessionStorage.setItem('novaMobileBusinessDate', visibleDate);
+    if (dateInput && dateInput.value !== visibleDate) dateInput.value = visibleDate;
   }
 
   const root = document.getElementById(ROOT_ID);
@@ -189,10 +221,8 @@
       return;
     }
 
-    if (target.id === 'qmChecklistSubmit') syncVisibleBusinessDate_();
+    if (target.id === 'qmChecklistSubmit') rememberVisibleBusinessDate_();
 
-    // 기존 Client 핸들러는 그대로 실행합니다. 여기서는 사용자가 눌렀다는 즉시 피드백만 표시하고
-    // 처리 중 MutationObserver가 버튼을 잘못 재활성화하지 않도록 보호합니다.
     operationActive = true;
     operationButton = target;
     operationOriginalText = String(target.textContent || '');
