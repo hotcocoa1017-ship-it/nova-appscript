@@ -1,9 +1,10 @@
 /**
- * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V6
+ * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V7
  *
  * 기존 제출 검증과 DB 최종확정 규칙은 유지합니다. Realtime-disabled 최종제출은 브라우저에
  * businessDate/site/draftId가 이미 채워져 있어도 DB의 IN_PROGRESS draft를 권위값으로 확인한 뒤
- * 동일한 DB finalize 경로를 사용합니다. DB 문맥을 확인할 수 없는 경우에만 기존 Sheet 호환 경로를 유지합니다.
+ * 동일한 DB finalize 경로를 사용합니다. 재개 세션의 background draft 준비도 기존 DB draft를
+ * 그대로 복원하여 최종제출 앞단에서 다시 startQmInspection에 막히지 않도록 합니다.
  */
 
 function novaResolveResumedQmDbContext_(token, payload) { // QM_RESUME_CONTEXT_DB_AUTHORITY_V1
@@ -264,10 +265,40 @@ function novaResolveResumedQmBusinessDate_(user, payload) {
 const novaStartQmInspectionOriginal_ = startQmInspection;
 startQmInspection = function(token, payload) {
   const safe = Object.assign({}, payload || {});
-  if (!String(safe.businessDate || '').trim() || !String(safe.site || '').trim()) {
-    const dbContext = novaResolveResumedQmDbContext_(token, safe);
+  let dbContext = null;
+  if (String(safe.roomNo || '').trim()) {
+    dbContext = novaResolveResumedQmDbContext_(token, safe);
     if (dbContext) novaApplyResumedQmDbContext_(safe, dbContext);
   }
+
+  // QM_RESUME_DRAFT_READY_DB_AUTHORITY_V1
+  // Client의 ensureQmInspectionDraftReady_가 최종제출 전에 background start를 다시 호출하더라도,
+  // 이미 DB에 존재하는 본인 IN_PROGRESS draft를 그대로 돌려주어 신규 시작/Sheet 준비를 재실행하지 않습니다.
+  if (safe.realtimeStarted === true && dbContext?.draftId) {
+    return {
+      ok: true,
+      realtime: true,
+      dbFirst: true,
+      recoveredExistingDraft: true,
+      version: Number(safe.realtimeVersion || 0),
+      draft: {
+        draftId: String(dbContext.draftId || ''),
+        businessDate: String(dbContext.businessDate || ''),
+        site: String(dbContext.site || ''),
+        roomNo: String(dbContext.roomNo || ''),
+        checklistRevision: String(dbContext.checklistRevision || ''),
+        answers: Array.isArray(dbContext.answers) ? dbContext.answers : [],
+        defects: Array.isArray(dbContext.defects) ? dbContext.defects : [],
+        status: 'IN_PROGRESS',
+        version: Number(dbContext.draftVersion || 0),
+        dbVersion: Number(dbContext.draftVersion || 0),
+        rowNumber: 0,
+        startedAt: String(dbContext.startedAt || ''),
+        savedAt: String(dbContext.savedAt || '')
+      }
+    };
+  }
+
   if (!String(safe.businessDate || '').trim()) {
     const user = requireRole_(token, ['QM']);
     const recoveredBusinessDate = novaResolveResumedQmBusinessDate_(user, safe);
