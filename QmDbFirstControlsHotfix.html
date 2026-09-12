@@ -115,6 +115,17 @@
     return false;
   }
 
+  function hydrateBusinessDateBeforeQmAction_() { // QM_FINALIZE_BUSINESS_DATE_HYDRATE_V1
+    const input = document.getElementById('mobileDate');
+    if (!input) return;
+    let value = String(input.value || '').trim();
+    if (!value) {
+      try { value = String(sessionStorage.getItem('novaMobileBusinessDate') || '').trim(); } catch (_) {}
+      if (value) input.value = value;
+    }
+    if (value) input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
   function reconcileControls_() {
     const root = document.getElementById(ROOT_ID);
     if (!root || root.classList.contains('hidden')) {
@@ -173,6 +184,10 @@
       scheduleCheck_();
       return;
     }
+
+    // Client 내부 preflight/finalize가 state.mobile.businessDate를 읽기 전에
+    // 기존 mobileDate change handler를 동기 실행시켜 현재 업무일자를 state에 확정합니다.
+    hydrateBusinessDateBeforeQmAction_();
 
     // 기존 Client 핸들러는 그대로 실행합니다. 여기서는 사용자가 눌렀다는 즉시 피드백만 표시하고
     // 처리 중 MutationObserver가 버튼을 잘못 재활성화하지 않도록 보호합니다.
