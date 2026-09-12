@@ -3,8 +3,52 @@
   'use strict';
 
   // QM_FINALIZE_CALLSERVER_DB_AUTHORITY_CLIENT_V1
-  // Client IIFE의 Realtime-disabled 최종제출 호출만 고유 DB 권위 서버 메서드로 라우팅합니다.
-  // realtimeCommitted 후행 Sheet 상세이력과 다른 submitQmChecklistInspection 호출은 그대로 둡니다.
+  // QM_BUSINESS_DATE_EARLY_SYNC_V1
+  // Client.html은 자체 IIFE 안의 callServer/state를 사용하므로 외부 window.callServer 교체만으로는
+  // 최종제출 경로를 바꿀 수 없습니다. 모바일 화면이 처음 렌더될 때 화면에 표시된 업무일자를
+  // 기존 mobileDate change handler에 1회 전달해 closure 내부 state.mobile.businessDate와
+  // sessionStorage를 함께 동기화합니다. 제출 순간에는 change를 강제하지 않아 기존 필터/모달 흐름을 건드리지 않습니다.
+
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  let syncQueued = false;
+
+  function syncVisibleBusinessDate_() {
+    syncQueued = false;
+    const dateInput = document.getElementById('mobileDate');
+    if (!dateInput) return;
+
+    const visibleDate = String(dateInput.value || '').trim();
+    if (!DATE_RE.test(visibleDate)) return;
+
+    let storedDate = '';
+    try { storedDate = String(sessionStorage.getItem('novaMobileBusinessDate') || '').trim(); } catch (ignore) {}
+
+    // sessionStorage와 화면값이 같으면 Client IIFE state도 초기화 시 같은 값을 이미 읽었습니다.
+    if (storedDate === visibleDate) return;
+    if (String(dateInput.dataset.novaBusinessDateStateSync || '') === visibleDate) return;
+
+    dateInput.dataset.novaBusinessDateStateSync = visibleDate;
+    try { sessionStorage.setItem('novaMobileBusinessDate', visibleDate); } catch (ignore) {}
+
+    // Client.html 내부의 기존 change handler가 closure state를 갱신하도록 합니다.
+    // 렌더 직후 1회만 실행되며, 이후 재렌더에서는 sessionStorage 일치로 즉시 종료됩니다.
+    dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function queueBusinessDateSync_() {
+    if (syncQueued) return;
+    syncQueued = true;
+    window.setTimeout(syncVisibleBusinessDate_, 0);
+  }
+
+  const observer = new MutationObserver(queueBusinessDateSync_);
+  if (document.body) observer.observe(document.body, { childList: true, subtree: true });
+  else document.addEventListener('DOMContentLoaded', () => observer.observe(document.body, { childList: true, subtree: true }), { once: true });
+
+  queueBusinessDateSync_();
+
+  // 기존 브리지 코드는 호환 목적으로 유지합니다. Client IIFE 내부 호출에는 영향을 주지 않지만,
+  // 다른 전역 호출자가 존재하는 경우 기존 의도대로 DB 권위 메서드로 라우팅합니다.
   const previousCallServer = window.callServer;
   if (typeof previousCallServer !== 'function' || previousCallServer.__novaQmFinalizeDbAuthorityV1) return;
 
