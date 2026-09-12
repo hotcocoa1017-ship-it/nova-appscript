@@ -155,6 +155,18 @@
     saveOnly.dataset.novaQmDbFirstSaveUnblock = '2';
   }
 
+  // QM_FINALIZE_BUSINESS_DATE_SYNC_V1
+  // 모바일 화면의 업무일자 input은 bootstrap 날짜를 표시할 수 있지만 state.mobile.businessDate가
+  // 비어 있을 수 있습니다. 최종제출 직전에 기존 change 핸들러를 통해 표시 중인 날짜를 state에 동기화합니다.
+  function syncVisibleBusinessDate_() {
+    const dateInput = document.getElementById('mobileDate');
+    if (!dateInput) return;
+    const visibleDate = String(dateInput.value || sessionStorage.getItem('novaMobileBusinessDate') || '').trim();
+    if (!visibleDate) return;
+    if (dateInput.value !== visibleDate) dateInput.value = visibleDate;
+    dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
   const root = document.getElementById(ROOT_ID);
   if (!root) return;
 
@@ -176,6 +188,8 @@
       scheduleCheck_();
       return;
     }
+
+    if (target.id === 'qmChecklistSubmit') syncVisibleBusinessDate_();
 
     // 기존 Client 핸들러는 그대로 실행합니다. 여기서는 사용자가 눌렀다는 즉시 피드백만 표시하고
     // 처리 중 MutationObserver가 버튼을 잘못 재활성화하지 않도록 보호합니다.
