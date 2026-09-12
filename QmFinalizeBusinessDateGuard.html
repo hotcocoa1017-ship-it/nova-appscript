@@ -1,0 +1,27 @@
+<script>
+(() => {
+  'use strict';
+
+  // QM_FINALIZE_BUSINESS_DATE_GUARD_V2
+  // 최종제출 직전 표시 중인 업무일자를 Client의 state.mobile.businessDate에 직접 동기화합니다.
+  // 기존 change 이벤트를 재발행하지 않아 불필요한 모바일 재조회/재렌더를 유발하지 않습니다.
+  document.addEventListener('click', event => {
+    const target = event.target?.closest?.('#qmChecklistSubmit');
+    if (!target || target.disabled) return;
+
+    const dateInput = document.getElementById('mobileDate');
+    let businessDate = String(dateInput?.value || sessionStorage.getItem('novaMobileBusinessDate') || '').trim();
+    try {
+      if (!businessDate && typeof state !== 'undefined') {
+        businessDate = String(state?.mobile?.businessDate || state?.bootstrap?.app?.businessDate || '').trim();
+      }
+      if (!businessDate || typeof state === 'undefined' || !state?.mobile) return;
+      state.mobile.businessDate = businessDate;
+      sessionStorage.setItem('novaMobileBusinessDate', businessDate);
+      if (dateInput && dateInput.value !== businessDate) dateInput.value = businessDate;
+    } catch (error) {
+      console.warn('[NOVA QM] finalize businessDate sync skipped:', error?.message || error);
+    }
+  }, true);
+})();
+</script>
