@@ -22,6 +22,15 @@
       'QM_DB_DIRECT_EMPTY'
     ]);
 
+    function syncBusinessDateToClientState_(businessDate) {
+      const value = String(businessDate || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return;
+      const input = document.getElementById('mobileDate');
+      if (!input) return;
+      if (String(input.value || '').trim() !== value) input.value = value;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
     function rememberQmContext_(rpc, args) {
       const payload = args?.p_payload && typeof args.p_payload === 'object' ? args.p_payload : {};
       const businessDate = String(args?.p_business_date || payload.businessDate || '').trim();
@@ -36,6 +45,9 @@
       window.__novaQmFastPathContext = context;
       if (context.businessDate) {
         try { sessionStorage.setItem('novaMobileBusinessDate', context.businessDate); } catch (_) {}
+        // 최종완료 직전 초안저장처럼 authoritative date가 RPC payload에 들어온 순간
+        // Client lexical state.mobile.businessDate도 즉시 동일 값으로 맞춥니다.
+        syncBusinessDateToClientState_(context.businessDate);
       }
     }
 
@@ -132,16 +144,15 @@
     return false;
   }
 
-  function hydrateBusinessDateBeforeQmAction_() { // QM_FINALIZE_BUSINESS_DATE_HYDRATE_V2
+  function hydrateBusinessDateBeforeQmAction_() { // QM_FINALIZE_BUSINESS_DATE_HYDRATE_V3
     const input = document.getElementById('mobileDate');
     if (!input) return;
     const captured = String(window.__novaQmFastPathContext?.businessDate || '').trim();
     let stored = '';
     try { stored = String(sessionStorage.getItem('novaMobileBusinessDate') || '').trim(); } catch (_) {}
-    let value = captured || String(input.value || '').trim() || stored;
+    const value = captured || String(input.value || '').trim() || stored;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return;
     if (String(input.value || '').trim() !== value) input.value = value;
-    // Client의 lexical state.mobile.businessDate를 갱신하는 기존 handler를 동기 실행합니다.
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
