@@ -1,10 +1,10 @@
 <script>
 (() => {
   'use strict';
-  // QM_SCHEMA_CACHE_FALLBACK_V7
+  // QM_SCHEMA_CACHE_FALLBACK_V8
   // PGRST002는 PostgREST schema cache 단계 실패라 PostgreSQL RPC가 실행되기 전입니다.
   // 시작/임시저장/최종저장 모두 기존 Client의 PGRST202 안전 fallback으로 통일합니다.
-  // 동일 장애가 확인된 뒤에는 일정 시간 PostgREST 재시도를 생략해 QM 시작/완료 응답지연을 제거합니다.
+  // 장애가 한 번 확인되면 TTL 동안 회로를 고정하여 DB/Sheet 경로가 요청마다 교차하는 것을 막습니다.
   const originalFetch = window.fetch.bind(window);
   const targets = [
     '/rest/v1/rpc/nova_qm_begin_inspection_v1',
@@ -41,10 +41,6 @@
     try { localStorage.setItem(BREAKER_KEY, String(Date.now() + BREAKER_MS)); } catch (ignore) {}
   }
 
-  function closeBreaker_() {
-    try { localStorage.removeItem(BREAKER_KEY); } catch (ignore) {}
-  }
-
   function fallbackResponse_() {
     return new Response(JSON.stringify({
       code: 'PGRST202',
@@ -66,17 +62,16 @@
 
     const response = await originalFetch(input, init);
     if (!isTarget_(input)) return response;
-    if (response.ok) {
-      closeBreaker_();
-      return response;
-    }
+    // 회로가 열리지 않은 정상상태에서는 성공 응답을 그대로 사용합니다.
+    // 한 번 열린 회로는 단일 성공응답으로 조기 해제하지 않고 TTL 만료까지 fallback 권한을 고정합니다.
+    if (response.ok) return response;
 
     let data = null;
     try { data = await response.clone().json(); } catch (ignore) { return response; }
     if (!schemaCacheFailure_(data)) return response;
 
     openBreaker_();
-    console.warn('[NOVA QM] PGRST002 schema cache unavailable · 5분 breaker + 즉시 안전 fallback');
+    console.warn('[NOVA QM] PGRST002 schema cache unavailable · 5분 sticky breaker + 즉시 안전 fallback');
     return fallbackResponse_();
   };
 })();
