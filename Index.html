@@ -43,7 +43,7 @@
       </label>
       <label>
         <span>사번</span>
-        <input id="loginEmployeeNo" name="employeeNo" type="password" inputmode="numeric" autocomplete="current-password" required>
+        <input id="loginEmployeeNo" name="employeeNo" type="password" inputmode="numeric" autocomplete="current-password">
       </label>
       <label class="login-remember-option">
         <input id="loginRemember" type="checkbox">
@@ -85,10 +85,11 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <?!= include_('Client'); ?>
   <?!= include_('QmChecklistInteractionGuard'); ?> <!-- QM_CHECKLIST_SELECT_STABILITY_V1 -->
-  <?!= include_('QmSchemaCacheFallbackHotfix'); ?> <!-- QM_SCHEMA_CACHE_FALLBACK_V1 -->
+  <?!= include_('QmSchemaCacheFallbackHotfix'); ?> <!-- QM_SCHEMA_CACHE_FALLBACK_V8 -->
   <?!= include_('QmWriteSerialGuard'); ?> <!-- QM_WRITE_SERIAL_GUARD_V1 -->
+  <?!= include_('QmFallbackConvergenceClient'); ?> <!-- QM_FALLBACK_DB_CONVERGENCE_CLIENT_V1 -->
   <?!= include_('RoommaidCleaningRetentionHotfix'); ?> <!-- ROOMMAID_CLEANING_CARD_RETENTION_V1 -->
-  <?!= include_('QmDbReadAuthorityClient'); ?> <!-- QM_DB_READ_AUTHORITY_V1 -->
+  <?!= include_('QmDbReadAuthorityClient'); ?> <!-- QM_DB_READ_AUTHORITY_V2 -->
   <?!= include_('QmDbFirstControlsHotfix'); ?> <!-- QM_DBFIRST_SAVE_UNBLOCK_V1 -->
   <?!= include_('TransientWriteRetryHotfix'); ?>
   <?!= include_('RoommaidDueOutGuard'); ?>
