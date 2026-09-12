@@ -1,6 +1,9 @@
 name: Dispatch QM speed hotfix once
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dispatch-once-qm-speed-v7.yml'
 permissions:
   actions: write
   contents: read
