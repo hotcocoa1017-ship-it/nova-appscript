@@ -1,0 +1,85 @@
+<script>
+(() => {
+  'use strict';
+
+  // QM_WRITE_SERIAL_GUARD_V1
+  // QM 체크리스트 입력은 화면/로컬 draft에 즉시 반영하되 0.8초 자동 서버저장은 억제합니다.
+  // 임시저장/점검완료만 명시적 쓰기 진입점으로 남겨 동일 계정 동시 저장(BUSY_RETRY)을 방지합니다.
+  // Client의 scheduleQmInspectionAutosave_는 localDirty/폼 수집/상태표시는 그대로 수행합니다.
+  const nativeSetTimeout = window.setTimeout.bind(window);
+  const nativeClearTimeout = window.clearTimeout.bind(window);
+  const clickLocks = new WeakMap();
+  let portraitLocked = false;
+
+  function qmModalOpen_() {
+    return Boolean(document.querySelector('.qm-checklist-modal'));
+  }
+
+  function isQmAutosaveTimer_(handler, delay) {
+    if (!qmModalOpen_()) return false;
+    if (Number(delay) !== 800 || typeof handler !== 'function') return false;
+    let source = '';
+    try { source = Function.prototype.toString.call(handler); } catch (ignore) {}
+    return source.includes('saveQmInspectionDraftNow_');
+  }
+
+  window.setTimeout = function novaQmSerializedSetTimeout_(handler, delay, ...args) {
+    if (isQmAutosaveTimer_(handler, delay)) {
+      // 자동 서버쓰기만 제거합니다. collectQmInspectionForm_ / localDirty 처리는 이미 동기 실행됐습니다.
+      return 0;
+    }
+    return nativeSetTimeout(handler, delay, ...args);
+  };
+
+  window.clearTimeout = function novaQmSerializedClearTimeout_(timerId) {
+    if (!timerId) return;
+    return nativeClearTimeout(timerId);
+  };
+
+  function guardRapidWriteClick_(event) {
+    const target = event && event.target instanceof Element
+      ? event.target.closest('.qm-checklist-modal #qmInspectionSaveOnly, .qm-checklist-modal #qmChecklistSubmit')
+      : null;
+    if (!target) return;
+
+    const now = Date.now();
+    const until = Number(clickLocks.get(target) || 0);
+    if (until > now) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+
+    // 점검완료는 기존 Client가 즉시 disabled 처리합니다. 임시저장 연타만 추가 차단합니다.
+    clickLocks.set(target, now + (target.id === 'qmChecklistSubmit' ? 2500 : 1800));
+  }
+
+  document.addEventListener('click', guardRapidWriteClick_, true);
+
+  function lockPortrait_() {
+    if (portraitLocked || !qmModalOpen_()) return;
+    const orientation = window.screen && window.screen.orientation;
+    if (!orientation || typeof orientation.lock !== 'function') return;
+    Promise.resolve(orientation.lock('portrait-primary'))
+      .then(() => { portraitLocked = true; })
+      .catch(() => {});
+  }
+
+  function unlockPortrait_() {
+    if (!portraitLocked || qmModalOpen_()) return;
+    const orientation = window.screen && window.screen.orientation;
+    if (!orientation || typeof orientation.unlock !== 'function') {
+      portraitLocked = false;
+      return;
+    }
+    try { orientation.unlock(); } catch (ignore) {}
+    portraitLocked = false;
+  }
+
+  const observer = new MutationObserver(() => {
+    if (qmModalOpen_()) lockPortrait_();
+    else unlockPortrait_();
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+})();
+</script>
