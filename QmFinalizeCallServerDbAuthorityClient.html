@@ -1,0 +1,27 @@
+<script>
+(() => {
+  'use strict';
+
+  // QM_FINALIZE_CALLSERVER_DB_AUTHORITY_CLIENT_V1
+  // Client IIFE의 Realtime-disabled 최종제출 호출만 고유 DB 권위 서버 메서드로 라우팅합니다.
+  // realtimeCommitted 후행 Sheet 상세이력과 다른 submitQmChecklistInspection 호출은 그대로 둡니다.
+  const previousCallServer = window.callServer;
+  if (typeof previousCallServer !== 'function' || previousCallServer.__novaQmFinalizeDbAuthorityV1) return;
+
+  const bridgedCallServer = function(method, ...args) {
+    const name = String(method || '');
+    if (name === 'submitQmChecklistInspection') {
+      const payload = args[1] && typeof args[1] === 'object' ? args[1] : {};
+      const roomNo = String(payload.roomNo || '').trim();
+      if (roomNo && payload.realtimeCommitted !== true) {
+        return previousCallServer('submitQmChecklistInspectionDbAuthority', ...args);
+      }
+    }
+    return previousCallServer(name, ...args);
+  };
+
+  bridgedCallServer.__novaQmFinalizeDbAuthorityV1 = true;
+  bridgedCallServer.__novaOriginalCallServer = previousCallServer;
+  window.callServer = bridgedCallServer;
+})();
+</script>
