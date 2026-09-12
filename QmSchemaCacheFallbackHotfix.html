@@ -1,16 +1,18 @@
 <script>
 (() => {
   'use strict';
-  // QM_SCHEMA_CACHE_FALLBACK_V6
+  // QM_SCHEMA_CACHE_FALLBACK_V7
   // PGRST002는 PostgREST schema cache 단계 실패라 PostgreSQL RPC가 실행되기 전입니다.
   // 시작/임시저장/최종저장 모두 기존 Client의 PGRST202 안전 fallback으로 통일합니다.
-  // 시작 RPC에서 가짜 200 성공응답을 만들지 않아 Client가 dbFirst=true로 오인하지 않도록 합니다.
+  // 동일 장애가 확인된 뒤에는 일정 시간 PostgREST 재시도를 생략해 QM 시작/완료 응답지연을 제거합니다.
   const originalFetch = window.fetch.bind(window);
   const targets = [
     '/rest/v1/rpc/nova_qm_begin_inspection_v1',
     '/rest/v1/rpc/nova_save_qm_draft',
     '/rest/v1/rpc/nova_qm_inspection_finalize_v2'
   ];
+  const BREAKER_KEY = 'novaQmSchemaCacheBreakerUntilV1';
+  const BREAKER_MS = 5 * 60 * 1000;
 
   function url_(input) {
     return typeof input === 'string' ? input : String(input && input.url || '');
@@ -27,11 +29,28 @@
     return code === 'PGRST002' || message.includes('schema cache');
   }
 
+  function breakerUntil_() {
+    try { return Number(localStorage.getItem(BREAKER_KEY) || 0); } catch (ignore) { return 0; }
+  }
+
+  function breakerActive_() {
+    return breakerUntil_() > Date.now();
+  }
+
+  function openBreaker_() {
+    try { localStorage.setItem(BREAKER_KEY, String(Date.now() + BREAKER_MS)); } catch (ignore) {}
+  }
+
+  function closeBreaker_() {
+    try { localStorage.removeItem(BREAKER_KEY); } catch (ignore) {}
+  }
+
   function fallbackResponse_() {
     return new Response(JSON.stringify({
       code: 'PGRST202',
       message: 'QM DB schema cache unavailable; safe legacy fallback requested.',
-      originalCode: 'PGRST002'
+      originalCode: 'PGRST002',
+      circuitBreaker: true
     }), {
       status: 404,
       statusText: 'Not Found',
@@ -40,14 +59,24 @@
   }
 
   window.fetch = async function novaQmSchemaCacheFetch_(input, init) {
+    if (isTarget_(input) && breakerActive_()) {
+      console.warn('[NOVA QM] schema-cache breaker active · PostgREST 대기 없이 안전 fallback');
+      return fallbackResponse_();
+    }
+
     const response = await originalFetch(input, init);
-    if (!isTarget_(input) || response.ok) return response;
+    if (!isTarget_(input)) return response;
+    if (response.ok) {
+      closeBreaker_();
+      return response;
+    }
 
     let data = null;
     try { data = await response.clone().json(); } catch (ignore) { return response; }
     if (!schemaCacheFailure_(data)) return response;
 
-    console.warn('[NOVA QM] PGRST002 schema cache unavailable · built-in safe legacy fallback');
+    openBreaker_();
+    console.warn('[NOVA QM] PGRST002 schema cache unavailable · 5분 breaker + 즉시 안전 fallback');
     return fallbackResponse_();
   };
 })();
