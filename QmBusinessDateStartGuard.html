@@ -1,0 +1,44 @@
+<script>
+(() => {
+  'use strict';
+
+  // QM_BUSINESS_DATE_START_GUARD_V1
+  // DB-first QM 시작은 bootstrap 업무일자를 fallback으로 사용할 수 있지만,
+  // 후속 Apps Script 미러/legacy 시작 payload가 state.mobile.businessDate만 사용하면
+  // 모바일 상태 hydrate 타이밍에 따라 빈 업무일자가 전달될 수 있습니다.
+  // 기존 값이 있으면 절대 변경하지 않고, QM 점검시작 2개 경로에서만 DOM/세션의
+  // 현재 업무일자를 보충하여 기존 업무규칙과 DB-first 흐름은 그대로 유지합니다.
+  const previousCallServer = window.callServer;
+  if (typeof previousCallServer !== 'function' || previousCallServer.__novaQmBusinessDateStartGuardV1) return;
+
+  function currentBusinessDate_() {
+    try {
+      const input = document.getElementById('mobileDate');
+      const value = String(input && input.value || '').trim();
+      if (value) return value;
+    } catch (ignore) {}
+    try {
+      const stored = String(sessionStorage.getItem('novaMobileBusinessDate') || '').trim();
+      if (stored) return stored;
+    } catch (ignore) {}
+    return '';
+  }
+
+  function guardedCallServer_(method, ...args) {
+    if (method === 'startQmInspection' || method === 'startQmMobileBrowseInspection') {
+      const payloadIndex = 1; // callServer(method, token, payload)
+      const payload = args[payloadIndex];
+      if (payload && typeof payload === 'object' && !String(payload.businessDate || '').trim()) {
+        const businessDate = currentBusinessDate_();
+        if (businessDate) {
+          args[payloadIndex] = Object.assign({}, payload, { businessDate });
+        }
+      }
+    }
+    return previousCallServer(method, ...args);
+  }
+
+  guardedCallServer_.__novaQmBusinessDateStartGuardV1 = true;
+  window.callServer = guardedCallServer_;
+})();
+</script>
