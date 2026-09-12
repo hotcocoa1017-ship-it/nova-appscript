@@ -32,6 +32,9 @@ incident = read('docs/incidents/2026-09-12-shift-management-regression.md')
 require(bridge, 'SHIFT_MANAGEMENT_READ_NONBLOCKING_V1', 'nonblocking read marker')
 require(bridge, 'readNonBlocking: true', 'nonblocking response flag')
 require(bridge, 'sheetMirrorPending: mirrorPending', 'pending mirror diagnostic only')
+require(bridge, "code === 'PGRST002'", 'PostgREST schema-cache outage recognition')
+require(bridge, "reason: 'SCHEMA_CACHE_UNAVAILABLE'", 'schema-cache legacy fallback reason')
+require(bridge, 'readOnly || safe.allowLegacyFallback === true', 'schema-cache fallback scope guard')
 
 m = re.search(r'function getShiftManagementDataDbFirst\(.*?\n}\n\nfunction saveShiftAssignmentsDbFirst', bridge, flags=re.S)
 if not m:
