@@ -1,13 +1,14 @@
 <script>
 (() => {
   'use strict';
-  // QM_SCHEMA_CACHE_FALLBACK_V1
-  // Scope is intentionally limited to QM checklist draft/finalize RPCs.
+  // QM_SCHEMA_CACHE_FALLBACK_V2
+  // Scope is intentionally limited to QM checklist start/draft/finalize RPCs.
   // When PostgREST cannot build its schema cache (PGRST002), the RPC body has
   // not reached the PostgreSQL function. Re-map only that pre-execution failure
   // to the existing RPC-missing fallback path; all other failures remain unchanged.
   const originalFetch = window.fetch.bind(window);
   const targets = [
+    '/rest/v1/rpc/nova_qm_begin_inspection_v1',
     '/rest/v1/rpc/nova_save_qm_draft',
     '/rest/v1/rpc/nova_qm_inspection_finalize_v2'
   ];
