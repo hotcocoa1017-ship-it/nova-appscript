@@ -1,7 +1,8 @@
-// QM_SCHEMA_CACHE_START_FALLBACK_V2
+// QM_SCHEMA_CACHE_START_FALLBACK_V3
 // PGRST002는 PostgREST schema cache 단계 실패이므로 DB RPC가 실행되기 전입니다.
 // 이 경우에만 기존 Sheet QM 시작/초안 경로로 안전하게 복구합니다.
-// 중요: 사용자 응답 경로에서는 DB 재동기화를 기다리지 않습니다. 재동기화는 클라이언트 후행 호출로 분리합니다.
+// 중요: 이 함수 안에서는 DB-first QM 체크리스트/시작 RPC를 다시 호출하지 않습니다.
+// 사용자 응답 경로에서는 DB 재동기화를 기다리지 않으며, 재동기화는 클라이언트 후행 호출로 분리합니다.
 function startQmInspectionSchemaCacheFallback(token, payload) {
   return measureResponse_('startQmInspectionSchemaCacheFallback', () => {
     const user = requireRole_(token, ['QM']);
@@ -21,6 +22,7 @@ function startQmInspectionSchemaCacheFallback(token, payload) {
     let version = 0;
     let alreadyChecking = false;
     let beforeStatus = '';
+    let rowData = null;
     const lock = acquireWriteLock_(5000);
     try {
       const sheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
@@ -77,45 +79,53 @@ function startQmInspectionSchemaCacheFallback(token, payload) {
           startedAt,
           version,
           detail: {
-            action: 'START', role: 'QM', source: 'QM_SCHEMA_CACHE_START_FALLBACK_V2',
+            action: 'START', role: 'QM', source: 'QM_SCHEMA_CACHE_START_FALLBACK_V3',
             browseView: view, beforeCleaningStatus: beforeStatus, cleaningStatus: 'QM_CHECKING',
             primaryEmployeeNo: roommaidNo, secondaryEmployeeNo: secondaryRoommaidNo,
             schemaCacheCode: 'PGRST002'
           }
         });
       }
+
+      rowData = Object.assign({}, rowInfo.data, {
+        '청소상태': 'QM_CHECKING',
+        'QM사번': user.employeeNo,
+        '마지막변경버전': version
+      });
     } finally {
       try { lock.releaseLock(); } catch (ignore) {}
     }
 
-    const started = startQmInspection(token, {
-      businessDate,
-      site: responseSite,
-      roomNo,
-      realtimeStarted: true,
-      realtimeVersion: version
-    });
-    if (!started || !started.ok || !started.draft || !started.draft.draftId) {
-      throw new Error(started && started.message ? started.message : 'QM 체크리스트 저장준비를 완료하지 못했습니다.');
-    }
+    // 핵심 복구: 여기서는 startQmInspection()/DB-first 체크리스트를 다시 호출하지 않습니다.
+    // 어제까지 사용하던 Sheet 체크리스트 + Sheet QM 초안 생성 경로만 사용합니다.
+    const checklist = getQmChecklistForMobile_();
+    const draft = ensureQmInspectionDraft_(user, businessDate, responseSite, roomNo, rowData || {}, checklist);
+    if (!draft || !draft.draftId) throw new Error('QM 체크리스트 저장준비를 완료하지 못했습니다.');
 
-    // DB 재동기화는 여기서 실행하지 않습니다.
-    // PGRST002 장애 중 동기식 재동기화를 기다리면 Apps Script 응답이 12초를 넘겨
-    // 클라이언트가 점검 시작 실패로 오판합니다. 사용자가 먼저 작업을 계속하고,
-    // 클라이언트가 별도 후행 호출로 syncNovaRealtimeRoomForAction을 실행합니다.
-    return Object.assign({}, started, {
+    return {
       ok: true,
       dbFirst: false,
       schemaCacheFallback: true,
       schemaCacheCode: 'PGRST002',
       realtimeSyncDeferred: true,
       alreadyChecking,
-      room: Object.assign({}, started.room || {}, {
-        rowNumber, businessDate, site: responseSite, roomNo,
-        qmEmployeeNo: user.employeeNo,
+      version,
+      checklist,
+      draft,
+      room: {
+        rowNumber,
+        businessDate,
+        site: responseSite,
+        roomNo,
+        roomStatus: String(rowData && rowData['객실상태'] || '').trim(),
         cleaningStatus: 'QM_CHECKING',
-        version: Number(started.room && started.room.version || version || 0)
-      })
-    });
+        roommaidEmployeeNo: String(rowData && rowData['룸메이드사번'] || '').trim(),
+        secondaryRoommaidEmployeeNo: String(rowData && rowData['보조룸메이드사번'] || '').trim(),
+        qmEmployeeNo: user.employeeNo,
+        operationalStatus: String(rowData && (rowData['객실조치'] || rowData['운영상태']) || '').trim(),
+        version
+      },
+      message: alreadyChecking ? '진행 중인 점검을 불러왔습니다.' : 'QM 점검을 시작했습니다.'
+    };
   });
 }
