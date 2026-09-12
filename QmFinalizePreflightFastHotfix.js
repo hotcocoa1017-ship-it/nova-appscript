@@ -1,10 +1,10 @@
 /**
- * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V7
+ * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V8
  *
  * 기존 제출 검증과 DB 최종확정 규칙은 유지합니다. Realtime-disabled 최종제출은 브라우저에
  * businessDate/site/draftId가 이미 채워져 있어도 DB의 IN_PROGRESS draft를 권위값으로 확인한 뒤
- * 동일한 DB finalize 경로를 사용합니다. 재개 세션의 background draft 준비도 기존 DB draft를
- * 그대로 복원하여 최종제출 앞단에서 다시 startQmInspection에 막히지 않도록 합니다.
+ * 동일한 DB finalize 경로를 사용합니다. 재개 세션에서는 Sheet 변경버전이 아니라 DB resume context의
+ * roomVersion을 optimistic concurrency 기준으로 사용합니다.
  */
 
 function novaResolveResumedQmDbContext_(token, payload) { // QM_RESUME_CONTEXT_DB_AUTHORITY_V1
@@ -66,7 +66,7 @@ function novaApplyResumedQmDbContext_(safe, context) {
   return safe;
 }
 
-function novaFinalizeResumedQmDbFirst_(token, payload, context) { // QM_LEGACY_BRANCH_DB_FINALIZE_V1
+function novaFinalizeResumedQmDbFirst_(token, payload, context) { // QM_LEGACY_BRANCH_DB_FINALIZE_V1 · QM_RESUME_ROOM_VERSION_AUTHORITY_V1
   const safe = novaApplyResumedQmDbContext_(Object.assign({}, payload || {}), context);
   const preflight = prepareQmInspectionFinalizeDbFirst(token, safe);
   const draftId = String(context?.draftId || safe.draftId || '').trim();
@@ -93,7 +93,9 @@ function novaFinalizeResumedQmDbFirst_(token, payload, context) { // QM_LEGACY_B
         defects: Array.isArray(preflight?.defects) ? preflight.defects : [],
         resultStatus: String(preflight?.resultStatus || '').trim().toUpperCase(),
         startedAt: String(preflight?.startedAt || context?.startedAt || safe.startedAt || ''),
-        expectedVersion: Number(safe.expectedVersion || 0)
+        // Realtime-disabled Client의 active.roomVersion은 Sheet 변경버전일 수 있습니다.
+        // resume context가 방금 읽은 PostgreSQL room version을 사용해 버전 도메인을 섞지 않습니다.
+        expectedVersion: Number(context?.roomVersion || 0)
       },
       p_request_id: requestId
     }
@@ -271,16 +273,16 @@ startQmInspection = function(token, payload) {
     if (dbContext) novaApplyResumedQmDbContext_(safe, dbContext);
   }
 
-  // QM_RESUME_DRAFT_READY_DB_AUTHORITY_V1
+  // QM_RESUME_DRAFT_READY_DB_AUTHORITY_V2
   // Client의 ensureQmInspectionDraftReady_가 최종제출 전에 background start를 다시 호출하더라도,
-  // 이미 DB에 존재하는 본인 IN_PROGRESS draft를 그대로 돌려주어 신규 시작/Sheet 준비를 재실행하지 않습니다.
+  // 이미 DB에 존재하는 본인 IN_PROGRESS draft와 authoritative DB room version을 그대로 돌려줍니다.
   if (safe.realtimeStarted === true && dbContext?.draftId) {
     return {
       ok: true,
       realtime: true,
       dbFirst: true,
       recoveredExistingDraft: true,
-      version: Number(safe.realtimeVersion || 0),
+      version: Number(dbContext.roomVersion || 0),
       draft: {
         draftId: String(dbContext.draftId || ''),
         businessDate: String(dbContext.businessDate || ''),
@@ -308,7 +310,7 @@ startQmInspection = function(token, payload) {
 };
 
 /**
- * QM_FINALIZE_LEGACY_DATE_RECOVERY_V4
+ * QM_FINALIZE_LEGACY_DATE_RECOVERY_V5
  *
  * Client의 Realtime-disabled 분기는 DB finalize helper를 거치지 않고 이 함수로 직접 들어옵니다.
  * 이 분기는 Client 필드가 모두 채워져 있어도 DB의 IN_PROGRESS draft 문맥을 먼저 확인하고
