@@ -12,5 +12,5 @@
     ".json"
   ],
   "filePushOrder": [],
-  "skipSubdirectories": true
+  "skipSubdirectories": false
 }
