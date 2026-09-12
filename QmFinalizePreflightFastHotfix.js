@@ -1,9 +1,9 @@
 /**
- * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V5
+ * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V6
  *
- * 기존 제출 검증과 DB 최종확정 규칙은 유지합니다. 재개 세션에서 브라우저의
- * businessDate/site/draftId 일부가 유실된 경우에만 DB의 IN_PROGRESS draft를 권위값으로
- * 복구합니다. DB 문맥을 확인할 수 없는 경우에는 기존 Sheet 복구 경로를 그대로 사용합니다.
+ * 기존 제출 검증과 DB 최종확정 규칙은 유지합니다. Realtime-disabled 최종제출은 브라우저에
+ * businessDate/site/draftId가 이미 채워져 있어도 DB의 IN_PROGRESS draft를 권위값으로 확인한 뒤
+ * 동일한 DB finalize 경로를 사용합니다. DB 문맥을 확인할 수 없는 경우에만 기존 Sheet 호환 경로를 유지합니다.
  */
 
 function novaResolveResumedQmDbContext_(token, payload) { // QM_RESUME_CONTEXT_DB_AUTHORITY_V1
@@ -277,12 +277,12 @@ startQmInspection = function(token, payload) {
 };
 
 /**
- * QM_FINALIZE_LEGACY_DATE_RECOVERY_V3
+ * QM_FINALIZE_LEGACY_DATE_RECOVERY_V4
  *
  * Client의 Realtime-disabled 분기는 DB finalize helper를 거치지 않고 이 함수로 직접 들어옵니다.
- * 재개 세션의 날짜/site/draftId 중 하나라도 유실된 경우 DB draft 문맥을 먼저 복구하고,
- * 기존 Sheet-only 완료가 아니라 동일한 nova_qm_inspection_finalize_v2를 실행합니다.
- * 정상 legacy 요청과 DB 커밋 후 Sheet 상세미러 경로는 기존 동작을 유지합니다.
+ * 이 분기는 Client 필드가 모두 채워져 있어도 DB의 IN_PROGRESS draft 문맥을 먼저 확인하고
+ * 동일한 nova_qm_inspection_finalize_v2를 실행합니다. DB 문맥이 없을 때만 기존 호환 경로를 유지합니다.
+ * DB 커밋 후 Sheet 상세미러 경로는 기존 동작을 유지합니다.
  */
 const novaSubmitQmChecklistInspectionOriginal_ = submitQmChecklistInspection;
 submitQmChecklistInspection = function(token, payload) {
@@ -290,9 +290,10 @@ submitQmChecklistInspection = function(token, payload) {
   const needsDbResumeContext = !String(safe.businessDate || '').trim()
     || !String(safe.site || '').trim()
     || !String(safe.draftId || '').trim();
+  const shouldResolveDbContext = safe.realtimeCommitted !== true || needsDbResumeContext;
 
   let dbContext = null;
-  if (needsDbResumeContext && String(safe.roomNo || '').trim()) {
+  if (shouldResolveDbContext && String(safe.roomNo || '').trim()) {
     dbContext = novaResolveResumedQmDbContext_(token, safe);
     if (dbContext) novaApplyResumedQmDbContext_(safe, dbContext);
   }
