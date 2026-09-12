@@ -2,17 +2,21 @@
 (() => {
   'use strict';
   // QM_SCHEMA_CACHE_FALLBACK_V8
+  // QM_SCHEMA_CACHE_DIRECT_DB_RESILIENT_V1
   // PGRST002는 PostgREST schema cache 단계 실패라 PostgreSQL RPC가 실행되기 전입니다.
-  // 시작/임시저장/최종저장 모두 기존 Client의 PGRST202 안전 fallback으로 통일합니다.
-  // 장애가 한 번 확인되면 TTL 동안 회로를 고정하여 DB/Sheet 경로가 요청마다 교차하는 것을 막습니다.
+  // 기존 5분 sticky breaker는 유지하되, Sheet legacy fallback 전에
+  // verify_jwt 보호 Edge Function의 직접 PostgreSQL 경로를 먼저 사용합니다.
+  // 직접 DB transport 자체가 준비되지 않은 경우에만 기존 PGRST202 legacy fallback으로 내려갑니다.
   const originalFetch = window.fetch.bind(window);
   const targets = [
     '/rest/v1/rpc/nova_qm_begin_inspection_v1',
+    '/rest/v1/rpc/nova_qm_prepare_new_draft_v1',
     '/rest/v1/rpc/nova_save_qm_draft',
     '/rest/v1/rpc/nova_qm_inspection_finalize_v2'
   ];
   const BREAKER_KEY = 'novaQmSchemaCacheBreakerUntilV1';
   const BREAKER_MS = 5 * 60 * 1000;
+  const DIRECT_EDGE_SLUG = 'nova-qm-db-resilient-v1';
 
   function url_(input) {
     return typeof input === 'string' ? input : String(input && input.url || '');
@@ -21,6 +25,14 @@
   function isTarget_(input) {
     const url = url_(input);
     return targets.some(path => url.includes(path));
+  }
+
+  function rpcName_(input) {
+    const url = url_(input);
+    const marker = '/rest/v1/rpc/';
+    const index = url.indexOf(marker);
+    if (index < 0) return '';
+    return decodeURIComponent(url.slice(index + marker.length).split(/[?#]/)[0] || '').trim();
   }
 
   function schemaCacheFailure_(data) {
@@ -54,16 +66,87 @@
     });
   }
 
+  async function argsFromRequest_(input, init) {
+    const body = init && init.body;
+    if (typeof body === 'string' && body.trim()) {
+      try { return JSON.parse(body); } catch (ignore) { return null; }
+    }
+    if (typeof Request !== 'undefined' && input instanceof Request) {
+      try { return await input.clone().json(); } catch (ignore) { return null; }
+    }
+    return body && typeof body === 'object' ? body : null;
+  }
+
+  function headersFromRequest_(input, init) {
+    try {
+      if (init && init.headers) return new Headers(init.headers);
+      if (typeof Request !== 'undefined' && input instanceof Request) return new Headers(input.headers);
+    } catch (ignore) {}
+    return new Headers();
+  }
+
+  function directEdgeUrl_(input) {
+    try {
+      const parsed = new URL(url_(input));
+      return `${parsed.origin}/functions/v1/${DIRECT_EDGE_SLUG}`;
+    } catch (ignore) {
+      return '';
+    }
+  }
+
+  async function directDbResponse_(input, init) {
+    const rpc = rpcName_(input);
+    const endpoint = directEdgeUrl_(input);
+    const args = await argsFromRequest_(input, init);
+    if (!rpc || !endpoint || !args) return null;
+
+    const sourceHeaders = headersFromRequest_(input, init);
+    const authorization = String(sourceHeaders.get('Authorization') || sourceHeaders.get('authorization') || '').trim();
+    const apikey = String(sourceHeaders.get('apikey') || '').trim();
+    if (!authorization) return null;
+
+    const headers = new Headers({ 'Content-Type': 'application/json' });
+    headers.set('Authorization', authorization);
+    if (apikey) headers.set('apikey', apikey);
+
+    try {
+      const response = await originalFetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ rpc, args })
+      });
+
+      // 인증/권한/동시성/업무검증 오류는 DB authoritative 결과이므로 그대로 반환합니다.
+      if (response.status !== 503) return response;
+
+      let data = null;
+      try { data = await response.clone().json(); } catch (ignore) {}
+      if (String(data && data.code || '').trim().toUpperCase() !== 'QM_DB_DIRECT_UNAVAILABLE') {
+        return response;
+      }
+      console.warn('[NOVA QM] direct DB edge transport unavailable · 기존 legacy fallback 유지');
+      return null;
+    } catch (error) {
+      console.warn('[NOVA QM] direct DB edge network unavailable · 기존 legacy fallback 유지:', error?.message || error);
+      return null;
+    }
+  }
+
   window.fetch = async function novaQmSchemaCacheFetch_(input, init) {
     if (isTarget_(input) && breakerActive_()) {
-      console.warn('[NOVA QM] schema-cache breaker active · PostgREST 대기 없이 안전 fallback');
+      const direct = await directDbResponse_(input, init);
+      if (direct) {
+        console.warn('[NOVA QM] schema-cache breaker active · direct DB edge transport 사용');
+        return direct;
+      }
+      console.warn('[NOVA QM] schema-cache breaker active · direct DB 불가로 기존 safe legacy fallback');
       return fallbackResponse_();
     }
 
     const response = await originalFetch(input, init);
     if (!isTarget_(input)) return response;
     // 회로가 열리지 않은 정상상태에서는 성공 응답을 그대로 사용합니다.
-    // 한 번 열린 회로는 단일 성공응답으로 조기 해제하지 않고 TTL 만료까지 fallback 권한을 고정합니다.
+    // 한 번 열린 회로는 단일 성공응답으로 조기 해제하지 않고 TTL 만료까지 고정합니다.
     if (response.ok) return response;
 
     let data = null;
@@ -71,7 +154,13 @@
     if (!schemaCacheFailure_(data)) return response;
 
     openBreaker_();
-    console.warn('[NOVA QM] PGRST002 schema cache unavailable · 5분 sticky breaker + 즉시 안전 fallback');
+    const direct = await directDbResponse_(input, init);
+    if (direct) {
+      console.warn('[NOVA QM] PGRST002 · PostgREST 우회 direct DB edge transport 사용');
+      return direct;
+    }
+
+    console.warn('[NOVA QM] PGRST002 · direct DB 불가로 5분 sticky breaker + 기존 safe legacy fallback');
     return fallbackResponse_();
   };
 })();
