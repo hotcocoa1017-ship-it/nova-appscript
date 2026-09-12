@@ -75,7 +75,10 @@ function novaQmChecklistDefinitionDbFirst_(token, legacyFactory) {
 }
 
 function getQmChecklistForSubmitDbFirst_(token) {
-  return novaQmChecklistDefinitionDbFirst_(token, getQmChecklistForSubmit_);
+  // QM_FINALIZE_PREFLIGHT_SCHEMA_CACHE_BYPASS_V1
+  // 최종제출/사전검증은 DB-first 관리 변경이 이미 동기화한 Sheet 정의를 사용하여
+  // PostgREST schema cache 장애가 점검완료를 가로막지 않도록 합니다.
+  return getQmChecklistForSubmit_();
 }
 
 function getQmChecklistForMobileDbFirst_(token) {
