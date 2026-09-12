@@ -12,6 +12,7 @@ const ALLOWED = new Set([
   "nova_qm_prepare_new_draft_v1",
   "nova_save_qm_draft",
   "nova_qm_inspection_finalize_v2",
+  "nova_qm_resume_context_v1",
   "nova_create_qm_houseman_order",
   "nova_mobile_my_houseman_orders_v1",
   "nova_qm_last_qm_cards_v1",
@@ -20,8 +21,8 @@ const ALLOWED = new Set([
 ]);
 
 const DB_URL = String(Deno.env.get("SUPABASE_DB_URL") || "").trim();
-// QM_FINALIZE_CONTEXT_AUTHORITY_EDGE_V7
-// Finalize date/site/draft recovery belongs to the DB resolver, so every transport shares one rule.
+// QM_RESUME_CONTEXT_EDGE_V8
+// Finalize/resume context authority belongs to DB; Edge only transports the authenticated RPC.
 const SQL = DB_URL ? postgres(DB_URL, {
   prepare: false,
   max: 2,
@@ -36,7 +37,7 @@ function json(status: number, body: Record<string, unknown>) {
       ...CORS,
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
-      "X-NOVA-QM-Transport": "direct-db-edge-v7",
+      "X-NOVA-QM-Transport": "direct-db-edge-v8",
     },
   });
 }
@@ -134,6 +135,10 @@ Deno.serve(async (req: Request) => {
         const rows = await tx`select public.nova_qm_prepare_new_draft_v1(${String(args.p_business_date || "")}::date, ${String(args.p_site || "")}, ${String(args.p_room_no || "")}, ${Number(args.p_expected_room_version || 0)}::bigint, ${String(args.p_request_id || "")}) as result`;
         return rows[0]?.result ?? null;
       }
+      if (rpc === "nova_qm_resume_context_v1") {
+        const rows = await tx`select public.nova_qm_resume_context_v1(${String(args.p_room_no || "")}, ${String(args.p_site || "")}) as result`;
+        return rows[0]?.result ?? null;
+      }
       if (rpc === "nova_save_qm_draft") {
         const answers = jsonArray(args.p_answers, "QM answers");
         const defects = jsonArray(args.p_defects, "QM defects");
@@ -181,7 +186,7 @@ Deno.serve(async (req: Request) => {
     }
     return new Response(JSON.stringify(result), {
       status: 200,
-      headers: { ...CORS, "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-NOVA-QM-Transport": "direct-db-edge-v7" },
+      headers: { ...CORS, "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-NOVA-QM-Transport": "direct-db-edge-v8" },
     });
   } catch (error: any) {
     console.error("nova-qm-db-resilient-v1", rpc, error);

@@ -1,21 +1,156 @@
 /**
- * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V4
+ * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V5
  *
- * 최종제출 preflight가 체크리스트 정의를 다시 읽기 위해 Sheet / Cloud Run / Edge / PostgREST를
- * 왕복하면서 멈추는 경로를 제거합니다. 브라우저는 제출 직전에 이미 동일 체크리스트로
- * 필수 결과·불량 메모·사진 필수·추가하자 검증을 수행합니다. 여기서는 서버 권한/식별정보와
- * 전달된 정규 데이터의 형태를 다시 검증하고, 실제 mutation은 기존
- * nova_qm_inspection_finalize_v2의 권한·배정·QM_CHECKING·동시성·idempotency 검증에 맡깁니다.
- *
- * Client 내부 state.mobile.businessDate가 비어 있는 재개 세션에서는 preflight가 업무일자를
- * 선제 차단하지 않습니다. finalize 전송계층/DB가 draft의 실제 businessDate를 권위값으로
- * 복구할 수 있도록 빈 값은 그대로 허용합니다. 날짜가 전달된 경우에는 기존
- * normalizeBusinessDate_ 검증을 그대로 유지합니다.
+ * 기존 제출 검증과 DB 최종확정 규칙은 유지합니다. 재개 세션에서 브라우저의
+ * businessDate/site/draftId 일부가 유실된 경우에만 DB의 IN_PROGRESS draft를 권위값으로
+ * 복구합니다. DB 문맥을 확인할 수 없는 경우에는 기존 Sheet 복구 경로를 그대로 사용합니다.
  */
+
+function novaResolveResumedQmDbContext_(token, payload) { // QM_RESUME_CONTEXT_DB_AUTHORITY_V1
+  const safe = payload || {};
+  const roomNo = String(safe.roomNo || '').trim();
+  const site = String(safe.site || '').trim();
+  if (!roomNo) return null;
+
+  let auth;
+  try {
+    auth = novaDbFirstRealtimeAuth_(token);
+  } catch (error) {
+    console.warn('[NOVA QM] DB 재개 문맥 인증 준비 지연:', error?.message || error);
+    return null;
+  }
+
+  try {
+    const origin = String(auth.supabaseUrl || '').replace(/\/+$/, '');
+    if (!origin || !auth.token || !auth.publishableKey) return null;
+    const response = UrlFetchApp.fetch(`${origin}/functions/v1/nova-qm-db-resilient-v1`, {
+      method: 'post',
+      contentType: 'application/json; charset=utf-8',
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        apikey: String(auth.publishableKey || '')
+      },
+      payload: JSON.stringify({
+        rpc: 'nova_qm_resume_context_v1',
+        args: { p_room_no: roomNo, p_site: site }
+      }),
+      muteHttpExceptions: true,
+      followRedirects: true
+    });
+    const status = Number(response.getResponseCode() || 0);
+    let data = {};
+    try { data = JSON.parse(response.getContentText('UTF-8') || '{}'); } catch (ignore) {}
+
+    if (status >= 200 && status < 300 && data?.ok === true && data?.found === true) return data;
+    if (data?.ambiguous === true || String(data?.code || '') === 'QM_RESUME_CONTEXT_AMBIGUOUS') {
+      const error = new Error('동일 객실의 진행 중 QM 초안이 여러 건입니다. 관리자 확인이 필요합니다.');
+      error.code = 'QM_RESUME_CONTEXT_AMBIGUOUS';
+      throw error;
+    }
+    return null;
+  } catch (error) {
+    if (String(error?.code || '') === 'QM_RESUME_CONTEXT_AMBIGUOUS') throw error;
+    console.warn('[NOVA QM] DB 재개 문맥 복구 지연:', error?.message || error);
+    return null;
+  }
+}
+
+function novaApplyResumedQmDbContext_(safe, context) {
+  if (!context?.found) return safe;
+  safe.businessDate = String(context.businessDate || safe.businessDate || '').trim();
+  safe.site = String(context.site || safe.site || '').trim();
+  safe.roomNo = String(context.roomNo || safe.roomNo || '').trim();
+  safe.draftId = String(context.draftId || safe.draftId || '').trim();
+  if (!safe.startedAt && context.startedAt) safe.startedAt = String(context.startedAt || '').trim();
+  return safe;
+}
+
+function novaFinalizeResumedQmDbFirst_(token, payload, context) { // QM_LEGACY_BRANCH_DB_FINALIZE_V1
+  const safe = novaApplyResumedQmDbContext_(Object.assign({}, payload || {}), context);
+  const preflight = prepareQmInspectionFinalizeDbFirst(token, safe);
+  const draftId = String(context?.draftId || safe.draftId || '').trim();
+  if (!draftId) throw new Error('QM 초안 식별정보를 확인할 수 없습니다.');
+
+  const requestId = String(safe.realtimeRequestId || safe.requestId || `QM-LEGACY-FINALIZE-${draftId}`)
+    .replace(/[^A-Za-z0-9._:-]/g, '-')
+    .slice(0, 180);
+  const auth = novaDbFirstRealtimeAuth_(token);
+  const origin = String(auth.supabaseUrl || '').replace(/\/+$/, '');
+  if (!origin || !auth.token || !auth.publishableKey) throw new Error('QM DB 인증정보를 준비할 수 없습니다.');
+
+  const requestBody = {
+    rpc: 'nova_qm_inspection_finalize_v2',
+    args: {
+      p_payload: {
+        businessDate: String(context.businessDate || safe.businessDate || ''),
+        site: String(context.site || safe.site || ''),
+        roomNo: String(context.roomNo || safe.roomNo || ''),
+        inspectionId: draftId,
+        draftId,
+        checklistRevision: String(preflight?.revision || safe.revision || ''),
+        answers: Array.isArray(preflight?.answers) ? preflight.answers : [],
+        defects: Array.isArray(preflight?.defects) ? preflight.defects : [],
+        resultStatus: String(preflight?.resultStatus || '').trim().toUpperCase(),
+        startedAt: String(preflight?.startedAt || context?.startedAt || safe.startedAt || ''),
+        expectedVersion: Number(safe.expectedVersion || 0)
+      },
+      p_request_id: requestId
+    }
+  };
+
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = UrlFetchApp.fetch(`${origin}/functions/v1/nova-qm-db-resilient-v1`, {
+        method: 'post',
+        contentType: 'application/json; charset=utf-8',
+        headers: {
+          Authorization: `Bearer ${auth.token}`,
+          apikey: String(auth.publishableKey || '')
+        },
+        payload: JSON.stringify(requestBody),
+        muteHttpExceptions: true,
+        followRedirects: true
+      });
+      const status = Number(response.getResponseCode() || 0);
+      let data = {};
+      try { data = JSON.parse(response.getContentText('UTF-8') || '{}'); } catch (ignore) {}
+      if (status >= 200 && status < 300 && data?.ok === true) {
+        return Object.assign({}, data, { requestId });
+      }
+      const message = String(data?.message || `QM DB 최종저장 실패 (${status})`).trim();
+      const code = String(data?.code || '').trim();
+      const error = new Error(message);
+      error.code = code;
+      if (status === 429 || status >= 500) {
+        lastError = error;
+        if (attempt === 0) {
+          Utilities.sleep(180);
+          continue;
+        }
+      }
+      throw error;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0 && !String(error?.code || '').trim()) {
+        Utilities.sleep(180);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError || new Error('QM DB 최종저장 결과를 확인할 수 없습니다.');
+}
+
 prepareQmInspectionFinalizeDbFirst = function(token, payload) {
   return measureResponse_('prepareQmInspectionFinalizeDbFirst', () => {
     const user = requireRole_(token, ['QM']);
-    const safe = payload || {};
+    const safe = Object.assign({}, payload || {});
+    const roomNoBefore = String(safe.roomNo || '').trim();
+    if (roomNoBefore && (!String(safe.businessDate || '').trim() || !String(safe.site || '').trim())) {
+      const dbContext = novaResolveResumedQmDbContext_(token, safe);
+      if (dbContext) novaApplyResumedQmDbContext_(safe, dbContext);
+    }
     const rawBusinessDate = String(safe.businessDate || '').trim();
     const businessDate = rawBusinessDate ? normalizeBusinessDate_(rawBusinessDate) : '';
     const site = String(safe.site || user.defaultSite || '').trim();
@@ -53,7 +188,7 @@ prepareQmInspectionFinalizeDbFirst = function(token, payload) {
       preflight: true,
       fastPreflight: true,
       businessDate,
-      businessDateSource: businessDate ? 'CLIENT' : 'DB_DRAFT_FINALIZE_FALLBACK',
+      businessDateSource: businessDate ? (roomNoBefore && String(payload?.businessDate || '').trim() ? 'CLIENT' : 'DB_RESUME_CONTEXT') : 'DB_DRAFT_FINALIZE_FALLBACK',
       site,
       roomNo,
       revision: String(safe.revision || '').trim(),
@@ -70,17 +205,7 @@ prepareQmInspectionFinalizeDbFirst = function(token, payload) {
 
 /**
  * QM_RESUMED_DRAFT_DATE_RECOVERY_V1
- *
- * 재개된 QM 모달에서 Client state.mobile.businessDate가 비어 있고 draftId도 아직 Client에
- * 복원되지 않은 경우, 최종제출의 legacy 분기는 ensureQmInspectionDraftReady_ ->
- * beginQmInspectionDraftInit_ -> startQmInspection 순으로 들어갑니다. 원본 startQmInspection은
- * payload.businessDate를 가장 먼저 normalize하므로 이 지점에서 "업무일자를 확인해 주세요."가
- * 발생하면 submit/preflight/finalize 어느 곳에도 도달하지 못합니다.
- *
- * 이 예외적인 blank-date 재개 경로에서만, 기존 QM_CHECKLIST IN_PROGRESS 이력 중
- * 동일 사용자·사업장·객실의 가장 최근 초안 업무일자를 권위값으로 복구합니다.
- * 이력이 없을 때는 기존 CURRENT 시트의 동일 사용자·사업장·객실 QM 행을 보조값으로 사용합니다.
- * 날짜가 이미 전달되면 원본 startQmInspection을 그대로 호출합니다.
+ * Sheet 복구는 DB 문맥 조회가 사용할 수 없을 때만 기존 호환 경로로 유지합니다.
  */
 function novaResolveResumedQmBusinessDate_(user, payload) {
   const safe = payload || {};
@@ -139,6 +264,10 @@ function novaResolveResumedQmBusinessDate_(user, payload) {
 const novaStartQmInspectionOriginal_ = startQmInspection;
 startQmInspection = function(token, payload) {
   const safe = Object.assign({}, payload || {});
+  if (!String(safe.businessDate || '').trim() || !String(safe.site || '').trim()) {
+    const dbContext = novaResolveResumedQmDbContext_(token, safe);
+    if (dbContext) novaApplyResumedQmDbContext_(safe, dbContext);
+  }
   if (!String(safe.businessDate || '').trim()) {
     const user = requireRole_(token, ['QM']);
     const recoveredBusinessDate = novaResolveResumedQmBusinessDate_(user, safe);
@@ -148,16 +277,70 @@ startQmInspection = function(token, payload) {
 };
 
 /**
- * QM_FINALIZE_LEGACY_DATE_RECOVERY_V2
+ * QM_FINALIZE_LEGACY_DATE_RECOVERY_V3
  *
- * Realtime 설정이 일시적으로 비활성/미초기화된 경우 Client는 기존
- * submitQmChecklistInspection 경로를 사용합니다. businessDate가 비어 있으면 먼저 draftId의
- * 업무일자를 사용하고, Client에 draftId가 아직 복원되지 않은 재개 세션이면 위와 동일한
- * IN_PROGRESS 초안 기준으로 업무일자를 복구한 뒤 원본 제출 함수를 호출합니다.
+ * Client의 Realtime-disabled 분기는 DB finalize helper를 거치지 않고 이 함수로 직접 들어옵니다.
+ * 재개 세션의 날짜/site/draftId 중 하나라도 유실된 경우 DB draft 문맥을 먼저 복구하고,
+ * 기존 Sheet-only 완료가 아니라 동일한 nova_qm_inspection_finalize_v2를 실행합니다.
+ * 정상 legacy 요청과 DB 커밋 후 Sheet 상세미러 경로는 기존 동작을 유지합니다.
  */
 const novaSubmitQmChecklistInspectionOriginal_ = submitQmChecklistInspection;
 submitQmChecklistInspection = function(token, payload) {
   const safe = Object.assign({}, payload || {});
+  const needsDbResumeContext = !String(safe.businessDate || '').trim()
+    || !String(safe.site || '').trim()
+    || !String(safe.draftId || '').trim();
+
+  let dbContext = null;
+  if (needsDbResumeContext && String(safe.roomNo || '').trim()) {
+    dbContext = novaResolveResumedQmDbContext_(token, safe);
+    if (dbContext) novaApplyResumedQmDbContext_(safe, dbContext);
+  }
+
+  if (safe.realtimeCommitted === true) {
+    if (dbContext) {
+      const mirrorSafe = Object.assign({}, safe, { draftId: '', draftRowNumber: 0 });
+      return novaSubmitQmChecklistInspectionOriginal_(token, mirrorSafe);
+    }
+    return novaSubmitQmChecklistInspectionOriginal_(token, safe);
+  }
+
+  if (dbContext) {
+    const dbResult = novaFinalizeResumedQmDbFirst_(token, safe, dbContext);
+    let sheetMirrorPending = false;
+    let mirrorDraftId = '';
+    try {
+      if (safe.draftId) {
+        const sheetDraft = getQmInspectionRecordById_(String(safe.draftId || '').trim(), safe.draftRowNumber);
+        if (sheetDraft) mirrorDraftId = String(safe.draftId || '').trim();
+      }
+    } catch (ignore) {}
+
+    try {
+      const mirrorSafe = Object.assign({}, safe, {
+        businessDate: String(dbContext.businessDate || ''),
+        site: String(dbContext.site || ''),
+        roomNo: String(dbContext.roomNo || ''),
+        draftId: mirrorDraftId,
+        draftRowNumber: mirrorDraftId ? Number(safe.draftRowNumber || 0) : 0,
+        realtimeCommitted: true,
+        realtimeRequestId: String(dbResult.requestId || ''),
+        realtimeVersion: Number(dbResult.version || dbResult.room?.version || 0)
+      });
+      novaSubmitQmChecklistInspectionOriginal_(token, mirrorSafe);
+    } catch (mirrorError) {
+      sheetMirrorPending = true;
+      console.warn('[NOVA QM] DB 최종완료 후 Sheet 상세미러 지연:', mirrorError?.message || mirrorError);
+    }
+
+    return Object.assign({}, dbResult, {
+      ok: true,
+      dbFirst: true,
+      sheetMirrorPending,
+      message: '점검결과를 저장했습니다.'
+    });
+  }
+
   if (!String(safe.businessDate || '').trim()) {
     const user = requireRole_(token, ['QM']);
     const draftId = String(safe.draftId || '').trim();
