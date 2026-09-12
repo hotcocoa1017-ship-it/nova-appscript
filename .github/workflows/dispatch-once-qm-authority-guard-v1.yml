@@ -1,0 +1,17 @@
+name: Dispatch QM authority guard once
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dispatch-once-qm-authority-guard-v1.yml'
+permissions:
+  actions: write
+  contents: read
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger canonical Apps Script deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-apps-script.yml --repo hotcocoa1017-ship-it/nova-appscript --ref main -f deploy=true
