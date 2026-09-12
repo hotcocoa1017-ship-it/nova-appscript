@@ -2,109 +2,10 @@
 (() => {
   'use strict';
 
-  // QM_FAST_PATH_DIRECT_EDGE_V3
-  // 기존 Client/DB business rule은 그대로 유지하고 QM 핵심저장 + QM 하우스맨 등록/내요청의 전송경로만 단축합니다.
-  // PostgREST schema cache 장애가 나도 동일 JWT/requestId/business rule을 direct DB Edge에서 그대로 사용합니다.
-  if (!window.__novaQmFastPathDirectEdgeV3 && typeof window.fetch === 'function') {
-    window.__novaQmFastPathDirectEdgeV3 = true;
-    const nativeFetch = window.fetch.bind(window);
-    const rpcNames = new Set([
-      'nova_qm_begin_inspection_v1',
-      'nova_qm_prepare_new_draft_v1',
-      'nova_save_qm_draft',
-      'nova_qm_inspection_finalize_v2',
-      'nova_create_qm_houseman_order',
-      'nova_mobile_my_houseman_orders_v1'
-    ]);
-    const transportFallbackCodes = new Set([
-      'QM_DB_DIRECT_UNAVAILABLE',
-      'QM_DB_DIRECT_ERROR',
-      'QM_DB_DIRECT_EMPTY'
-    ]);
-
-    function syncBusinessDateToClientState_(businessDate) {
-      const value = String(businessDate || '').trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return;
-      const input = document.getElementById('mobileDate');
-      if (!input) return;
-      if (String(input.value || '').trim() !== value) input.value = value;
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-
-    function rememberQmContext_(rpc, args) {
-      const payload = args?.p_payload && typeof args.p_payload === 'object' ? args.p_payload : {};
-      const businessDate = String(args?.p_business_date || payload.businessDate || '').trim();
-      const site = String(args?.p_site || payload.site || '').trim();
-      const roomNo = String(args?.p_room_no || payload.roomNo || '').trim();
-      const context = Object.assign({}, window.__novaQmFastPathContext || {});
-      if (/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) context.businessDate = businessDate;
-      if (site) context.site = site;
-      if (roomNo) context.roomNo = roomNo;
-      context.rpc = rpc;
-      context.updatedAt = Date.now();
-      window.__novaQmFastPathContext = context;
-      if (context.businessDate) {
-        try { sessionStorage.setItem('novaMobileBusinessDate', context.businessDate); } catch (_) {}
-        // 최종완료 직전 초안저장처럼 authoritative date가 RPC payload에 들어온 순간
-        // Client lexical state.mobile.businessDate도 즉시 동일 값으로 맞춥니다.
-        syncBusinessDateToClientState_(context.businessDate);
-      }
-    }
-
-    window.fetch = async function(input, init) {
-      const url = typeof input === 'string' ? input : String(input?.url || '');
-      const method = String(init?.method || input?.method || 'GET').trim().toUpperCase();
-      const match = method === 'POST'
-        ? url.match(/\/rest\/v1\/rpc\/(nova_qm_begin_inspection_v1|nova_qm_prepare_new_draft_v1|nova_save_qm_draft|nova_qm_inspection_finalize_v2|nova_create_qm_houseman_order|nova_mobile_my_houseman_orders_v1)(?:\?|$)/)
-        : null;
-      const rpc = String(match?.[1] || '');
-      if (!rpcNames.has(rpc)) return nativeFetch(input, init);
-
-      let args = {};
-      try {
-        const rawBody = typeof init?.body === 'string' ? init.body : '';
-        args = rawBody ? JSON.parse(rawBody) : {};
-      } catch (_) {
-        return nativeFetch(input, init);
-      }
-
-      rememberQmContext_(rpc, args);
-
-      const sourceHeaders = new Headers(init?.headers || input?.headers || {});
-      const authorization = String(sourceHeaders.get('Authorization') || '');
-      const apikey = String(sourceHeaders.get('apikey') || '');
-      if (!authorization || !apikey) return nativeFetch(input, init);
-
-      try {
-        const supabaseOrigin = new URL(url).origin;
-        const edgeResponse = await nativeFetch(`${supabaseOrigin}/functions/v1/nova-qm-db-resilient-v1`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': authorization,
-            'apikey': apikey
-          },
-          body: JSON.stringify({ rpc, args })
-        });
-        if (edgeResponse.ok) return edgeResponse;
-
-        let edgeBody = {};
-        try { edgeBody = await edgeResponse.clone().json(); } catch (_) {}
-        const edgeCode = String(edgeBody?.code || '').trim().toUpperCase();
-        if (edgeCode && !transportFallbackCodes.has(edgeCode)) return edgeResponse;
-        if (!transportFallbackCodes.has(edgeCode) && edgeResponse.status < 500) return edgeResponse;
-
-        console.warn(`[NOVA QM] direct DB edge transport fallback · ${rpc} · ${edgeCode || edgeResponse.status}`);
-      } catch (error) {
-        console.warn(`[NOVA QM] direct DB edge network fallback · ${rpc}:`, error?.message || error);
-      }
-      return nativeFetch(input, init);
-    };
-  }
-
-  // QM_DBFIRST_SAVE_UNBLOCK_V3
+  // QM_DBFIRST_SAVE_UNBLOCK_V2
   // Supabase DB-first 점검은 이미 시작됐지만 레거시 Sheet mirror만 지연/실패한 경우,
   // 임시 저장/점검 완료를 Sheet mirror에 묶지 않습니다.
+  // 점검 시작 자체가 아직 진행 중이거나 실제 저장/완료 요청이 처리 중인 동안에는 잠금을 유지합니다.
   const ROOT_ID = 'modalRoot';
   const LEGACY_MIRROR_TITLE = 'Supabase 점검 시작은 완료됐습니다. 기존 이력 동기화가 끝나면 저장할 수 있습니다.';
   const START_PENDING_TEXT = '점검 시작 처리 중';
@@ -144,18 +45,6 @@
     return false;
   }
 
-  function hydrateBusinessDateBeforeQmAction_() { // QM_FINALIZE_BUSINESS_DATE_HYDRATE_V3
-    const input = document.getElementById('mobileDate');
-    if (!input) return;
-    const captured = String(window.__novaQmFastPathContext?.businessDate || '').trim();
-    let stored = '';
-    try { stored = String(sessionStorage.getItem('novaMobileBusinessDate') || '').trim(); } catch (_) {}
-    const value = captured || String(input.value || '').trim() || stored;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return;
-    if (String(input.value || '').trim() !== value) input.value = value;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-
   function reconcileControls_() {
     const root = document.getElementById(ROOT_ID);
     if (!root || root.classList.contains('hidden')) {
@@ -171,6 +60,7 @@
       return;
     }
 
+    // 실제 저장/완료 요청에서 기존 Client가 버튼을 다시 활성화하면 작업 표시만 원복합니다.
     if (operationActive) {
       if (!operationButton?.isConnected) {
         resetOperation_();
@@ -181,13 +71,15 @@
       }
     }
 
+    // DB는 이미 QM_CHECKING + draft 상태이므로 Sheet mirror만 지연된 잠금은 해제합니다.
+    // startPending 잠금은 상태문구로 구분하여 절대 해제하지 않습니다.
     if (!mirrorOnlyLock_(submit, status)) return;
     saveOnly.disabled = false;
     submit.disabled = false;
     submit.removeAttribute('title');
     saveOnly.removeAttribute('title');
-    submit.dataset.novaQmDbFirstSaveUnblock = '3';
-    saveOnly.dataset.novaQmDbFirstSaveUnblock = '3';
+    submit.dataset.novaQmDbFirstSaveUnblock = '2';
+    saveOnly.dataset.novaQmDbFirstSaveUnblock = '2';
   }
 
   const root = document.getElementById(ROOT_ID);
@@ -212,8 +104,8 @@
       return;
     }
 
-    hydrateBusinessDateBeforeQmAction_();
-
+    // 기존 Client 핸들러는 그대로 실행합니다. 여기서는 사용자가 눌렀다는 즉시 피드백만 표시하고
+    // 처리 중 MutationObserver가 버튼을 잘못 재활성화하지 않도록 보호합니다.
     operationActive = true;
     operationButton = target;
     operationOriginalText = String(target.textContent || '');
@@ -223,6 +115,7 @@
     const status = root.querySelector('#qmDraftSaveStatus');
     if (status) status.textContent = target.id === 'qmChecklistSubmit' ? '점검 완료·결과 저장 처리 중…' : '임시 저장 처리 중…';
 
+    // 유효성 검사에서 기존 핸들러가 같은 이벤트 안에서 즉시 버튼을 다시 활성화할 수 있습니다.
     window.setTimeout(scheduleCheck_, 0);
   }, true);
 
