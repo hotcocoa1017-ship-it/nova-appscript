@@ -11,6 +11,38 @@ function novaQmChecklistDbRead_(token) {
   });
 }
 
+// QM_FINALIZE_PREFLIGHT_DIRECT_EDGE_V1
+// 최종완료 preflight의 체크리스트 정의는 PostgREST/Sheet 대기를 거치지 않고
+// 이미 운영 중인 direct DB Edge로 읽습니다. 실패할 때만 기존 Sheet 정의로 후퇴합니다.
+function novaQmChecklistDirectEdgeRead_(token) {
+  let auth;
+  try {
+    auth = novaDbFirstRealtimeAuth_(token);
+  } catch (error) {
+    return { ok: false, legacyFallback: true, reason: 'AUTH_PREP_FAILED', message: String(error && error.message || error) };
+  }
+  try {
+    const response = UrlFetchApp.fetch(`${String(auth.supabaseUrl || '').replace(/\/+$/, '')}/functions/v1/nova-qm-db-resilient-v1`, {
+      method: 'post',
+      contentType: 'application/json; charset=utf-8',
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        apikey: String(auth.publishableKey || '')
+      },
+      payload: JSON.stringify({ rpc: 'nova_qm_checklist_codes_read_v1', args: {} }),
+      muteHttpExceptions: true,
+      followRedirects: true
+    });
+    const status = Number(response.getResponseCode() || 0);
+    let data = {};
+    try { data = JSON.parse(response.getContentText('UTF-8') || '{}'); } catch (ignore) { data = {}; }
+    if (status >= 200 && status < 300 && data && data.ok === true && Array.isArray(data.items)) return data;
+    return { ok: false, legacyFallback: true, reason: 'DIRECT_EDGE_READ_FAILED', status, code: String(data && data.code || ''), message: String(data && (data.message || data.error) || '') };
+  } catch (error) {
+    return { ok: false, legacyFallback: true, reason: 'DIRECT_EDGE_NETWORK_FAILED', message: String(error && error.message || error) };
+  }
+}
+
 function novaQmChecklistParseNote_(note) {
   try {
     const parsed = JSON.parse(String(note || '{}'));
@@ -75,9 +107,8 @@ function novaQmChecklistDefinitionDbFirst_(token, legacyFactory) {
 }
 
 function getQmChecklistForSubmitDbFirst_(token) {
-  // QM_FINALIZE_PREFLIGHT_SCHEMA_CACHE_BYPASS_V1
-  // 최종제출/사전검증은 DB-first 관리 변경이 이미 동기화한 Sheet 정의를 사용하여
-  // PostgREST schema cache 장애가 점검완료를 가로막지 않도록 합니다.
+  const db = novaQmChecklistDirectEdgeRead_(token);
+  if (db && db.ok === true && Array.isArray(db.items)) return novaQmChecklistDefinitionFromDb_(db);
   return getQmChecklistForSubmit_();
 }
 
