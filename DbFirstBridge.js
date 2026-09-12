@@ -126,6 +126,11 @@ function novaDbFirstRpc_(token, rpc, args, options) { // (동일 body/requestId 
       Utilities.sleep([160, 420, 900][attempt] || 900);
       continue;
     }
+    // PGRST002 = PostgREST가 DB schema cache를 구성하지 못해 RPC 라우팅 이전에 실패한 상태.
+    // 이 경우 DB 함수는 실행되지 않았으므로, 읽기 또는 명시적 legacy fallback 경로는 안전하게 기존 경로로 우회한다.
+    if (code === 'PGRST002' && (readOnly || safe.allowLegacyFallback === true)) {
+      return { ok: false, legacyFallback: true, reason: 'SCHEMA_CACHE_UNAVAILABLE', status, code, message: String(data && (data.message || data.error) || '') };
+    }
     if ((status === 404 || ['PGRST202', 'PGRST205'].includes(code)) && (readOnly || safe.allowLegacyFallback === true)) {
       return { ok: false, legacyFallback: true, reason: 'RPC_MISSING', status, code };
     }
