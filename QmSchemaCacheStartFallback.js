@@ -1,6 +1,7 @@
-// QM_SCHEMA_CACHE_START_FALLBACK_V1
+// QM_SCHEMA_CACHE_START_FALLBACK_V2
 // PGRST002는 PostgREST schema cache 단계 실패이므로 DB RPC가 실행되기 전입니다.
-// 이 경우에만 기존 Sheet QM 시작/초안 경로로 안전하게 복구하고 DB 재동기화는 후행합니다.
+// 이 경우에만 기존 Sheet QM 시작/초안 경로로 안전하게 복구합니다.
+// 중요: 사용자 응답 경로에서는 DB 재동기화를 기다리지 않습니다. 재동기화는 클라이언트 후행 호출로 분리합니다.
 function startQmInspectionSchemaCacheFallback(token, payload) {
   return measureResponse_('startQmInspectionSchemaCacheFallback', () => {
     const user = requireRole_(token, ['QM']);
@@ -76,7 +77,7 @@ function startQmInspectionSchemaCacheFallback(token, payload) {
           startedAt,
           version,
           detail: {
-            action: 'START', role: 'QM', source: 'QM_SCHEMA_CACHE_START_FALLBACK_V1',
+            action: 'START', role: 'QM', source: 'QM_SCHEMA_CACHE_START_FALLBACK_V2',
             browseView: view, beforeCleaningStatus: beforeStatus, cleaningStatus: 'QM_CHECKING',
             primaryEmployeeNo: roommaidNo, secondaryEmployeeNo: secondaryRoommaidNo,
             schemaCacheCode: 'PGRST002'
@@ -98,19 +99,16 @@ function startQmInspectionSchemaCacheFallback(token, payload) {
       throw new Error(started && started.message ? started.message : 'QM 체크리스트 저장준비를 완료하지 못했습니다.');
     }
 
-    try {
-      if (typeof syncNovaRealtimeRoomForAction === 'function') {
-        syncNovaRealtimeRoomForAction(token, { businessDate, site: responseSite, roomNo, action: 'QM_START' });
-      }
-    } catch (syncError) {
-      console.warn('[NOVA QM] schema-cache 시작복구 후 DB 재동기화 지연:', syncError);
-    }
-
+    // DB 재동기화는 여기서 실행하지 않습니다.
+    // PGRST002 장애 중 동기식 재동기화를 기다리면 Apps Script 응답이 12초를 넘겨
+    // 클라이언트가 점검 시작 실패로 오판합니다. 사용자가 먼저 작업을 계속하고,
+    // 클라이언트가 별도 후행 호출로 syncNovaRealtimeRoomForAction을 실행합니다.
     return Object.assign({}, started, {
       ok: true,
       dbFirst: false,
       schemaCacheFallback: true,
       schemaCacheCode: 'PGRST002',
+      realtimeSyncDeferred: true,
       alreadyChecking,
       room: Object.assign({}, started.room || {}, {
         rowNumber, businessDate, site: responseSite, roomNo,
