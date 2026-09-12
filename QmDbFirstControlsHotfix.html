@@ -2,6 +2,62 @@
 (() => {
   'use strict';
 
+  // QM_SCHEMA_CACHE_START_DIRECT_EDGE_V1
+  // 정상 PostgREST 경로는 그대로 유지합니다.
+  // 오직 QM 점검시작 RPC가 PGRST002(schema cache query failure)를 반환한 경우에만
+  // 기존 direct-DB Edge Function으로 동일 요청을 재전송해 PostgREST schema cache를 우회합니다.
+  // Edge가 사용할 수 없으면 원래 PGRST002 응답을 그대로 돌려 기존 오류/보호 동작을 유지합니다.
+  if (!window.__novaQmSchemaCacheStartDirectEdgeV1 && typeof window.fetch === 'function') {
+    window.__novaQmSchemaCacheStartDirectEdgeV1 = true;
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async function(input, init) {
+      const url = typeof input === 'string' ? input : String(input?.url || '');
+      const method = String(init?.method || input?.method || 'GET').trim().toUpperCase();
+      const isQmBegin = method === 'POST' && /\/rest\/v1\/rpc\/nova_qm_begin_inspection_v1(?:\?|$)/.test(url);
+      if (!isQmBegin) return nativeFetch(input, init);
+
+      const originalResponse = await nativeFetch(input, init);
+      if (originalResponse.ok) return originalResponse;
+
+      let errorBody = {};
+      try { errorBody = await originalResponse.clone().json(); } catch (_) {}
+      if (String(errorBody?.code || '').trim().toUpperCase() !== 'PGRST002') return originalResponse;
+
+      let args = {};
+      try {
+        const rawBody = typeof init?.body === 'string' ? init.body : '';
+        args = rawBody ? JSON.parse(rawBody) : {};
+      } catch (_) {
+        return originalResponse;
+      }
+
+      try {
+        const sourceHeaders = new Headers(init?.headers || input?.headers || {});
+        const supabaseOrigin = new URL(url).origin;
+        const edgeResponse = await nativeFetch(`${supabaseOrigin}/functions/v1/nova-qm-db-resilient-v1`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': String(sourceHeaders.get('Authorization') || ''),
+            'apikey': String(sourceHeaders.get('apikey') || '')
+          },
+          body: JSON.stringify({ rpc: 'nova_qm_begin_inspection_v1', args })
+        });
+        if (edgeResponse.ok) return edgeResponse;
+
+        let edgeBody = {};
+        try { edgeBody = await edgeResponse.clone().json(); } catch (_) {}
+        const edgeCode = String(edgeBody?.code || '').trim().toUpperCase();
+        if (edgeCode && edgeCode !== 'QM_DB_DIRECT_UNAVAILABLE' && edgeCode !== 'QM_DB_DIRECT_ERROR' && edgeCode !== 'QM_DB_DIRECT_EMPTY') {
+          return edgeResponse;
+        }
+      } catch (error) {
+        console.warn('[NOVA QM] schema-cache direct DB edge unavailable · original response preserved:', error?.message || error);
+      }
+      return originalResponse;
+    };
+  }
+
   // QM_DBFIRST_SAVE_UNBLOCK_V2
   // Supabase DB-first 점검은 이미 시작됐지만 레거시 Sheet mirror만 지연/실패한 경우,
   // 임시 저장/점검 완료를 Sheet mirror에 묶지 않습니다.
