@@ -2,14 +2,12 @@
 (() => {
   'use strict';
 
-  // QM_BUSINESS_DATE_START_GUARD_V1
-  // DB-first QM 시작은 bootstrap 업무일자를 fallback으로 사용할 수 있지만,
-  // 후속 Apps Script 미러/legacy 시작 payload가 state.mobile.businessDate만 사용하면
-  // 모바일 상태 hydrate 타이밍에 따라 빈 업무일자가 전달될 수 있습니다.
-  // 기존 값이 있으면 절대 변경하지 않고, QM 점검시작 2개 경로에서만 DOM/세션의
-  // 현재 업무일자를 보충하여 기존 업무규칙과 DB-first 흐름은 그대로 유지합니다.
-  const previousCallServer = window.callServer;
-  if (typeof previousCallServer !== 'function' || previousCallServer.__novaQmBusinessDateStartGuardV1) return;
+  // QM_BUSINESS_DATE_START_GUARD_V2
+  // Client.html 내부 callServer/startQmInspection은 IIFE lexical scope이므로
+  // window.callServer 래핑만으로는 실제 QM 시작 호출을 보정할 수 없습니다.
+  // 기존 mobileDate change handler를 그대로 이용해 점검시작 클릭 직전에
+  // 화면에 이미 표시된 업무일자를 state.mobile.businessDate/sessionStorage로
+  // 동기화합니다. 기존 업무일자 선택/DB-first/상태변경 로직은 변경하지 않습니다.
 
   function currentBusinessDate_() {
     try {
@@ -18,27 +16,32 @@
       if (value) return value;
     } catch (ignore) {}
     try {
-      const stored = String(sessionStorage.getItem('novaMobileBusinessDate') || '').trim();
-      if (stored) return stored;
+      return String(sessionStorage.getItem('novaMobileBusinessDate') || '').trim();
     } catch (ignore) {}
     return '';
   }
 
-  function guardedCallServer_(method, ...args) {
-    if (method === 'startQmInspection' || method === 'startQmMobileBrowseInspection') {
-      const payloadIndex = 1; // callServer(method, token, payload)
-      const payload = args[payloadIndex];
-      if (payload && typeof payload === 'object' && !String(payload.businessDate || '').trim()) {
-        const businessDate = currentBusinessDate_();
-        if (businessDate) {
-          args[payloadIndex] = Object.assign({}, payload, { businessDate });
-        }
-      }
-    }
-    return previousCallServer(method, ...args);
+  function syncBusinessDateIntoClientState_() {
+    const input = document.getElementById('mobileDate');
+    const businessDate = currentBusinessDate_();
+    if (!input || !businessDate) return;
+
+    // Client.html의 기존 change listener가 lexical state.mobile.businessDate를
+    // 동기적으로 갱신합니다. 값/업무규칙 자체는 바꾸지 않습니다.
+    if (String(input.value || '').trim() !== businessDate) input.value = businessDate;
+    input.dispatchEvent(new Event('change', { bubbles: false }));
   }
 
-  guardedCallServer_.__novaQmBusinessDateStartGuardV1 = true;
-  window.callServer = guardedCallServer_;
+  document.addEventListener('click', event => {
+    const button = event.target && event.target.closest
+      ? event.target.closest('[data-room-action]')
+      : null;
+    if (!button) return;
+
+    const action = String(button.dataset.roomAction || '').trim().toUpperCase();
+    if (!['START', 'CONTINUE', 'COMPLETE'].includes(action)) return;
+
+    syncBusinessDateIntoClientState_();
+  }, true);
 })();
 </script>
