@@ -1,20 +1,24 @@
 <script>
 (() => {
   'use strict';
-  // QM_SCHEMA_CACHE_FALLBACK_V2
-  // Scope is intentionally limited to QM checklist start/draft/finalize RPCs.
-  // When PostgREST cannot build its schema cache (PGRST002), the RPC body has
-  // not reached the PostgreSQL function. Re-map only that pre-execution failure
-  // to the existing RPC-missing fallback path; all other failures remain unchanged.
+  // QM_SCHEMA_CACHE_FALLBACK_V3
+  // PGRST002는 PostgREST schema cache 단계 실패라 PostgreSQL RPC가 실행되기 전입니다.
+  // 시작 RPC는 동일 DB API를 다시 타는 일반 fallback 대신 Apps Script의 검증된 Sheet 시작/초안 경로로 즉시 복구합니다.
+  // draft/finalize는 기존 PGRST202 safe fallback을 그대로 사용합니다.
   const originalFetch = window.fetch.bind(window);
+  const beginPath = '/rest/v1/rpc/nova_qm_begin_inspection_v1';
   const targets = [
-    '/rest/v1/rpc/nova_qm_begin_inspection_v1',
+    beginPath,
     '/rest/v1/rpc/nova_save_qm_draft',
     '/rest/v1/rpc/nova_qm_inspection_finalize_v2'
   ];
 
+  function url_(input) {
+    return typeof input === 'string' ? input : String(input && input.url || '');
+  }
+
   function isTarget_(input) {
-    const url = typeof input === 'string' ? input : String(input && input.url || '');
+    const url = url_(input);
     return targets.some(path => url.includes(path));
   }
 
@@ -22,6 +26,73 @@
     const code = String(data && data.code || '').trim().toUpperCase();
     const message = String(data && (data.message || data.details || data.hint) || '').toLowerCase();
     return code === 'PGRST002' || message.includes('schema cache');
+  }
+
+  function response_(data, status, statusText) {
+    return new Response(JSON.stringify(data || {}), {
+      status,
+      statusText,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
+    });
+  }
+
+  function parseBody_(init) {
+    try {
+      const body = init && init.body;
+      return typeof body === 'string' ? JSON.parse(body) : (body || {});
+    } catch (ignore) {
+      return {};
+    }
+  }
+
+  function startFallback_(init) {
+    const body = parseBody_(init);
+    const token = String(localStorage.getItem('novaToken') || '').trim();
+    if (!token || !window.google || !google.script || !google.script.run) {
+      return Promise.resolve(response_({
+        code: 'QM_SCHEMA_CACHE_FALLBACK_UNAVAILABLE',
+        message: 'QM 점검 시작 복구 인증정보를 준비하지 못했습니다. 새로고침 후 다시 시도하세요.'
+      }, 409, 'Conflict'));
+    }
+
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = value => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = window.setTimeout(() => finish(response_({
+        code: 'QM_SCHEMA_CACHE_FALLBACK_TIMEOUT',
+        message: 'QM 점검 시작 복구가 지연되고 있습니다. 목록을 새로고침 후 다시 시도하세요.'
+      }, 409, 'Conflict')), 12000);
+
+      google.script.run
+        .withSuccessHandler(result => {
+          if (result && result.ok && result.draft && result.draft.draftId) {
+            console.warn('[NOVA QM] PGRST002 점검시작 · Apps Script 안전경로 복구 완료');
+            finish(response_(result, 200, 'OK'));
+            return;
+          }
+          finish(response_({
+            code: 'QM_SCHEMA_CACHE_FALLBACK_FAILED',
+            message: String(result && result.message || 'QM 점검 시작 복구를 완료하지 못했습니다.')
+          }, 409, 'Conflict'));
+        })
+        .withFailureHandler(error => finish(response_({
+          code: 'QM_SCHEMA_CACHE_FALLBACK_FAILED',
+          message: String(error && error.message || error || 'QM 점검 시작 복구 중 오류가 발생했습니다.')
+        }, 409, 'Conflict')))
+        .startQmInspectionSchemaCacheFallback(token, {
+          businessDate: String(body.p_business_date || ''),
+          site: String(body.p_site || ''),
+          roomNo: String(body.p_room_no || ''),
+          view: String(body.p_view || 'TARGETS'),
+          requestId: String(body.p_request_id || ''),
+          schemaCacheCode: 'PGRST002'
+        });
+    });
   }
 
   window.fetch = async function novaQmSchemaCacheFetch_(input, init) {
@@ -32,16 +103,17 @@
     try { data = await response.clone().json(); } catch (ignore) { return response; }
     if (!schemaCacheFailure_(data)) return response;
 
+    if (url_(input).includes(beginPath)) {
+      console.warn('[NOVA QM] PGRST002 점검시작 · DB API 이중재시도 대신 안전경로 전환');
+      return startFallback_(init);
+    }
+
     console.warn('[NOVA QM] PGRST002 schema cache unavailable · existing safe fallback path');
-    return new Response(JSON.stringify({
+    return response_({
       code: 'PGRST202',
       message: 'QM DB schema cache unavailable; safe fallback requested.',
       originalCode: 'PGRST002'
-    }), {
-      status: 404,
-      statusText: 'Not Found',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' }
-    });
+    }, 404, 'Not Found');
   };
 })();
 </script>
