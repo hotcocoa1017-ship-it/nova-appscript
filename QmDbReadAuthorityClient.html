@@ -2,28 +2,15 @@
 (() => {
   'use strict';
 
-  // QM_DB_READ_AUTHORITY_V2
+  // QM_DB_READ_AUTHORITY_V1
   // QM_DB_BUTTON_STABILITY_V1 · 기존 렌더가 목록을 다시 그려도 paint 전에 캐시된 DB 상태를 즉시 재적용합니다.
-  // QM_SCHEMA_CACHE_AUTHORITY_GUARD_V1 · PGRST002 breaker 동안에는 stale DB 상태로 Sheet fallback 화면을 덮어쓰지 않습니다.
   const ROOT_ID = 'mobileList';
   const CACHE_MS = 30000;
-  const SCHEMA_BREAKER_KEY = 'novaQmSchemaCacheBreakerUntilV1';
   let timer = null;
   let busy = false;
   let cacheKey = '';
   let cacheAt = 0;
   let cacheValue = null;
-
-  function schemaCacheBreakerActive_() {
-    try { return Number(localStorage.getItem(SCHEMA_BREAKER_KEY) || 0) > Date.now(); }
-    catch (ignore) { return false; }
-  }
-
-  function clearAuthorityCache_() {
-    cacheValue = null;
-    cacheKey = '';
-    cacheAt = 0;
-  }
 
   function activeView_() {
     const active = document.querySelector('[data-qm-browse-view].active');
@@ -55,10 +42,6 @@
   }
 
   function callAuthority_(scope, view) {
-    if (schemaCacheBreakerActive_()) {
-      clearAuthorityCache_();
-      return Promise.resolve(null);
-    }
     const token = token_();
     const selected = selection_();
     if (!token || !selected.businessDate || !selected.site || !window.google?.script?.run) {
@@ -71,11 +54,6 @@
     return new Promise(resolve => {
       google.script.run
         .withSuccessHandler(result => {
-          if (schemaCacheBreakerActive_()) {
-            clearAuthorityCache_();
-            resolve(null);
-            return;
-          }
           const valid = result?.ok && result?.dbAuthority ? result : null;
           if (valid) {
             cacheKey = key;
@@ -198,7 +176,6 @@
   }
 
   function applyAuthority_(authority, root, view) {
-    if (schemaCacheBreakerActive_()) return;
     if (!authority || !root?.isConnected) return;
     const employeeNo = String(authority.employeeNo || '').trim();
     const rooms = Array.isArray(authority.rooms) ? authority.rooms : [];
@@ -216,10 +193,6 @@
   }
 
   function applyCachedNow_() {
-    if (schemaCacheBreakerActive_()) {
-      clearAuthorityCache_();
-      return;
-    }
     const root = document.getElementById(ROOT_ID);
     if (!root || !cacheValue) return;
     const view = activeView_();
@@ -231,10 +204,6 @@
   }
 
   async function reconcile_() {
-    if (schemaCacheBreakerActive_()) {
-      clearAuthorityCache_();
-      return;
-    }
     if (busy) return;
     const root = document.getElementById(ROOT_ID);
     if (!root || !document.querySelector('[data-qm-browse-view]')) return;
@@ -251,7 +220,11 @@
   }
 
   function schedule_(delay = 80, invalidate = false) {
-    if (invalidate) clearAuthorityCache_();
+    if (invalidate) {
+      cacheValue = null;
+      cacheKey = '';
+      cacheAt = 0;
+    }
     if (timer) window.clearTimeout(timer);
     timer = window.setTimeout(() => {
       timer = null;
