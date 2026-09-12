@@ -1,5 +1,5 @@
 /**
- * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V1
+ * QM_FINALIZE_PREFLIGHT_FAST_HOTFIX_V2
  *
  * 최종제출 preflight가 체크리스트 정의를 다시 읽기 위해 Sheet / Cloud Run / Edge / PostgREST를
  * 왕복하면서 멈추는 경로를 제거합니다. 브라우저는 제출 직전에 이미 동일 체크리스트로
@@ -7,14 +7,17 @@
  * 전달된 정규 데이터의 형태를 다시 검증하고, 실제 mutation은 기존
  * nova_qm_inspection_finalize_v2의 권한·배정·QM_CHECKING·동시성·idempotency 검증에 맡깁니다.
  *
- * 기존 16_QmChecklist.js의 함수 선언은 그대로 보존하고, 이 assignment만 런타임에서
- * preflight 구현을 교체합니다. 다른 QM 기능/저장/상태전환 코드는 변경하지 않습니다.
+ * Client 내부 state.mobile.businessDate가 비어 있는 재개 세션에서는 preflight가 업무일자를
+ * 선제 차단하지 않습니다. 운영 Edge v5가 finalize 직전 draftId로 실제 businessDate를 조회해
+ * payload.businessDate를 보정하므로, DB의 기존 초안 날짜를 권위값으로 사용합니다.
+ * 날짜가 전달된 경우에는 기존 normalizeBusinessDate_ 검증을 그대로 유지합니다.
  */
 prepareQmInspectionFinalizeDbFirst = function(token, payload) {
   return measureResponse_('prepareQmInspectionFinalizeDbFirst', () => {
     const user = requireRole_(token, ['QM']);
     const safe = payload || {};
-    const businessDate = normalizeBusinessDate_(safe.businessDate);
+    const rawBusinessDate = String(safe.businessDate || '').trim();
+    const businessDate = rawBusinessDate ? normalizeBusinessDate_(rawBusinessDate) : '';
     const site = String(safe.site || user.defaultSite || '').trim();
     const roomNo = String(safe.roomNo || '').trim();
     if (!site || !roomNo) throw new Error('QM 최종점검 식별정보가 없습니다.');
@@ -50,6 +53,7 @@ prepareQmInspectionFinalizeDbFirst = function(token, payload) {
       preflight: true,
       fastPreflight: true,
       businessDate,
+      businessDateSource: businessDate ? 'CLIENT' : 'DB_DRAFT_FINALIZE_FALLBACK',
       site,
       roomNo,
       revision: String(safe.revision || '').trim(),
