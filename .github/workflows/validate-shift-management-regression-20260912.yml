@@ -1,0 +1,33 @@
+name: Validate Shift Management Regression
+
+on:
+  push:
+    paths:
+      - 'DbFirstBridge.js'
+      - '12_Shifts.js'
+      - 'supabase/migrations/20260912_shift_management_site_scope_parity_v1.sql'
+      - 'scripts/validate_shift_management_regression_20260912.py'
+      - 'docs/incidents/2026-09-12-shift-management-regression.md'
+      - '.github/workflows/validate-shift-management-regression-20260912.yml'
+  pull_request:
+    paths:
+      - 'DbFirstBridge.js'
+      - '12_Shifts.js'
+      - 'supabase/migrations/20260912_shift_management_site_scope_parity_v1.sql'
+      - 'scripts/validate_shift_management_regression_20260912.py'
+      - 'docs/incidents/2026-09-12-shift-management-regression.md'
+      - '.github/workflows/deploy-apps-script.yml'
+      - '.github/workflows/validate-shift-management-regression-20260912.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Validate shift management invariants
+        run: python3 scripts/validate_shift_management_regression_20260912.py

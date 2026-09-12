@@ -77,6 +77,7 @@ jobs:
             scripts/validate_site_scope_indicator_close_v2.py
             scripts/validate_order_site_context_v1.py
             scripts/validate_whole_db_transition_v2_20260908.py
+            scripts/validate_shift_management_regression_20260912.py
             scripts/validate_admin_operation_settings_dbfirst_v1_20260908.py
             scripts/validate_admin_code_settings_dbfirst_v1_20260908.py
             scripts/validate_qm_checklist_definition_shape_v1_20260908.py
