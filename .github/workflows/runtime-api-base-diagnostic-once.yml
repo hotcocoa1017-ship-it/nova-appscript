@@ -43,3 +43,5 @@ jobs:
         run: clasp push --force
       - name: Read runtime API base via Execution API
         run: clasp run novaRuntimeApiBaseDiagnostic --dev
+
+# one-shot trigger
