@@ -122,3 +122,81 @@
   scheduleCheck_();
 })();
 </script>
+
+<script>
+(() => {
+  'use strict';
+
+  // DATA_API_INFRA_RETRY_GUARD_V1
+  // Supabase Data API가 schema-cache/host-storage 장애를 명시적으로 반환한 경우에만
+  // QM·객실업로드의 5xx 자동 재시도 폭주를 차단합니다.
+  // 네트워크 결과불명, 권한/업무검증, 일반 5xx의 기존 처리방식은 변경하지 않습니다.
+  if (typeof window.fetch !== 'function' || window.fetch.__novaDataApiInfraRetryGuardV1) return;
+
+  const nativeFetch = window.fetch.bind(window);
+  const guardedRpcNames = [
+    'nova_qm_begin_inspection_v1',
+    'nova_qm_prepare_new_draft_v1',
+    'nova_save_qm_draft',
+    'nova_qm_inspection_finalize_v2',
+    'nova_room_upload_state_v3',
+    'nova_room_upload_apply_v5',
+    'nova_room_upload_mark_stage_v1'
+  ];
+  const CIRCUIT_MS = 15000;
+  let circuitUntil = 0;
+
+  function requestUrl_(input) {
+    if (typeof input === 'string') return input;
+    if (input && typeof input.url === 'string') return input.url;
+    return '';
+  }
+
+  function isGuardedRpc_(url) {
+    const text = String(url || '');
+    if (!text.includes('/rest/v1/rpc/')) return false;
+    return guardedRpcNames.some(name => text.includes(`/rpc/${name}`));
+  }
+
+  function isInfrastructureFailure_(text) {
+    return /could not query the database for the schema cache|schema[ -]?cache|databasestoragecapacityexhausted|hostoutofdiskspace|host out of disk space|out of disk space/i.test(String(text || ''));
+  }
+
+  function unavailableResponse_(originalStatus) {
+    return new Response(JSON.stringify({
+      message: 'Supabase Data API가 일시적으로 불안정합니다. 잠시 후 다시 시도해 주세요.',
+      code: 'NOVA_DATA_API_INFRA_UNAVAILABLE',
+      details: 'schema cache 또는 database host storage 상태를 확인해야 합니다.',
+      originalStatus: Number(originalStatus || 503)
+    }), {
+      status: 409,
+      statusText: 'NOVA Data API temporarily unavailable',
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  const guardedFetch = async function(input, init) {
+    const url = requestUrl_(input);
+    if (!isGuardedRpc_(url)) return nativeFetch(input, init);
+
+    // 같은 브라우저에서 이미 인프라 오류가 확인된 직후에는 짧은 회로차단으로
+    // 재귀 retry와 연속 클릭이 Data API에 추가 부하를 만들지 않게 합니다.
+    if (Date.now() < circuitUntil) return unavailableResponse_(503);
+
+    const response = await nativeFetch(input, init);
+    if (Number(response?.status || 0) < 500) return response;
+
+    let bodyText = '';
+    try { bodyText = await response.clone().text(); } catch (ignore) {}
+    if (!isInfrastructureFailure_(bodyText)) return response;
+
+    circuitUntil = Date.now() + CIRCUIT_MS;
+    console.warn('[NOVA] Supabase Data API infrastructure failure detected; QM/upload retries are temporarily suppressed.');
+    return unavailableResponse_(response.status);
+  };
+
+  guardedFetch.__novaDataApiInfraRetryGuardV1 = true;
+  guardedFetch.__novaNativeFetch = nativeFetch;
+  window.fetch = guardedFetch;
+})();
+</script>
