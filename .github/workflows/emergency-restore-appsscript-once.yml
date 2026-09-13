@@ -53,14 +53,16 @@ jobs:
           set -euo pipefail
           status="$(clasp show-file-status)"
           printf '%s\n' "$status"
-          if printf '%s\n' "$status" | grep -Fq 'postcss.config.js'; then
-            echo '::error::postcss.config.js is still in the Apps Script push set.'
+          tracked="$(printf '%s\n' "$status" | sed -n '/^Tracked files:/,/^Untracked files:/p' | sed '$d')"
+          if printf '%s\n' "$tracked" | grep -Fq 'postcss.config.js'; then
+            echo '::error::postcss.config.js is still tracked for Apps Script push.'
             exit 4
           fi
-          if printf '%s\n' "$status" | grep -Fq 'tailwind.config.js'; then
-            echo '::error::tailwind.config.js is still in the Apps Script push set.'
+          if printf '%s\n' "$tracked" | grep -Fq 'tailwind.config.js'; then
+            echo '::error::tailwind.config.js is still tracked for Apps Script push.'
             exit 4
           fi
+          echo 'Next/PostCSS config files are excluded from Apps Script push.'
 
       - name: Show deployments before restore
         run: clasp list-deployments
