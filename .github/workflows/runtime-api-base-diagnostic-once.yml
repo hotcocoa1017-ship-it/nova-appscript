@@ -42,6 +42,6 @@ jobs:
       - name: Push diagnostic to HEAD only
         run: clasp push --force
       - name: Read runtime API base via Execution API
-        run: clasp run novaRuntimeApiBaseDiagnostic --dev
+        run: clasp run novaRuntimeApiBaseDiagnostic
 
-# one-shot trigger
+# one-shot trigger v2
