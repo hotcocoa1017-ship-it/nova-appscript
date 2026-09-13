@@ -1,0 +1,121 @@
+name: Apply QM Client Hotfix Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-qm-client-hotfix-once.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply focused Client hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('Client.html')
+          text = path.read_text(encoding='utf-8')
+          rest_v1_before = text.count('/rest/v1/')
+          functions_v1_before = text.count('/functions/v1/')
+
+          replacements = [
+              (
+                  "return novaRealtimeFetch_('/v1/auth/realtime-token', { method: 'POST', body: '{}' });",
+                  "return novaRealtimeFetch_('/api/auth/realtime-token', { method: 'POST', body: '{}' });",
+                  'realtime auth route',
+              ),
+              (
+                  "const result = await novaRealtimeFetch_(`/v1/rooms?${query.toString()}`);",
+                  "const result = await novaRealtimeFetch_(`/api/rooms?${query.toString()}`);",
+                  'rooms list route',
+              ),
+              (
+                  "const send = () => novaRealtimeFetch_(`/v1/rooms/${encodeURIComponent(String(safe.roomNo || ''))}/action`, {",
+                  "const send = () => novaRealtimeFetch_(`/api/rooms/${encodeURIComponent(String(safe.roomNo || ''))}/action`, {",
+                  'room action route',
+              ),
+              (
+                  "        if (modalOpen && !active.localDirty) openQmInspectionModal_();\n",
+                  "        // Background draft completion must not redraw an already-open checklist modal.\n",
+                  'QM background modal redraw',
+              ),
+          ]
+
+          for old, new, label in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly 1 match, found {count}')
+              text = text.replace(old, new, 1)
+
+          if text.count('/rest/v1/') != rest_v1_before:
+              raise SystemExit('Supabase /rest/v1 routes changed unexpectedly')
+          if text.count('/functions/v1/') != functions_v1_before:
+              raise SystemExit('Supabase /functions/v1 routes changed unexpectedly')
+          if "'/v1/auth/realtime-token'" in text:
+              raise SystemExit('old realtime auth route still present')
+          if 'novaRealtimeFetch_(`/v1/rooms?' in text:
+              raise SystemExit('old rooms list route still present')
+          if 'novaRealtimeFetch_(`/v1/rooms/${encodeURIComponent' in text:
+              raise SystemExit('old room action route still present')
+          if 'if (modalOpen && !active.localDirty) openQmInspectionModal_();' in text:
+              raise SystemExit('background modal redraw still present')
+
+          path.write_text(text, encoding='utf-8')
+          print('Focused Client.html hotfix applied successfully.')
+          PY
+
+      - name: Validate Client JavaScript syntax and focused invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "'/api/auth/realtime-token'" Client.html
+          grep -q 'novaRealtimeFetch_(`/api/rooms?' Client.html
+          grep -q 'novaRealtimeFetch_(`/api/rooms/${encodeURIComponent' Client.html
+          if grep -q 'if (modalOpen && !active.localDirty) openQmInspectionModal_();' Client.html; then
+            echo '::error::Background QM modal redraw remains.'
+            exit 2
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('Client.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if not scripts:
+              raise SystemExit('No script block found in Client.html')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+
+      - name: Commit focused source change and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-qm-client-hotfix-once.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Client.html .github/workflows/apply-qm-client-hotfix-once.yml
+          git commit -m 'fix(qm): align Cloud Run routes and preserve checklist modal'
+          git push origin HEAD:main
+
+      - name: Dispatch validated Apps Script deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run deploy-apps-script.yml --ref main -f deploy=true
+          echo 'Production Apps Script deployment dispatched.'
