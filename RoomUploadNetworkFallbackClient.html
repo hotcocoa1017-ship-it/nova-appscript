@@ -2,14 +2,15 @@
 (() => {
   'use strict';
   // ROOM_UPLOAD_NETWORK_FALLBACK_V1
-  // 기존 direct Supabase 호출은 그대로 유지합니다.
-  // fetch 자체가 reject된 경우에만 Apps Script 서버가 동일 요청을 대신 전송합니다.
+  // 기존 direct 호출은 그대로 유지합니다.
+  // 객실업로드 RPC 또는 그 직전 realtime-token fetch 자체가 reject된 경우에만
+  // Apps Script 서버가 동일 요청을 대신 전송합니다.
   if (window.__NOVA_ROOM_UPLOAD_NETWORK_FALLBACK_V1__) return;
   if (typeof window.fetch !== 'function' || !window.google?.script?.run) return;
 
   const nativeFetch = window.fetch.bind(window);
-  const allowedOrigin = 'https://evoetxfjmkkjptucwxsv.supabase.co';
-  const allowedPaths = new Set([
+  const supabaseOrigin = 'https://evoetxfjmkkjptucwxsv.supabase.co';
+  const allowedSupabasePaths = new Set([
     '/rest/v1/rpc/nova_room_upload_state_v3',
     '/rest/v1/rpc/nova_room_upload_apply_v5',
     '/rest/v1/rpc/nova_room_upload_mark_stage_v1'
@@ -23,8 +24,13 @@
           ? input.url
           : String(input || '');
       const parsed = new URL(raw, window.location.href);
-      if (parsed.origin !== allowedOrigin || !allowedPaths.has(parsed.pathname) || parsed.search || parsed.hash) return null;
-      return parsed.href;
+      if (parsed.search || parsed.hash || parsed.protocol !== 'https:') return null;
+
+      const isSupabaseUploadRpc = parsed.origin === supabaseOrigin
+        && allowedSupabasePaths.has(parsed.pathname);
+      const isRealtimeAuth = parsed.pathname === '/api/auth/realtime-token';
+
+      return isSupabaseUploadRpc || isRealtimeAuth ? parsed.href : null;
     } catch (ignore) {
       return null;
     }
@@ -67,8 +73,8 @@
             reject(new Error('객실업로드 서버 대체전송 결과를 확인하지 못했습니다.'));
             return;
           }
-          console.warn('[NOVA] 객실업로드 direct fetch 실패 → Apps Script 서버 대체전송', {
-            url,
+          console.warn('[NOVA] 객실업로드 네트워크 실패 → Apps Script 서버 대체전송', {
+            target: String(result.target || ''),
             status: Number(result.status)
           });
           resolve(new Response(String(result.body || ''), {
