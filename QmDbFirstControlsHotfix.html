@@ -130,7 +130,8 @@
   // DATA_API_INFRA_RETRY_GUARD_V1
   // Supabase Data API가 schema-cache/host-storage 장애를 명시적으로 반환한 경우에만
   // QM·객실업로드의 5xx 자동 재시도 폭주를 차단합니다.
-  // 네트워크 결과불명, 권한/업무검증, 일반 5xx의 기존 처리방식은 변경하지 않습니다.
+  // QM_AUTH_FAILURE_RETRY_GUARD_V1 · QM 시작 RPC의 반복 401/403만 별도 회로차단합니다.
+  // 첫 401은 기존 토큰 갱신 기회를 유지하고, 짧은 시간 내 두 번째 인증/권한 실패부터 차단합니다.
   if (typeof window.fetch !== 'function' || window.fetch.__novaDataApiInfraRetryGuardV1) return;
 
   const nativeFetch = window.fetch.bind(window);
@@ -144,7 +145,14 @@
     'nova_room_upload_mark_stage_v1'
   ];
   const CIRCUIT_MS = 15000;
+  const AUTH_FAILURE_WINDOW_MS = 4000;
+  const AUTH_FAILURE_CIRCUIT_MS = 60000;
+  const AUTH_FAILURE_THRESHOLD = 2;
+  const AUTH_CIRCUIT_STORAGE_KEY = 'novaQmAuthFailureCircuitUntilV1';
   let circuitUntil = 0;
+  let authCircuitUntil = 0;
+  let authFailureWindowStartedAt = 0;
+  let authFailureCount = 0;
 
   function requestUrl_(input) {
     if (typeof input === 'string') return input;
@@ -158,8 +166,43 @@
     return guardedRpcNames.some(name => text.includes(`/rpc/${name}`));
   }
 
+  function isQmBeginRpc_(url) {
+    return String(url || '').includes('/rest/v1/rpc/nova_qm_begin_inspection_v1');
+  }
+
   function isInfrastructureFailure_(text) {
     return /could not query the database for the schema cache|schema[ -]?cache|databasestoragecapacityexhausted|hostoutofdiskspace|host out of disk space|out of disk space/i.test(String(text || ''));
+  }
+
+  function readAuthCircuitUntil_() {
+    let stored = 0;
+    try { stored = Number(window.localStorage?.getItem(AUTH_CIRCUIT_STORAGE_KEY) || 0); } catch (ignore) {}
+    return Math.max(Number(authCircuitUntil || 0), Number(stored || 0));
+  }
+
+  function writeAuthCircuitUntil_(until) {
+    authCircuitUntil = Math.max(Number(authCircuitUntil || 0), Number(until || 0));
+    try { window.localStorage?.setItem(AUTH_CIRCUIT_STORAGE_KEY, String(authCircuitUntil)); } catch (ignore) {}
+  }
+
+  function clearAuthFailureState_() {
+    authFailureWindowStartedAt = 0;
+    authFailureCount = 0;
+    authCircuitUntil = 0;
+    try { window.localStorage?.removeItem(AUTH_CIRCUIT_STORAGE_KEY); } catch (ignore) {}
+  }
+
+  function noteAuthFailure_() {
+    const now = Date.now();
+    if (!authFailureWindowStartedAt || now - authFailureWindowStartedAt > AUTH_FAILURE_WINDOW_MS) {
+      authFailureWindowStartedAt = now;
+      authFailureCount = 1;
+      return false;
+    }
+    authFailureCount += 1;
+    if (authFailureCount < AUTH_FAILURE_THRESHOLD) return false;
+    writeAuthCircuitUntil_(now + AUTH_FAILURE_CIRCUIT_MS);
+    return true;
   }
 
   function unavailableResponse_(originalStatus) {
@@ -175,16 +218,45 @@
     });
   }
 
+  function authSuppressedResponse_(originalStatus) {
+    return new Response(JSON.stringify({
+      message: 'QM DB 인증 확인이 반복 실패해 추가 요청을 잠시 차단했습니다. 로그인 상태를 다시 확인해 주세요.',
+      code: 'NOVA_QM_AUTH_RETRY_SUPPRESSED',
+      details: '반복 401/403으로 인한 Data API 재요청 폭주를 방지했습니다.',
+      originalStatus: Number(originalStatus || 401)
+    }), {
+      status: 409,
+      statusText: 'NOVA QM auth retry suppressed',
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
   const guardedFetch = async function(input, init) {
     const url = requestUrl_(input);
     if (!isGuardedRpc_(url)) return nativeFetch(input, init);
+
+    const qmBegin = isQmBeginRpc_(url);
+    if (qmBegin && Date.now() < readAuthCircuitUntil_()) {
+      return authSuppressedResponse_(401);
+    }
 
     // 같은 브라우저에서 이미 인프라 오류가 확인된 직후에는 짧은 회로차단으로
     // 재귀 retry와 연속 클릭이 Data API에 추가 부하를 만들지 않게 합니다.
     if (Date.now() < circuitUntil) return unavailableResponse_(503);
 
     const response = await nativeFetch(input, init);
-    if (Number(response?.status || 0) < 500) return response;
+    const status = Number(response?.status || 0);
+
+    if (qmBegin && response?.ok) clearAuthFailureState_();
+    if (qmBegin && (status === 401 || status === 403)) {
+      if (noteAuthFailure_()) {
+        console.warn('[NOVA] Repeated QM auth/permission failure detected; QM begin retries are temporarily suppressed.');
+        return authSuppressedResponse_(status);
+      }
+      return response;
+    }
+
+    if (status < 500) return response;
 
     let bodyText = '';
     try { bodyText = await response.clone().text(); } catch (ignore) {}
@@ -196,6 +268,7 @@
   };
 
   guardedFetch.__novaDataApiInfraRetryGuardV1 = true;
+  guardedFetch.__novaQmAuthFailureRetryGuardV1 = true;
   guardedFetch.__novaNativeFetch = nativeFetch;
   window.fetch = guardedFetch;
 })();
