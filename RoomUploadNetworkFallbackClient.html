@@ -1,0 +1,106 @@
+<script>
+(() => {
+  'use strict';
+  // ROOM_UPLOAD_NETWORK_FALLBACK_V1
+  // 기존 direct Supabase 호출은 그대로 유지합니다.
+  // fetch 자체가 reject된 경우에만 Apps Script 서버가 동일 요청을 대신 전송합니다.
+  if (window.__NOVA_ROOM_UPLOAD_NETWORK_FALLBACK_V1__) return;
+  if (typeof window.fetch !== 'function' || !window.google?.script?.run) return;
+
+  const nativeFetch = window.fetch.bind(window);
+  const allowedOrigin = 'https://evoetxfjmkkjptucwxsv.supabase.co';
+  const allowedPaths = new Set([
+    '/rest/v1/rpc/nova_room_upload_state_v3',
+    '/rest/v1/rpc/nova_room_upload_apply_v5',
+    '/rest/v1/rpc/nova_room_upload_mark_stage_v1'
+  ]);
+
+  function targetUrl_(input) {
+    try {
+      const raw = typeof input === 'string'
+        ? input
+        : input && typeof input.url === 'string'
+          ? input.url
+          : String(input || '');
+      const parsed = new URL(raw, window.location.href);
+      if (parsed.origin !== allowedOrigin || !allowedPaths.has(parsed.pathname) || parsed.search || parsed.hash) return null;
+      return parsed.href;
+    } catch (ignore) {
+      return null;
+    }
+  }
+
+  function requestHeaders_(input, init) {
+    const headers = new Headers(
+      init && init.headers
+        ? init.headers
+        : input instanceof Request
+          ? input.headers
+          : undefined
+    );
+    return {
+      Authorization: String(headers.get('Authorization') || ''),
+      apikey: String(headers.get('apikey') || '')
+    };
+  }
+
+  function requestBody_(input, init) {
+    if (init && typeof init.body === 'string') return init.body;
+    return '';
+  }
+
+  function proxyFetch_(url, input, init, originalError) {
+    const method = String(init?.method || (input instanceof Request ? input.method : 'GET') || 'GET').toUpperCase();
+    if (method !== 'POST') return Promise.reject(originalError);
+
+    const payload = {
+      url,
+      method,
+      headers: requestHeaders_(input, init),
+      body: requestBody_(input, init)
+    };
+
+    return new Promise((resolve, reject) => {
+      window.google.script.run
+        .withSuccessHandler(result => {
+          if (!result || result.ok !== true || !Number(result.status)) {
+            reject(new Error('객실업로드 서버 대체전송 결과를 확인하지 못했습니다.'));
+            return;
+          }
+          console.warn('[NOVA] 객실업로드 direct fetch 실패 → Apps Script 서버 대체전송', {
+            url,
+            status: Number(result.status)
+          });
+          resolve(new Response(String(result.body || ''), {
+            status: Number(result.status),
+            headers: {
+              'Content-Type': String(result.contentType || 'application/json; charset=utf-8'),
+              'X-NOVA-Room-Upload-Fallback': '1'
+            }
+          }));
+        })
+        .withFailureHandler(error => {
+          const message = String(error?.message || error || '').trim();
+          reject(new Error(message || '객실업로드 서버 대체전송에 실패했습니다.'));
+        })
+        .novaRoomUploadFetchProxyV1(payload);
+    });
+  }
+
+  async function roomUploadNetworkFallbackFetch_(input, init) {
+    const targetUrl = targetUrl_(input);
+    if (!targetUrl) return nativeFetch(input, init);
+
+    try {
+      return await nativeFetch(input, init);
+    } catch (error) {
+      return proxyFetch_(targetUrl, input, init || {}, error);
+    }
+  }
+
+  roomUploadNetworkFallbackFetch_.__novaRoomUploadNetworkFallbackV1 = true;
+  roomUploadNetworkFallbackFetch_.__novaNativeFetch = nativeFetch;
+  window.fetch = roomUploadNetworkFallbackFetch_;
+  window.__NOVA_ROOM_UPLOAD_NETWORK_FALLBACK_V1__ = true;
+})();
+</script>
