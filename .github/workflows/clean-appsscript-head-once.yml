@@ -1,0 +1,98 @@
+name: Clean Apps Script HEAD once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/clean-appsscript-head-once.yml'
+
+permissions:
+  contents: read
+
+env:
+  SCRIPT_ID: 1eBwsaCPGbbtiWINYD4IB0I0GBTGHn-2Dag3dWVHoet8weX2YD_FS5kR8
+
+jobs:
+  clean-head:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp
+
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo '::error::Apps Script OAuth secret is missing.'
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+
+      - name: Confirm configs are excluded locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(clasp show-file-status)"
+          tracked="$(printf '%s\n' "$status" | sed -n '/^Tracked files:/,/^Untracked files:/p' | sed '$d')"
+          ! printf '%s\n' "$tracked" | grep -Fq 'postcss.config.js'
+          ! printf '%s\n' "$tracked" | grep -Fq 'tailwind.config.js'
+
+      - name: Inspect remote HEAD before cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/nova-head-before
+          mkdir -p /tmp/nova-head-before
+          cp .clasp.json /tmp/nova-head-before/.clasp.json
+          (cd /tmp/nova-head-before && clasp pull)
+          echo 'Remote HEAD Node config files before cleanup:'
+          find /tmp/nova-head-before -maxdepth 1 -type f \( -name 'postcss.config.js' -o -name 'tailwind.config.js' \) -print || true
+
+      - name: Force full clean HEAD replacement
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '\n// NOVA_HEAD_CLEANUP_EPHEMERAL\n' >> 00_Config.js
+          clasp push --force
+          git checkout -- 00_Config.js
+          clasp push --force
+          test -z "$(git status --porcelain -- 00_Config.js)"
+
+      - name: Verify remote HEAD is clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/nova-head-after
+          mkdir -p /tmp/nova-head-after
+          cp .clasp.json /tmp/nova-head-after/.clasp.json
+          (cd /tmp/nova-head-after && clasp pull)
+          if find /tmp/nova-head-after -maxdepth 1 -type f -name 'postcss.config.js' | grep -q .; then
+            echo '::error::postcss.config.js still exists in Apps Script HEAD.'
+            exit 5
+          fi
+          if find /tmp/nova-head-after -maxdepth 1 -type f -name 'tailwind.config.js' | grep -q .; then
+            echo '::error::tailwind.config.js still exists in Apps Script HEAD.'
+            exit 5
+          fi
+          echo 'Apps Script HEAD confirmed clean.'
+
+      - name: Summary
+        run: echo 'Removed leaked Next/PostCSS configs from Apps Script HEAD without creating a new version.'
