@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  nova-db:
+    image: postgres:16-alpine
+    container_name: nova-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: nova_admin
+      POSTGRES_PASSWORD: nova_secure_password_2026!
+      POSTGRES_DB: nova_rms
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/001_create_database.sql:/docker-entrypoint-initdb.d/001_create_database.sql
+      - ./sql/002_seed_initial_data.sql:/docker-entrypoint-initdb.d/002_seed_initial_data.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nova_admin -d nova_rms"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  nova-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nova-rms-app
+    restart: always
+    depends_on:
+      nova-db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://nova_admin:nova_secure_password_2026!@nova-db:5432/nova_rms
+      NEXT_PUBLIC_SITE_CODE: SORA
+      NOVA_JWT_SECRET: nova_super_secure_jwt_hmac_secret_2026_enterprise_rms_key_string!
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
