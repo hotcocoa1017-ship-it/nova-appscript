@@ -48,7 +48,7 @@ function novaDbFirstRealtimeAuth_(token) { // (기존 Cloud Run 인증을 서버
     error.code = 'DB_AUTH_PREP_FAILED';
     throw error;
   }
-  const response = UrlFetchApp.fetch(`${apiBase}/v1/auth/realtime-token`, {
+  const response = UrlFetchApp.fetch(`${apiBase}/api/auth/realtime-token`, {
     method: 'post',
     contentType: 'application/json; charset=utf-8',
     headers: { Authorization: `Bearer ${String(token || '').trim()}` },

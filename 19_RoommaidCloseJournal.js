@@ -192,7 +192,7 @@ function readRoommaidCloseRealtimeCurrentRows_(token, businessDate, site) { // (
   const apiBase = String(props.getProperty('NOVA_REALTIME_API_BASE') || '').trim().replace(/\/+$/, '');
   if (!enabled || !apiBase) return [];
   const query = `businessDate=${encodeURIComponent(String(businessDate || ''))}&site=${encodeURIComponent(String(site || ''))}`;
-  const response = UrlFetchApp.fetch(`${apiBase}/v1/rooms?${query}`, {
+  const response = UrlFetchApp.fetch(`${apiBase}/api/rooms?${query}`, {
     method: 'get',
     headers: { Authorization: `Bearer ${String(token || '').trim()}` },
     muteHttpExceptions: true,
