@@ -1,0 +1,115 @@
+name: Deploy roommaid close site init once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/deploy-roommaid-close-site-init-once.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nova-apps-script-production
+  cancel-in-progress: false
+
+env:
+  APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Revalidate targeted release
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "sites: NOVA_LOGIN_SITES_.slice()" 04_Api.js
+          grep -q "roommaidCloseSiteOptions" Client.html
+          grep -q "/api/auth/realtime-token" DbFirstBridge.js
+          grep -q "employee_no: user.employeeNo" src/app/api/auth/realtime-token/route.ts
+          python3 scripts/validate_whole_db_transition_v2_20260908.py
+          python3 scripts/validate_nova_release.py
+          node --check 04_Api.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('Client.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if not scripts:
+              raise SystemExit('No script block found in Client.html')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp
+
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo "::error::Apps Script OAuth secret is missing."
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+
+      - name: Check Apps Script version capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          versions="$(clasp versions)"
+          printf '%s\n' "$versions"
+          version_count="$(printf '%s\n' "$versions" | grep -Ec '^[[:space:]]*[0-9]+[[:space:]]*-' || true)"
+          echo "Apps Script versions: ${version_count}/200"
+          if [ "$version_count" -ge 200 ]; then
+            echo "::error::Apps Script version limit reached (${version_count}/200). Source push has not started."
+            exit 4
+          fi
+
+      - name: Push source to Apps Script
+        run: clasp push --force
+
+      - name: Update existing web app deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp create-deployment \
+            --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" \
+            --description "NOVA roommaid-close site init ${GITHUB_SHA::12}"
+
+      - name: Verify deployment listing
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp deployments
+
+      - name: Remove one-shot workflow
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/deploy-roommaid-close-site-init-once.yml
+          git commit -m 'chore: remove one-shot Apps Script deploy workflow'
+          git push origin HEAD:main
