@@ -141,7 +141,12 @@ export async function executeRoomActionTransactional(
         role: user.role,
         userName: user.name,
         operationalNote: payload.operationalNote || null,
-        photos: payload.photos || null
+        photos: payload.photos || null,
+        photoUrls: payload.photos || null,
+        images: payload.photos || null,
+        photoUrl: payload.photos?.[0] || null,
+        image: payload.photos?.[0] || null,
+        attachments: payload.photos || null
       })
     ]
   );
