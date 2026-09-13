@@ -23,24 +23,38 @@ export const ReportTab: React.FC<ReportTabProps> = ({ rooms, orders }) => {
       (rooms.filter(r => r.roomStatus === 'CHECKED_OUT' || r.cleaningStatus !== 'NOT_REQUIRED').length || 1)) * 100
   );
 
-  // 룸메이드별 인정정비수(Credit) 계산
-  const maidPerformances = HOUSEKEEPERS.map(maid => {
-    const maidRooms = rooms.filter(r => r.roommaidEmployeeNo === maid.id);
-    const completedRooms = maidRooms.filter(r => r.cleaningStatus === 'QM_COMPLETED' || r.cleaningStatus === 'QM_WAITING' || r.cleaningStatus === 'COMPLETED');
-
-    let credits = 0;
-    completedRooms.forEach(r => {
-      const multiplier = r.cleaningType === 'DS' ? 0.5 : r.cleaningType === 'FIVE_S' ? 1.5 : 1.0;
-      credits += multiplier;
+  // 룸메이드별 인정정비수(Credit) 계산 (실제 데이터 기반 동적 생성)
+  const maidPerformances = React.useMemo(() => {
+    const maidMap = new Map<string, { id: string, name: string, floors: Set<number>, assignedCount: number, completedCount: number, credits: number }>();
+    
+    rooms.forEach(room => {
+      const maidId = room.roommaidEmployeeNo;
+      if (!maidId) return; // 미배정 객실 제외
+      
+      const maidName = room.roommaidName || '이름없음';
+      const floor = room.floor || 1;
+      
+      if (!maidMap.has(maidId)) {
+        maidMap.set(maidId, { id: maidId, name: maidName, floors: new Set([floor]), assignedCount: 0, completedCount: 0, credits: 0 });
+      }
+      
+      const stat = maidMap.get(maidId)!;
+      stat.floors.add(floor);
+      stat.assignedCount += 1;
+      
+      if (room.cleaningStatus === 'QM_COMPLETED' || room.cleaningStatus === 'QM_WAITING' || room.cleaningStatus === 'COMPLETED') {
+        stat.completedCount += 1;
+        
+        // Credit calculation
+        const multiplier = room.cleaningType === 'SUITE' || room.cleaningType === '5S' ? 1.5 : (room.cleaningType === 'DS' ? 0.5 : 1.0);
+        stat.credits += multiplier;
+      }
     });
 
-    return {
-      ...maid,
-      assignedCount: maidRooms.length,
-      completedCount: completedRooms.length,
-      credits: Number(credits.toFixed(1))
-    };
-  });
+    return Array.from(maidMap.values())
+      .map(m => ({ ...m, floors: Array.from(m.floors).sort((a, b) => a - b), credits: Number(m.credits.toFixed(1)) }))
+      .sort((a, b) => b.completedCount - a.completedCount);
+  }, [rooms]);
 
   // 하우스맨 오더 카테고리 통계
   const orderStats = {
