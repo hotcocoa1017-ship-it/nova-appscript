@@ -1,0 +1,59 @@
+name: Fix roommaid close API paths once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-roommaid-close-api-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch only verified Cloud Run paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          patches = [
+              (Path('DbFirstBridge.js'), '${apiBase}/v1/auth/realtime-token', '${apiBase}/api/auth/realtime-token'),
+              (Path('19_RoommaidCloseJournal.js'), '${apiBase}/v1/rooms?${query}', '${apiBase}/api/rooms?${query}'),
+          ]
+
+          for path, old, new in patches:
+              text = path.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly 1 occurrence of {old!r}, found {count}')
+              text = text.replace(old, new, 1)
+              path.write_text(text, encoding='utf-8')
+
+          # Guardrails: Supabase REST routes must remain untouched.
+          db = Path('DbFirstBridge.js').read_text(encoding='utf-8')
+          close = Path('19_RoommaidCloseJournal.js').read_text(encoding='utf-8')
+          assert '${apiBase}/api/auth/realtime-token' in db
+          assert '/rest/v1/rpc/${rpcName}' in db
+          assert '${apiBase}/api/rooms?${query}' in close
+          PY
+
+          git diff --check
+          git diff -- DbFirstBridge.js 19_RoommaidCloseJournal.js
+
+      - name: Commit targeted fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add DbFirstBridge.js 19_RoommaidCloseJournal.js
+          git diff --cached --quiet && { echo 'No changes to commit'; exit 0; }
+          git commit -m 'fix(roommaid-close): use Next API routes for DB reads'
+          git push origin HEAD:main
