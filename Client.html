@@ -622,7 +622,7 @@
   async function novaRealtimeLoadRoomsForSite_(businessDate, site) {
     if (!businessDate || !site) return [];
     const query = new URLSearchParams({ businessDate: String(businessDate), site: String(site) });
-    const result = await novaRealtimeFetch_(`/v1/rooms?${query.toString()}`);
+    const result = await novaRealtimeFetch_(`/api/rooms?${query.toString()}`);
     return Array.isArray(result.rooms) ? result.rooms : [];
   }
 
@@ -698,7 +698,7 @@
   }
 
   async function novaRealtimeGetAuth_() {
-    return novaRealtimeFetch_('/v1/auth/realtime-token', { method: 'POST', body: '{}' });
+    return novaRealtimeFetch_('/api/auth/realtime-token', { method: 'POST', body: '{}' });
   }
 
   async function novaRealtimeEnsureClient_() {
@@ -1549,7 +1549,7 @@
     delete safe.sheetExpectedVersion;
     safe.action = mappedAction;
     safe.requestId = safe.requestId || novaRealtimeRequestId_(mappedAction, safe.roomNo);
-    const send = () => novaRealtimeFetch_(`/v1/rooms/${encodeURIComponent(String(safe.roomNo || ''))}/action`, {
+    const send = () => novaRealtimeFetch_(`/api/rooms/${encodeURIComponent(String(safe.roomNo || ''))}/action`, {
       method: 'POST',
       headers: { 'X-Request-Id': safe.requestId },
       noRetry: mappedAction === 'UPDATE_ROOM_OPERATION_STATUS' && !String(safe.operationalStatus || '').trim(),
@@ -8473,7 +8473,7 @@
         : serverDraft;
       if (state.qmChecklist.activeInspection === active) {
         const modalOpen = Boolean(document.querySelector('.qm-checklist-modal'));
-        if (modalOpen && !active.localDirty) openQmInspectionModal_();
+        // Background draft completion must not redraw an already-open checklist modal.
         const status = $('qmDraftSaveStatus');
         if (status) status.textContent = active.localDirty ? '저장 준비 완료 · 변경사항 저장 대기…' : `저장 준비 완료 ${active.draft?.savedAt || ''}`;
         if (modalOpen && active.localDirty) scheduleQmInspectionAutosave_();
