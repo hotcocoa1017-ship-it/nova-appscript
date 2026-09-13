@@ -51,7 +51,7 @@ jobs:
           final = client_path.read_text(encoding='utf-8')
           assert "siteSelect.innerHTML = '<option value=\"\">사업장 선택</option>' + (data.sites || []).map" in final
           assert "applyOrderSharedSiteToMenu_(menuId);" in final
-          assert "lockOrderSharedSiteSelect_(menuId, 'roommaidCloseSite');" in final
+          assert "lockOrderSharedSiteSelect_('roommaidClose');" in final
           assert "loadRoommaidCloseJournal_({ silent: true });" in final
           assert "sites: NOVA_LOGIN_SITES_.slice()" in api_path.read_text(encoding='utf-8')
           PY
