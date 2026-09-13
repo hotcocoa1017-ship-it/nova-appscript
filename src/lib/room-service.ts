@@ -244,7 +244,12 @@ export async function executeRoomCommand(
     afterStatus: `${nextRoom.roomStatus}:${nextRoom.cleaningStatus}`,
     employeeNo: user.employeeNo,
     roomVersion: nextRoom.version,
-    detail: { userName: user.name, role: user.role, note: payload.operationalNote || '' },
+    detail: {
+      role: user.role,
+      userName: user.name,
+      operationalNote: payload.operationalNote,
+      photos: payload.photos
+    },
     createdAt: new Date().toISOString()
   });
 

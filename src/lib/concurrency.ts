@@ -140,7 +140,8 @@ export async function executeRoomActionTransactional(
       JSON.stringify({
         role: user.role,
         userName: user.name,
-        operationalNote: payload.operationalNote || null
+        operationalNote: payload.operationalNote || null,
+        photos: payload.photos || null
       })
     ]
   );

@@ -213,6 +213,7 @@ export interface RoomCommandPayload {
   secondaryAssigneeEmployeeNo?: string;
   cleaningType?: CleaningType;
   operationalNote?: string;
+  photos?: string[];
 }
 
 export interface CommandResponse<T = unknown> {
