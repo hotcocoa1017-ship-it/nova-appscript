@@ -1,0 +1,6 @@
+NOVA Apps Script deployment trigger
+Date: 2026-09-13
+Purpose: deploy validated roommaid-close site initialization fix after Apps Script version capacity was cleared.
+Runtime source changes: none in this commit.
+Functional fix commit: 65a921085f57482097c555c880e347d0bae602f1
+Validator alignment commit: ee1853b8e5dfb792332ef621408813d68f6e1f20
