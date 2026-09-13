@@ -44,6 +44,9 @@ jobs:
           grep -q "ROOM_UPLOAD_REALTIME_CONVERGENCE_V1" Client.html
           grep -q "nova_room_upload_apply_v5" Client.html
           grep -q "ROOM_UPLOAD_DURABLE_MIRROR_RECOVERY_V1" Client.html
+          grep -q "ROOM_UPLOAD_NETWORK_FALLBACK_V1" RoomUploadNetworkFallback.js
+          grep -q "ROOM_UPLOAD_NETWORK_FALLBACK_V1" RoomUploadNetworkFallbackClient.html
+          grep -q "include_('RoomUploadNetworkFallbackClient')" Index.html
           grep -q "QM_MODAL_CLOSE_DRAFT_DB_FIRST_V1" Client.html
           grep -q "ROOM_OPERATION_FLAGS_FORWARD_SYNC_V2" RealtimeDailySync.js
           grep -q "QM_CLEAR_EVENT_MIRROR_V2" RealtimeDailySync.js
@@ -70,6 +73,7 @@ jobs:
             scripts/validate_room_previous_cycle_db_authority_20260907.py
             scripts/validate_room_upload_db_first_v4_20260907.py
             scripts/validate_room_upload_reliability_v5_20260910.py
+            scripts/validate_room_upload_network_fallback_v1_20260914.py
             scripts/validate_checkout_dbfirst_20260907.py
             scripts/validate_room_upload_realtime_sync_20260907.py
             scripts/validate_qm_finalize_dbfirst_v2_20260907.py
@@ -104,6 +108,7 @@ jobs:
           import re
           pairs = [
               ('Client.html', '/tmp/NovaClient.js'),
+              ('RoomUploadNetworkFallbackClient.html', '/tmp/NovaRoomUploadNetworkFallback.js'),
               ('HousemanUiPerformancePatch.html', '/tmp/NovaNotification.js'),
               ('NotificationCenterV1.html', '/tmp/NovaNotificationCenter.js'),
           ]
@@ -115,6 +120,7 @@ jobs:
               Path(target).write_text('\n'.join(scripts), encoding='utf-8')
           PY
           node --check /tmp/NovaClient.js
+          node --check /tmp/NovaRoomUploadNetworkFallback.js
           node --check /tmp/NovaNotification.js
           node --check /tmp/NovaNotificationCenter.js
 
