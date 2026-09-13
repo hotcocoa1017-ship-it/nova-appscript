@@ -146,10 +146,33 @@ export async function executeRoomActionTransactional(
         images: payload.photos || null,
         photoUrl: payload.photos?.[0] || null,
         image: payload.photos?.[0] || null,
-        attachments: payload.photos || null
+        attachments: payload.photos || null,
+        draftId: (payload as any).draftId || null,
+        targetCode: payload.roomNo
       })
     ]
   );
+  
+  // 레거시 사진 테이블 호환성 패치 (DRAFT 상태의 사진을 활성화)
+  try {
+    await client.query('SAVEPOINT legacy_photo_update');
+    const draftId = (payload as any).draftId;
+    if (draftId) {
+      await client.query(
+        `UPDATE nova_qm_inspection_photos SET status = 'COMPLETED' WHERE draft_id = $1`,
+        [draftId]
+      );
+    } else {
+      // draftId가 없으면 해당 객실의 최근 1시간 이내 사진들을 모두 활성화
+      await client.query(
+        `UPDATE nova_qm_inspection_photos SET status = 'COMPLETED' WHERE target_code = $1 AND "createdAt" >= NOW() - INTERVAL '1 hour'`,
+        [payload.roomNo]
+      );
+    }
+  } catch (e) {
+    console.error("Legacy photo update failed:", e);
+    await client.query('ROLLBACK TO SAVEPOINT legacy_photo_update');
+  }
 
   // 7. Store Cached Response for Idempotency
   const response: CommandResponse<RoomEntity> = {
