@@ -126,11 +126,6 @@ function novaDbFirstRpc_(token, rpc, args, options) { // (동일 body/requestId 
       Utilities.sleep([160, 420, 900][attempt] || 900);
       continue;
     }
-    // PGRST002 = PostgREST가 DB schema cache를 구성하지 못해 RPC 라우팅 이전에 실패한 상태.
-    // 이 경우 DB 함수는 실행되지 않았으므로, 읽기 또는 명시적 legacy fallback 경로는 안전하게 기존 경로로 우회한다.
-    if (code === 'PGRST002' && (readOnly || safe.allowLegacyFallback === true)) {
-      return { ok: false, legacyFallback: true, reason: 'SCHEMA_CACHE_UNAVAILABLE', status, code, message: String(data && (data.message || data.error) || '') };
-    }
     if ((status === 404 || ['PGRST202', 'PGRST205'].includes(code)) && (readOnly || safe.allowLegacyFallback === true)) {
       return { ok: false, legacyFallback: true, reason: 'RPC_MISSING', status, code };
     }
@@ -201,7 +196,7 @@ function mirrorShiftZoneDbStateToSheets_(token, dbState) { // (DB 확정상태�
   return { ok: true, shiftMirror, businessDate, site };
 }
 
-function getShiftManagementDataDbFirst(token, options) { // NOVA_SHIFT_ZONE_DB_FIRST_V3 · SHIFT_MANAGEMENT_READ_NONBLOCKING_V1
+function getShiftManagementDataDbFirst(token, options) { // NOVA_SHIFT_ZONE_DB_FIRST_V3
   return measureResponse_('getShiftManagementDataDbFirst', () => {
     const user = requireRole_(token, ['ADMIN', 'ORDER']);
     const safe = options || {};
@@ -216,13 +211,11 @@ function getShiftManagementDataDbFirst(token, options) { // NOVA_SHIFT_ZONE_DB_F
     }, { readOnly: true, allowLegacyFallback: true });
 
     if (db && db.ok && db.initialized === true) {
-      // DB-first 조회는 이미 확정된 DB 상태를 즉시 반환해야 한다.
-      // Sheet 미러 복구는 저장 경로의 best-effort 호환 작업이며 조회 응답을 절대 막지 않는다.
-      const mirrorPending = shiftZoneMirrorPending_(businessDate, site);
-      return Object.assign({}, db, {
-        sheetMirrorPending: mirrorPending,
-        readNonBlocking: true
-      });
+      if (shiftZoneMirrorPending_(businessDate, site)) {
+        try { mirrorShiftZoneDbStateToSheets_(token, db); }
+        catch (mirrorError) { console.warn('[NOVA DB] 근무조 Sheet 미러 복구 지연:', mirrorError && mirrorError.message || mirrorError); }
+      }
+      return db;
     }
 
     // DB RPC 자체가 아직 없는 단계에서는 현재 운영을 그대로 유지합니다.

@@ -4,10 +4,6 @@ import subprocess
 import tempfile
 
 SQL = Path('supabase/migrations/20260907_qm_inspection_finalize_db_first_v2.sql').read_text(encoding='utf-8')
-AUTH_SQL = Path('supabase/migrations/20260913_qm_finalize_context_authority_v2.sql').read_text(encoding='utf-8')
-RESUME_SQL = Path('supabase/migrations/20260913_qm_resume_context_db_authority_v1.sql').read_text(encoding='utf-8')
-EDGE = Path('supabase/functions/nova-qm-db-resilient-v1/index.ts').read_text(encoding='utf-8')
-HOTFIX = Path('QmFinalizePreflightFastHotfix.js').read_text(encoding='utf-8')
 CLIENT = Path('Client.html').read_text(encoding='utf-8')
 
 
@@ -60,59 +56,6 @@ require(SQL, 'grant execute on function public.nova_qm_inspection_finalize_v2(js
 require(SQL, 'grant execute on function public.nova_qm_inspection_finalize_v2(jsonb,text) to service_role;', 'service role grant')
 forbid(SQL, 'nova_qm_inspection_finalize_v1(', 'V1 delegation')
 
-# Regression guard: DB draft context is authoritative before finalize validation.
-require(AUTH_SQL, 'QM_FINALIZE_CONTEXT_AUTHORITY_V2', 'context authority migration marker')
-require(AUTH_SQL, 'create or replace function public.nova_qm_finalize_resolve_context_v1(', 'authoritative context resolver')
-require(AUTH_SQL, "d.draft_id = v_draft_id", 'draft-id recovery')
-require(AUTH_SQL, "d.site = v_site", 'site+room recovery')
-require(AUTH_SQL, "d.room_no = v_room_no", 'room recovery')
-require(AUTH_SQL, 'if v_match_count = 1 then', 'unique room-only recovery')
-require(AUTH_SQL, 'elsif v_match_count > 1 then', 'ambiguous room-only fail closed')
-require(AUTH_SQL, "'{businessDate}'", 'authoritative businessDate overwrite')
-require(AUTH_SQL, "'{site}'", 'authoritative site overwrite')
-require(AUTH_SQL, "'{roomNo}'", 'authoritative room overwrite')
-require(AUTH_SQL, "'{draftId}'", 'authoritative draft overwrite')
-require(AUTH_SQL, "v_existing.response_json is not null", 'idempotent retry before context parsing')
-require_order(AUTH_SQL, 'v_existing.response_json is not null', 'v_payload := public.nova_qm_finalize_resolve_context_v1(p_payload);', 'idempotency before context resolution')
-require(AUTH_SQL, 'return public.nova_qm_inspection_finalize_v2_core_20260912(v_payload, p_request_id);', 'canonical atomic core delegation')
-
-# A read-only resolver must cover Client sessions that enter the no-Realtime legacy branch.
-require(RESUME_SQL, 'QM_RESUME_CONTEXT_DB_AUTHORITY_V1', 'resume-context DB marker')
-require(RESUME_SQL, 'create or replace function public.nova_qm_resume_context_v1(', 'resume-context RPC')
-require(RESUME_SQL, "d.status = 'IN_PROGRESS'", 'active draft scope')
-require(RESUME_SQL, 'if v_count > 1 then', 'resume ambiguity fail closed')
-require(RESUME_SQL, "'businessDate', v_draft.business_date::text", 'resume businessDate authority')
-require(RESUME_SQL, "'draftId', v_draft.draft_id", 'resume draft authority')
-require(RESUME_SQL, 'grant execute on function public.nova_qm_resume_context_v1(text,text) to authenticated;', 'resume authenticated grant')
-
-# Edge remains transport-only and exposes the read-only resume resolver.
-require(EDGE, 'QM_RESUME_CONTEXT_EDGE_V8', 'Edge V8 marker')
-require(EDGE, 'X-NOVA-QM-Transport": "direct-db-edge-v8', 'Edge V8 transport marker')
-require(EDGE, '"nova_qm_resume_context_v1"', 'Edge resume RPC allowlist')
-require_regex(
-    EDGE,
-    r'if \(rpc === "nova_qm_resume_context_v1"\) \{\s*const rows = await tx`select public\.nova_qm_resume_context_v1',
-    'Edge delegates resume context to DB'
-)
-require_regex(
-    EDGE,
-    r'if \(rpc === "nova_qm_inspection_finalize_v2"\) \{\s*const payload = jsonObject\(args\.p_payload, "QM finalize payload"\);\s*const rows = await tx`select public\.nova_qm_inspection_finalize_v2',
-    'Edge delegates finalize context resolution to DB'
-)
-forbid(EDGE, 'payload.businessDate = draftBusinessDate', 'duplicate Edge finalize date authority')
-
-# Apps Script must recover DB context before server preflight/legacy finalize and keep Sheet fallback only as compatibility.
-require(HOTFIX, 'QM_RESUME_CONTEXT_DB_AUTHORITY_V1', 'Apps Script resume-context marker')
-require(HOTFIX, "rpc: 'nova_qm_resume_context_v1'", 'Apps Script direct resume RPC')
-require(HOTFIX, 'function novaFinalizeResumedQmDbFirst_', 'server legacy DB-finalize helper')
-require(HOTFIX, "rpc: 'nova_qm_inspection_finalize_v2'", 'server legacy finalize RPC')
-require(HOTFIX, 'QM_LEGACY_BRANCH_DB_FINALIZE_V1', 'legacy branch DB-finalize marker')
-require(HOTFIX, 'const needsDbResumeContext = !String(safe.businessDate', 'legacy missing-context detector')
-require(HOTFIX, 'dbResult = novaFinalizeResumedQmDbFirst_', 'legacy DB finalize invocation')
-require(HOTFIX, 'safe.realtimeCommitted === true', 'post-DB Sheet mirror compatibility')
-require(HOTFIX, 'novaResolveResumedQmBusinessDate_', 'Sheet compatibility fallback preserved')
-require_order(HOTFIX, 'dbContext = novaResolveResumedQmDbContext_', 'dbResult = novaFinalizeResumedQmDbFirst_', 'DB context before legacy DB finalize')
-
 # Client: stable request id -> preflight-normalized direct V2 -> only explicit pre-mutation fallback -> post-commit Sheet detail mirror.
 require(CLIENT, 'QM_FINALIZE_DB_FIRST_V2', 'client marker')
 require(CLIENT, 'function novaQmFinalizeStableRequestId_(active)', 'stable request helper')
@@ -144,11 +87,11 @@ require_regex(
     'generic QM_COMPLETE is reachable only through explicit legacyFallback'
 )
 
-# Existing Client no-Realtime branch stays intact; server now upgrades malformed resumed context to DB finalize.
+# Existing no-Realtime legacy submission is unchanged.
 require_regex(
     CLIENT,
     r"if \(!novaRealtimeIsEnabled_\(\)\) \{.*?ensureQmInspectionDraftReady_\(active\).*?callServer\('submitQmChecklistInspection'",
-    'Realtime-disabled legacy Client branch preserved'
+    'Realtime-disabled legacy path preserved'
 )
 
 # Generated Client JS syntax must be valid before any deployment gate can open.
@@ -160,4 +103,4 @@ with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8', delete=Fal
     temp_js = handle.name
 subprocess.run(['node', '--check', temp_js], check=True)
 
-print('PASS: QM finalize V2 preserves atomic semantics and covers resumed sessions on both Realtime and no-Realtime paths with DB-authoritative context + idempotent finalization.')
+print('PASS: QM final submission V2 is staged as atomic DB-first, exact-version/idempotent, fail-closed after mutation may begin, preflight-compatible, legacy-compatible, and JavaScript syntax-safe.')

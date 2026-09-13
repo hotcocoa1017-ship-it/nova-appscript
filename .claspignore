@@ -4,8 +4,5 @@
 !**/*.js
 !**/*.html
 .git/**
-.github/**
 node_modules/**
 pwa/**
-scripts/**
-!scripts/validate_qm_fallback_convergence_v1.js

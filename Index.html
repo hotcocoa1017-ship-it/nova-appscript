@@ -84,12 +84,10 @@
   <!-- Realtime client library: secret key는 포함하지 않습니다. -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <?!= include_('Client'); ?>
-  <?!= include_('QmChecklistInteractionGuard'); ?> <!-- QM_CHECKLIST_SELECT_STABILITY_V1 -->
   <?!= include_('RoommaidCleaningRetentionHotfix'); ?> <!-- ROOMMAID_CLEANING_CARD_RETENTION_V1 -->
   <?!= include_('QmDbReadAuthorityClient'); ?> <!-- QM_DB_READ_AUTHORITY_V1 -->
   <?!= include_('QmDbFirstControlsHotfix'); ?> <!-- QM_DBFIRST_SAVE_UNBLOCK_V1 -->
   <?!= include_('TransientWriteRetryHotfix'); ?>
-  <?!= include_('QmFinalizeCallServerDbAuthorityClient'); ?> <!-- QM_FINALIZE_CALLSERVER_DB_AUTHORITY_CLIENT_V1 -->
   <?!= include_('RoommaidDueOutGuard'); ?>
   <?!= include_('HousemanRequestPhotoClient'); ?>
   <?!= include_('HousemanRequestPhotoDirectClient'); ?> <!-- HOUSEMAN_PHOTO_DIRECT_STORAGE_V1 -->

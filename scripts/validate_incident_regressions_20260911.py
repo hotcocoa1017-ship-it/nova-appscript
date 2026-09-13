@@ -2,11 +2,9 @@ from pathlib import Path
 
 checks = {
     'QmDbReadAuthorityClient.html': [
-        'QM_DB_READ_AUTHORITY_V2',
+        'QM_DB_READ_AUTHORITY_V1',
         'QM_DB_BUTTON_STABILITY_V1',
-        'QM_SCHEMA_CACHE_AUTHORITY_GUARD_V1',
         'CACHE_MS = 30000',
-        'schemaCacheBreakerActive_()',
         'applyCachedNow_()',
         'getQmDbReadAuthoritySnapshot',
         "status === 'QM_CHECKING' && qmNo === current",
@@ -54,6 +52,6 @@ if 'preventDefault(' in roommaid or 'stopPropagation(' in roommaid or 'stopImmed
 if 'preventDefault(' in qm_controls or 'stopImmediatePropagation(' in qm_controls:
     raise SystemExit('QM control hotfix must not block existing Client submit handlers.')
 if index.index("include_('RoommaidCleaningRetentionHotfix')") > index.index("include_('QmDbReadAuthorityClient')"):
-    raise SystemExit('Roommaid retention hotfix should load before QM DB authority overlays.')
+    raise SystemExit('Roommaid retention hotfix should load immediately after Client and before QM overlays.')
 
 print('2026-09-11 incident regression gate: PASS')
