@@ -6,3 +6,5 @@
 .git/**
 node_modules/**
 pwa/**
+postcss.config.js
+tailwind.config.js
