@@ -88,7 +88,8 @@ export function validateStateTransition(
       };
     }
 
-    case 'QM_ASSIGN': {
+    case 'QM_ASSIGN':
+    case 'QM_UNASSIGN': {
       return {
         valid: true,
         nextCleaningStatus: room.cleaningStatus,
@@ -219,6 +220,7 @@ function hasRolePermissionForAction(user: NovaUser, action: RoomActionType): boo
       return role === 'ROOM_MAID' || role === 'PART_TIME' || role === 'OUTSOURCE';
 
     case 'QM_ASSIGN':
+    case 'QM_UNASSIGN':
     case 'INSPECTION_START':
     case 'INSPECTION_PASS':
     case 'INSPECTION_REWORK':

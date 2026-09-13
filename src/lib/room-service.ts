@@ -209,6 +209,9 @@ export async function executeRoomCommand(
   if (action === 'QM_ASSIGN' && payload.assigneeEmployeeNo) {
     assignedQmNo = payload.assigneeEmployeeNo;
     assignedQmName = payload.assigneeEmployeeNo === 'QM-2001' ? '강QM' : '인스펙터';
+  } else if (action === 'QM_UNASSIGN') {
+    assignedQmNo = null;
+    assignedQmName = null;
   }
 
   const nextRoom: RoomEntity = {
