@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
+    "browser-image-compression": "^2.0.2",
     "clsx": "^2.1.1",
     "lucide-react": "^0.441.0",
     "next": "^14.2.11",
