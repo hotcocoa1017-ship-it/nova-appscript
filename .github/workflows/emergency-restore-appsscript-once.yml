@@ -1,0 +1,94 @@
+name: Emergency restore Apps Script once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/emergency-restore-appsscript-once.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-apps-script-production
+  cancel-in-progress: false
+
+env:
+  APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
+  RESTORE_VERSION: '436'
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp
+
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo '::error::Apps Script OAuth secret is missing.'
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+
+      - name: Verify Next config files are excluded
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(clasp show-file-status)"
+          printf '%s\n' "$status"
+          if printf '%s\n' "$status" | grep -Fq 'postcss.config.js'; then
+            echo '::error::postcss.config.js is still in the Apps Script push set.'
+            exit 4
+          fi
+          if printf '%s\n' "$status" | grep -Fq 'tailwind.config.js'; then
+            echo '::error::tailwind.config.js is still in the Apps Script push set.'
+            exit 4
+          fi
+
+      - name: Show deployments before restore
+        run: clasp list-deployments
+
+      - name: Restore production deployment to safe version 436
+        run: |
+          clasp create-deployment \
+            --versionNumber "$RESTORE_VERSION" \
+            --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" \
+            --description "NOVA emergency restore v436 after Node config leak"
+
+      - name: Push corrected current source to HEAD
+        run: clasp push --force
+
+      - name: Verify production deployment after restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          deployments="$(clasp list-deployments)"
+          printf '%s\n' "$deployments"
+          printf '%s\n' "$deployments" | grep -F "$APPS_SCRIPT_DEPLOYMENT_ID" | grep -Eq '@436([^0-9]|$)|version[^0-9]*436([^0-9]|$)' || {
+            echo '::error::Production deployment was not confirmed on version 436.'
+            exit 5
+          }
+
+      - name: Summary
+        run: echo 'Production restored to v436 and corrected HEAD pushed without creating a new version.'
