@@ -20,7 +20,10 @@ checks = {
     'server only post': "method !== 'POST'" in server and "method: 'post'" in server,
     'server no redirects': 'followRedirects: false' in server,
     'server https validation': 'validateHttpsCertificates: true' in server,
-    'server auth forwarding': 'Authorization: authorization' in server and 'apikey: apiKey' in server,
+    'server auth forwarding': 'Authorization: authorization' in server and 'forwardedHeaders.apikey = apiKey' in server,
+    'server realtime origin from property': "getProperty('NOVA_REALTIME_API_BASE')" in server,
+    'server realtime auth exact target': "`${realtimeOrigin}/api/auth/realtime-token`" in server and 'url === realtimeAuthUrl' in server,
+    'client realtime auth target': "parsed.pathname === '/api/auth/realtime-token'" in client,
     'client native first': 'return await nativeFetch(input, init)' in client,
     'client fallback in catch': 'catch (error)' in client and 'return proxyFetch_(targetUrl, input, init || {}, error)' in client,
     'apps script bridge only fallback': '.novaRoomUploadFetchProxyV1(payload)' in client,
@@ -34,9 +37,10 @@ for path in allowed_paths:
     checks[f'client targets {path}'] = path in client
 
 # The bridge must not become a generic URL proxy.
-checks['server allowlist cardinality'] = server.count("'/rest/v1/rpc/nova_room_upload_") == 3
-checks['client allowlist cardinality'] = client.count("'/rest/v1/rpc/nova_room_upload_") == 3
+checks['server supabase allowlist cardinality'] = server.count("'/rest/v1/rpc/nova_room_upload_") == 3
+checks['client supabase allowlist cardinality'] = client.count("'/rest/v1/rpc/nova_room_upload_") == 3
 checks['no service-role exposure'] = 'SERVICE_ROLE' not in server.upper() and 'SERVICE_ROLE' not in client.upper()
+checks['no browser business-rule replacement'] = 'nova_room_upload_apply_v5' not in server.replace("'/rest/v1/rpc/nova_room_upload_apply_v5'", '')
 
 failed = [name for name, ok in checks.items() if not ok]
 for name, ok in checks.items():
