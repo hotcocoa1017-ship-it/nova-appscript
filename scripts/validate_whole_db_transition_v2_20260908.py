@@ -98,7 +98,7 @@ roommaid_close_cancel_sql = read('supabase/migrations/20260908_roommaid_close_ca
 
 # Common DB bridge.
 require(bridge, 'NOVA_WHOLE_DB_FIRST_BRIDGE_V1', 'whole DB bridge marker')
-require(bridge, '/v1/auth/realtime-token', 'existing Realtime auth bridge')
+require(bridge, '/api/auth/realtime-token', 'existing Realtime auth bridge')
 require(bridge, "error.code = 'NOVA_DB_RESULT_UNKNOWN'", 'ambiguous DB write fail-closed')
 require(bridge, 'readOnly || safe.allowLegacyFallback === true', 'fallback restricted to safe cases')
 for rpc in [
