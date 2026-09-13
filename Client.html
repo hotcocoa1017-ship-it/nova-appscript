@@ -11942,13 +11942,19 @@
 
   function renderRoommaidCloseShell_() { // (룸메이드 마감일지 화면 골격)
     if (!state.roommaidClose.businessDate) state.roommaidClose.businessDate = state.bootstrap?.app?.businessDate || formatClientDate_(new Date());
+    const roommaidCloseSites = Array.from(new Set((state.bootstrap?.app?.sites || []).map(site => String(site || '').trim()).filter(Boolean)));
+    const preferredRoommaidCloseSite = String(state.roommaidClose.site || state.bootstrap?.user?.defaultSite || '').trim();
+    if (!state.roommaidClose.site && preferredRoommaidCloseSite && roommaidCloseSites.includes(preferredRoommaidCloseSite)) {
+      state.roommaidClose.site = preferredRoommaidCloseSite;
+    }
+    const roommaidCloseSiteOptions = '<option value="">사업장 선택</option>' + roommaidCloseSites.map(site => `<option value="${escapeAttr(site)}"${site === String(state.roommaidClose.site || '') ? ' selected' : ''}>${escapeHtml(site)}</option>`).join('');
     $('content').innerHTML = `
       <section class="roommaid-close-page">
         <div class="roommaid-close-header">
           <div><small>오더테이커·관리자 전용</small><h1>룸메이드 마감일지</h1><p>객실 인디게이터와 정비완료 이력을 기준으로 마감합니다.</p></div>
           <div class="roommaid-close-actions">
             <label><span>업무일자</span><input id="roommaidCloseDate" type="date" value="${escapeAttr(state.roommaidClose.businessDate)}"></label>
-            <label><span>사업장</span><select id="roommaidCloseSite"><option value="">사업장 선택</option></select></label>
+            <label><span>사업장</span><select id="roommaidCloseSite">${roommaidCloseSiteOptions}</select></label>
             <button id="roommaidCloseLoad" class="secondary-button" type="button">조회</button>
             <button id="roommaidCloseValidateDuplicates" class="secondary-button" type="button" disabled>중복이력 검증</button>
             <button id="roommaidCloseHistory" class="secondary-button" type="button" disabled>정비이력 조회</button>

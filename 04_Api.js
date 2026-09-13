@@ -58,7 +58,8 @@ function buildBootstrapPayload_(user, clientType) { // (권한별 초기 화면 
       indicatorSyncMs: NOVA.INDICATOR_SYNC_MS,
       orderVisibleRows: NOVA.ORDER_VISIBLE_ROWS,
       mobileSyncMs: NOVA.MOBILE_SYNC_MS,
-      syncJitterRatio: NOVA.SYNC_JITTER_RATIO
+      syncJitterRatio: NOVA.SYNC_JITTER_RATIO,
+      sites: NOVA_LOGIN_SITES_.slice()
     },
     user: getPublicUser_(user),
     realtimeConfig: buildNovaRealtimeClientConfig_(user), // BOOTSTRAP_REALTIME_CONFIG_PERF_V1
