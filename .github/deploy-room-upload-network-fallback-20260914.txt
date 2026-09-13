@@ -1,3 +1,0 @@
-ROOM_UPLOAD_NETWORK_FALLBACK_V1
-Validated for one-time production deployment on 2026-09-14.
-Trigger: yaml-safe deployment marker.
