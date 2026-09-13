@@ -9064,7 +9064,7 @@
     }
   }
 
-  async function compressQmPhotoFile_(file) { // (모바일 사진 1600px JPEG 압축)
+  async function compressQmPhotoFile_(file) { // (모바일 사진 1600px JPEG 압축 - 안정성 롤백)
     if (!file.type.startsWith('image/')) throw new Error('이미지 파일만 등록할 수 있습니다.');
     const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('사진을 읽지 못했습니다.')); reader.readAsDataURL(file); });
     const image = await new Promise((resolve, reject) => { const img = new Image(); img.onload = () => resolve(img); img.onerror = () => reject(new Error('지원하지 않는 사진 형식입니다.')); img.src = dataUrl; });
