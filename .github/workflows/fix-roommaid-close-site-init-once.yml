@@ -1,0 +1,87 @@
+name: Fix roommaid close site init once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-roommaid-close-site-init-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch roommaid close initial site options only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          api_path = Path('04_Api.js')
+          api = api_path.read_text(encoding='utf-8')
+          old_api = """      mobileSyncMs: NOVA.MOBILE_SYNC_MS,\n      syncJitterRatio: NOVA.SYNC_JITTER_RATIO\n"""
+          new_api = """      mobileSyncMs: NOVA.MOBILE_SYNC_MS,\n      syncJitterRatio: NOVA.SYNC_JITTER_RATIO,\n      sites: NOVA_LOGIN_SITES_.slice()\n"""
+          if api.count(old_api) != 1:
+              raise SystemExit(f'04_Api.js bootstrap target count={api.count(old_api)}')
+          api_path.write_text(api.replace(old_api, new_api, 1), encoding='utf-8')
+
+          client_path = Path('Client.html')
+          client = client_path.read_text(encoding='utf-8')
+          old_head = """  function renderRoommaidCloseShell_() { // (룸메이드 마감일지 화면 골격)\n    if (!state.roommaidClose.businessDate) state.roommaidClose.businessDate = state.bootstrap?.app?.businessDate || formatClientDate_(new Date());\n    $('content').innerHTML = `\n"""
+          new_head = """  function renderRoommaidCloseShell_() { // (룸메이드 마감일지 화면 골격)\n    if (!state.roommaidClose.businessDate) state.roommaidClose.businessDate = state.bootstrap?.app?.businessDate || formatClientDate_(new Date());\n    const roommaidCloseSites = Array.from(new Set((state.bootstrap?.app?.sites || []).map(site => String(site || '').trim()).filter(Boolean)));\n    const preferredRoommaidCloseSite = String(state.roommaidClose.site || state.bootstrap?.user?.defaultSite || '').trim();\n    if (!state.roommaidClose.site && preferredRoommaidCloseSite && roommaidCloseSites.includes(preferredRoommaidCloseSite)) {\n      state.roommaidClose.site = preferredRoommaidCloseSite;\n    }\n    const roommaidCloseSiteOptions = '<option value=\"\">사업장 선택</option>' + roommaidCloseSites.map(site => `<option value=\"${escapeAttr(site)}\"${site === String(state.roommaidClose.site || '') ? ' selected' : ''}>${escapeHtml(site)}</option>`).join('');\n    $('content').innerHTML = `\n"""
+          if client.count(old_head) != 1:
+              raise SystemExit(f'Client.html render head target count={client.count(old_head)}')
+          client = client.replace(old_head, new_head, 1)
+
+          old_select = '<label><span>사업장</span><select id="roommaidCloseSite"><option value="">사업장 선택</option></select></label>'
+          new_select = '<label><span>사업장</span><select id="roommaidCloseSite">${roommaidCloseSiteOptions}</select></label>'
+          if client.count(old_select) != 1:
+              raise SystemExit(f'Client.html site select target count={client.count(old_select)}')
+          client = client.replace(old_select, new_select, 1)
+          client_path.write_text(client, encoding='utf-8')
+
+          # Guardrails: existing successful-response refresh and shared-site flow must remain.
+          final = client_path.read_text(encoding='utf-8')
+          assert "siteSelect.innerHTML = '<option value=\"\">사업장 선택</option>' + (data.sites || []).map" in final
+          assert "applyOrderSharedSiteToMenu_(menuId);" in final
+          assert "lockOrderSharedSiteSelect_(menuId, 'roommaidCloseSite');" in final
+          assert "loadRoommaidCloseJournal_({ silent: true });" in final
+          assert "sites: NOVA_LOGIN_SITES_.slice()" in api_path.read_text(encoding='utf-8')
+          PY
+
+          git diff --check
+          git diff -- 04_Api.js Client.html
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check 04_Api.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('Client.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script[^>]*>(.*?)</script>', text, flags=re.S | re.I)
+          if not scripts:
+              raise SystemExit('No script block found in Client.html')
+          Path('/tmp/NovaClient.js').write_text('\n'.join(scripts), encoding='utf-8')
+          PY
+          node --check /tmp/NovaClient.js
+
+      - name: Commit targeted fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add 04_Api.js Client.html
+          git diff --cached --quiet && { echo 'No changes to commit'; exit 0; }
+          git commit -m 'fix(roommaid-close): initialize site options before first load'
+          git push origin HEAD:main
