@@ -172,12 +172,49 @@ function deleteQmChecklistItem(token, payload) { // (체크리스트 항목 삭�
 function startQmInspection(token, payload) { // (QM 점검 시작·Realtime 상태확정 후 초안 준비)
   return measureResponse_('startQmInspection', () => {
     const user = requireRole_(token, ['QM']);
-    const safe = payload || {};
+    const safe = Object.assign({}, payload || {});
     const realtimeStarted = safe.realtimeStarted === true;
-    const businessDate = normalizeBusinessDate_(safe.businessDate);
-    const site = String(safe.site || user.defaultSite || '').trim();
     const roomNo = String(safe.roomNo || '').trim();
     if (!roomNo) throw new Error('객실번호가 없습니다.');
+
+    // QM_ORIGINAL_ENTRY_DB_AUTHORITY_V1
+    // 재개 세션에서는 날짜 검증보다 먼저 DB의 본인 IN_PROGRESS draft 문맥을 복구합니다.
+    // 외부 wrapper 여부와 무관하게 원본 엔트리 자체가 빈/유실 businessDate를 견디도록 합니다.
+    if (realtimeStarted && typeof novaResolveResumedQmDbContext_ === 'function') {
+      const dbContext = novaResolveResumedQmDbContext_(token, safe);
+      if (dbContext && dbContext.draftId) {
+        if (typeof novaApplyResumedQmDbContext_ === 'function') novaApplyResumedQmDbContext_(safe, dbContext);
+        return {
+          ok: true,
+          realtime: true,
+          dbFirst: true,
+          recoveredExistingDraft: true,
+          version: Number(dbContext.roomVersion || 0),
+          draft: {
+            draftId: String(dbContext.draftId || ''),
+            businessDate: String(dbContext.businessDate || ''),
+            site: String(dbContext.site || ''),
+            roomNo: String(dbContext.roomNo || ''),
+            checklistRevision: String(dbContext.checklistRevision || ''),
+            answers: Array.isArray(dbContext.answers) ? dbContext.answers : [],
+            defects: Array.isArray(dbContext.defects) ? dbContext.defects : [],
+            status: 'IN_PROGRESS',
+            version: Number(dbContext.draftVersion || 0),
+            dbVersion: Number(dbContext.draftVersion || 0),
+            rowNumber: 0,
+            startedAt: String(dbContext.startedAt || ''),
+            savedAt: String(dbContext.savedAt || '')
+          }
+        };
+      }
+    }
+    if (!String(safe.businessDate || '').trim() && typeof novaResolveResumedQmBusinessDate_ === 'function') {
+      const recoveredBusinessDate = novaResolveResumedQmBusinessDate_(user, safe);
+      if (recoveredBusinessDate) safe.businessDate = recoveredBusinessDate;
+    }
+
+    const businessDate = normalizeBusinessDate_(safe.businessDate);
+    const site = String(safe.site || user.defaultSite || '').trim();
 
     if (!realtimeStarted) {
       const preflightSheet = getRequiredSheet_(NOVA.SHEETS.CURRENT);
@@ -426,9 +463,17 @@ function prepareQmInspectionFinalizeDbFirst(token, payload) {
 }
 
 function submitQmChecklistInspection(token, payload) { // (QM 체크리스트 최종제출·완료·재정비·실적저장)
+  // QM_ORIGINAL_FINALIZE_DB_AUTHORITY_V1
+  // Realtime-disabled 최종제출도 원본 엔트리에서 날짜 검증 전에 DB 권위 경로로 보냅니다.
+  // DB 확정 후 Sheet 미러 재진입(realtimeCommitted=true)은 기존 로직을 그대로 사용합니다.
+  const safeEntry = Object.assign({}, payload || {});
+  if (safeEntry.realtimeCommitted !== true && typeof submitQmChecklistInspectionDbAuthority === 'function') {
+    return submitQmChecklistInspectionDbAuthority(token, safeEntry);
+  }
+
   return measureResponse_('submitQmChecklistInspection', () => {
     const user = requireRole_(token, ['QM']);
-    const safe = payload || {};
+    const safe = safeEntry;
     const businessDate = normalizeBusinessDate_(safe.businessDate);
     const site = String(safe.site || user.defaultSite || '').trim();
     const roomNo = String(safe.roomNo || '').trim();
