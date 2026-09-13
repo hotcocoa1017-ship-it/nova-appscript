@@ -225,6 +225,7 @@ export async function executeRoomCommand(
     version: currentRoom.version + 1,
     cleaningStartedAt: validation.nextCleaningStatus === 'CLEANING' ? (currentRoom.cleaningStartedAt || new Date().toISOString()) : currentRoom.cleaningStartedAt,
     cleaningCompletedAt: (validation.nextCleaningStatus === 'QM_WAITING' || validation.nextCleaningStatus === 'COMPLETED') ? new Date().toISOString() : currentRoom.cleaningCompletedAt,
+    inspectedAt: (action === 'INSPECTION_PASS' || action === 'INSPECTION_COMPLETE') ? new Date().toISOString() : currentRoom.inspectedAt,
     updatedBy: user.employeeNo,
     updatedAt: new Date().toISOString()
   };

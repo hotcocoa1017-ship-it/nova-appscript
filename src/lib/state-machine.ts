@@ -113,7 +113,8 @@ export function validateStateTransition(
       };
     }
 
-    case 'INSPECTION_PASS': {
+    case 'INSPECTION_PASS':
+    case 'INSPECTION_COMPLETE': {
       // Pass inspection -> room becomes VACANT_CLEAN / QM_COMPLETED
       if (room.cleaningStatus !== 'QM_INSPECTING' && room.cleaningStatus !== 'QM_WAITING') {
         return {
@@ -223,6 +224,7 @@ function hasRolePermissionForAction(user: NovaUser, action: RoomActionType): boo
     case 'QM_UNASSIGN':
     case 'INSPECTION_START':
     case 'INSPECTION_PASS':
+    case 'INSPECTION_COMPLETE':
     case 'INSPECTION_REWORK':
       return role === 'QM' || role === 'INSPECTOR';
 
