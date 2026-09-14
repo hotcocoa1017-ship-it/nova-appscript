@@ -1,0 +1,90 @@
+name: Runtime Realtime 500 Diagnostic Once
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-apps-script-production
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: ${{ github.event.head_commit.message == 'diag-realtime-500-production' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      APPS_SCRIPT_DEPLOYMENT_ID: AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf
+      DIAG_URL: https://script.google.com/macros/s/AKfycbyhUrA919fns7Sshld421vtvEeOYEWSfO-QzkTGAu4NkJOv7NJaMu827BpuQwOM1_yf/exec?nova_rt500_diag=NOVA-RT500-20260914-j4m8q2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate canonical release gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "ROOM_UPLOAD_NETWORK_FALLBACK_V1" RoomUploadNetworkFallback.js
+          grep -q "novaRuntimeRealtime500Diagnostic_" RuntimeRealtime500Diagnostic.js
+          grep -q "nova_rt500_diag" 04_Api.js
+          python3 scripts/validate_room_upload_reliability_v5_20260910.py
+          python3 scripts/validate_room_upload_network_fallback_v1_20260914.py
+          python3 scripts/validate_nova_release.py
+          node --check RuntimeRealtime500Diagnostic.js
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install --global @google/clasp
+
+      - name: Configure Apps Script authentication
+        shell: bash
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_JSON_B64: ${{ secrets.CLASPRC_JSON_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CLASPRC_JSON:-}" ]; then
+            printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          elif [ -n "${CLASPRC_JSON_B64:-}" ]; then
+            printf '%s' "$CLASPRC_JSON_B64" | base64 --decode > "$HOME/.clasprc.json"
+          else
+            echo "::error::Apps Script OAuth secret is missing."
+            exit 3
+          fi
+          chmod 600 "$HOME/.clasprc.json"
+          clasp show-authorized-user --json
+
+      - name: Check Apps Script version capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          versions="$(clasp versions)"
+          version_count="$(printf '%s\n' "$versions" | grep -Ec '^[[:space:]]*[0-9]+[[:space:]]*-' || true)"
+          echo "Apps Script versions: ${version_count}/200"
+          test "$version_count" -lt 200
+
+      - name: Deploy diagnostic source to existing web app
+        shell: bash
+        run: |
+          set -euo pipefail
+          clasp push --force
+          clasp create-deployment \
+            --deploymentId "$APPS_SCRIPT_DEPLOYMENT_ID" \
+            --description "NOVA Realtime 500 diagnostic ${GITHUB_SHA::12}"
+
+      - name: Probe live runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 4
+          echo '--- NOVA_RUNTIME_REALTIME_500_DIAGNOSTIC ---'
+          curl --fail-with-body -sS -L --max-time 60 "$DIAG_URL"
+          echo
+          echo '--- END_DIAGNOSTIC ---'
