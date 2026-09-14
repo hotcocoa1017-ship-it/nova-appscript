@@ -1,0 +1,48 @@
+name: NOVA Core 3 Auth Env Inspect
+
+on:
+  push:
+    branches:
+      - nova-core3-room-state-20260906
+    paths:
+      - '.github/workflows/core3-auth-env-inspect.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Inspect auth-related environment names only
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe nova-realtime-api \
+            --project=project-6a8144e9-31f3-4d5c-b9b \
+            --region=asia-southeast1 --format=json > /tmp/prod.json
+          python3 - <<'PY'
+          import json,re
+          s=json.load(open('/tmp/prod.json'))
+          template=((s.get('spec') or {}).get('template') or {}).get('spec') or {}
+          containers=template.get('containers') or []
+          envs=(containers[0].get('env') or []) if containers else []
+          rows=[]
+          for e in envs:
+              name=str(e.get('name') or '')
+              if re.search(r'(JWT|TOKEN|AUTH|SECRET|SUPABASE)', name, re.I):
+                  mode='VALUE' if str(e.get('value') or '').strip() else ('SECRET_REF' if (e.get('valueFrom') or e.get('valueSource')) else 'EMPTY')
+                  rows.append((name,mode))
+          for name,mode in sorted(rows):
+              print(f'AUTH_ENV={name}:{mode}')
+          print('AUTH_ENV_INSPECT=OK')
+          PY

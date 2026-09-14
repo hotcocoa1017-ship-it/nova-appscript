@@ -1,0 +1,127 @@
+name: NOVA Core 3 Realtime Smoke
+
+on:
+  push:
+    branches:
+      - nova-core3-room-state-20260906
+    paths:
+      - '.github/workflows/core3-realtime-smoke.yml'
+      - 'core3/testing/realtime-private-channel-smoke.mjs'
+  workflow_run:
+    workflows:
+      - 'NOVA Core 3.0 CI'
+    types:
+      - completed
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_REGION: asia-southeast1
+  CORE3_SOURCE_SERVICE: nova-realtime-api
+  CORE3_TARGET_SERVICE: nova-core3-api-dev
+
+jobs:
+  private-channel-subscribe:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'nova-core3-room-state-20260906')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Authenticate Google Cloud using existing NOVA WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Read and mask signing secret without exposing configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CORE3_SOURCE_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/source.json
+          python3 - <<'PY'
+          import json, os, sys
+          s=json.load(open('/tmp/source.json'))
+          template=((s.get('spec') or {}).get('template') or {}).get('spec') or {}
+          containers=template.get('containers') or []
+          envs=(containers[0].get('env') or []) if containers else []
+          by={str(e.get('name','')):e for e in envs}
+          secret=str((by.get('SUPABASE_JWT_SECRET') or {}).get('value') or '').strip()
+          if not secret:
+              print('::error::SUPABASE_JWT_SECRET is unavailable for the isolated smoke probe.', file=sys.stderr)
+              sys.exit(20)
+          print('::add-mask::'+secret, flush=True)
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write('CORE3_SUPABASE_JWT_SECRET='+secret+'\n')
+          print('CORE3_REALTIME_SMOKE_SECRET_READY=OK')
+          PY
+
+      - name: Fetch authenticated public Realtime bootstrap without printing values
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET_URL="$(gcloud run services describe "$CORE3_TARGET_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format='value(status.url)')"
+          test -n "$TARGET_URL"
+          TOKEN="$(SUPABASE_JWT_SECRET="$CORE3_SUPABASE_JWT_SECRET" node --input-type=module - <<'NODE'
+          import { createSessionTokenSigner } from './core3/server/src/session-token.mjs';
+          const signer = createSessionTokenSigner({ secret: process.env.SUPABASE_JWT_SECRET, ttlSeconds: 600 });
+          process.stdout.write(signer.sign({ employeeNo: 'ot001', name: '', role: 'ORDER', sessionSite: '' }).accessToken);
+          NODE
+          )"
+          echo "::add-mask::$TOKEN"
+          HTTP="$(curl -sS -o /tmp/core3-realtime-config.json -w '%{http_code}' "$TARGET_URL/v1/realtime/config" \
+            -H "Authorization: Bearer $TOKEN")"
+          test "$HTTP" = '200'
+          python3 - <<'PY'
+          import json
+          b=json.load(open('/tmp/core3-realtime-config.json'))
+          assert b.get('ok') is True
+          assert isinstance(b.get('supabaseUrl'), str) and b['supabaseUrl'].strip()
+          assert isinstance(b.get('publishableKey'), str) and b['publishableKey'].strip()
+          assert b.get('privateChannel') is True
+          assert b.get('topicPattern') == 'nova:site:{site}:rooms'
+          assert 'jwtSecret' not in b
+          print('CORE3_REALTIME_BOOTSTRAP_VALID=OK')
+          PY
+          {
+            echo "NOVA_REALTIME_TOKEN=$TOKEN"
+            echo 'NOVA_REALTIME_SITE=쏘라노'
+            echo 'NOVA_REALTIME_CONFIG_FILE=/tmp/core3-realtime-config.json'
+          } >> "$GITHUB_ENV"
+
+      - name: Install smoke-only Supabase JS client
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/nova-realtime-smoke
+          cd /tmp/nova-realtime-smoke
+          npm init -y >/dev/null 2>&1
+          npm install --silent --no-audit --no-fund @supabase/supabase-js@2
+          echo 'NODE_PATH=/tmp/nova-realtime-smoke/node_modules' >> "$GITHUB_ENV"
+
+      - name: Join authorized private Room State channel without database mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp core3/testing/realtime-private-channel-smoke.mjs /tmp/nova-realtime-smoke/realtime-private-channel-smoke.mjs
+          cd /tmp/nova-realtime-smoke
+          node realtime-private-channel-smoke.mjs
+
+      - name: Smoke summary
+        run: |
+          echo 'Core3 private Realtime authorization/subscription passed.'
+          echo 'No Room State row was written by this smoke test.'
+          echo 'Apps Script @271 and production Realtime service were not modified.'

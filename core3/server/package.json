@@ -1,0 +1,14 @@
+{
+  "name": "nova-core3-server",
+  "version": "3.0.0-alpha.2",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "check": "node --check src/room-state-engine.mjs && node --check src/supabase-room-action-client.mjs && node --check src/room-action-service.mjs && node --check src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}

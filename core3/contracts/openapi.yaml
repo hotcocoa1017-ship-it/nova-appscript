@@ -1,0 +1,203 @@
+openapi: 3.1.0
+info:
+  title: NOVA Core API
+  version: 3.0.0-alpha.3
+  description: >-
+    Server contract for the first Room State vertical slice. PostgreSQL is the
+    authoritative live-state source. Supabase Realtime is used only as a
+    low-latency change signal; clients must reconcile through authoritative
+    Core API reads after receiving a signal.
+servers:
+  - url: https://api.nova.invalid
+    description: Placeholder; never used for production deployment.
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      security: []
+      operationId: health
+      responses:
+        '200':
+          description: Service is ready to receive requests.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+                  service: { type: string }
+                  revision: { type: string }
+  /v1/realtime/config:
+    get:
+      operationId: getRealtimeConfig
+      description: >-
+        Returns public Supabase bootstrap values only after authenticating the
+        NOVA session. The caller's existing bearer JWT is used for the private
+        Realtime channel. Broadcast payloads are notification hints, never the
+        authoritative Room State response.
+      responses:
+        '200':
+          description: Public configuration required to open the private site Room State channel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RealtimeConfigResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/rooms:
+    get:
+      operationId: listRooms
+      parameters:
+        - in: query
+          name: businessDate
+          required: true
+          schema: { type: string, format: date }
+        - in: query
+          name: site
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Authoritative current rooms assigned to the authenticated ROOMMAID.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, rooms]
+                properties:
+                  ok: { type: boolean, const: true }
+                  businessDate: { type: string, format: date }
+                  site: { type: string }
+                  employeeNo: { type: string }
+                  serverTime: { type: string, format: date-time }
+                  rooms:
+                    type: array
+                    items: { $ref: '#/components/schemas/Room' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/rooms/{roomNo}/actions:
+    post:
+      operationId: mutateRoom
+      parameters:
+        - in: path
+          name: roomNo
+          required: true
+          schema: { type: string, minLength: 1 }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: Stable per-user-intent key. Retries MUST reuse the same value.
+          schema: { type: string, minLength: 8, maxLength: 160 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoomActionRequest' }
+      responses:
+        '200':
+          description: The requested intent is committed, replayed, or already safely achieved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomActionResponse' }
+        '409':
+          description: A real semantic conflict remains after reading the latest room state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503':
+          description: >-
+            Upstream result may be unknown. Client retries must reuse the same
+            Idempotency-Key so the DB idempotency record can converge safely.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    RealtimeConfigResponse:
+      type: object
+      required: [ok, supabaseUrl, publishableKey, privateChannel, topicPattern]
+      properties:
+        ok: { type: boolean, const: true }
+        supabaseUrl:
+          type: string
+          format: uri
+          description: Public Supabase project URL; never a privileged credential.
+        publishableKey:
+          type: string
+          minLength: 1
+          description: Public/publishable key only. Service-role and JWT signing secrets are forbidden.
+        privateChannel: { type: boolean, const: true }
+        topicPattern: { type: string, const: 'nova:site:{site}:rooms' }
+        sessionSite: { type: string }
+    Room:
+      type: object
+      required: [businessDate, site, roomNo, roomStatus, cleaningStatus, version]
+      properties:
+        businessDate: { type: string, format: date }
+        site: { type: string }
+        roomNo: { type: string }
+        building: { type: string }
+        roomStatus: { type: string }
+        cleaningStatus:
+          type: string
+          enum: [WAITING, ASSIGNED, CLEANING, COMPLETED, QM_WAITING, QM_CHECKING, QM_COMPLETED, REWORK, NOT_REQUIRED]
+        cleaningType: { type: string }
+        assignmentType: { type: string }
+        roommaidEmployeeNo: { type: string }
+        secondaryRoommaidEmployeeNo: { type: string }
+        qmEmployeeNo: { type: string }
+        operationalStatus: { type: string }
+        version: { type: integer, minimum: 0 }
+        cleaningStartedAt: { type: [string, 'null'], format: date-time }
+        cleaningCompletedAt: { type: [string, 'null'], format: date-time }
+        updatedAt: { type: string, format: date-time }
+    RoomActionRequest:
+      type: object
+      required: [businessDate, site, action]
+      properties:
+        businessDate: { type: string, format: date }
+        site: { type: string, minLength: 1 }
+        action:
+          type: string
+          enum: [CLEANING_START, CLEANING_COMPLETE]
+        expectedVersion: { type: integer, minimum: 0 }
+    RoomActionResponse:
+      type: object
+      required: [ok, requestId, changed, alreadyApplied, room]
+      properties:
+        ok: { type: boolean, const: true }
+        requestId: { type: string }
+        idempotent: { type: boolean }
+        duplicate: { type: boolean }
+        changed: { type: boolean }
+        alreadyApplied: { type: boolean }
+        beforeStatus: { type: string }
+        afterStatus: { type: string }
+        version: { type: integer, minimum: 0 }
+        room: { $ref: '#/components/schemas/Room' }
+    ErrorResponse:
+      type: object
+      required: [ok, code, message]
+      properties:
+        ok: { type: boolean, const: false }
+        code: { type: string }
+        message: { type: string }
+        retryable: { type: boolean }
+        reuseIdempotencyKey: { type: boolean }
+  responses:
+    Unauthorized:
+      description: Authentication is missing or expired.
+    Forbidden:
+      description: Authenticated identity is not allowed to perform this operation.
+    Unavailable:
+      description: The database or bootstrap service is temporarily unavailable.

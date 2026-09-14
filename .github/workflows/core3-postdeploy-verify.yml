@@ -1,0 +1,120 @@
+name: NOVA Core 3 Postdeploy Verify
+
+on:
+  push:
+    branches:
+      - nova-core3-room-state-20260906
+    paths:
+      - '.github/workflows/core3-postdeploy-verify.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: nova-core3-postdeploy-verify
+  cancel-in-progress: true
+
+env:
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_REGION: asia-southeast1
+  PROD_SERVICE: nova-realtime-api
+  PROD_EXPECTED_REVISION: nova-realtime-api-rtfix133009
+  CORE3_SERVICE: nova-core3-api-dev
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate Google Cloud using existing NOVA WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Read Cloud Run services
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$PROD_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/prod.json
+          gcloud run services describe "$CORE3_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/core3.json
+
+      - name: Verify production frozen and Core 3 isolated
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+
+          def active_revision(service):
+              status = service.get('status') or {}
+              active = []
+              for t in status.get('traffic') or []:
+                  try:
+                      percent = int(t.get('percent') or 0)
+                  except Exception:
+                      percent = 0
+                  if percent > 0:
+                      active.append((str(t.get('revisionName') or ''), percent))
+              if len(active) != 1 or active[0][1] != 100 or not active[0][0]:
+                  raise SystemExit('expected exactly one 100% active revision')
+              return active[0][0]
+
+          prod = json.load(open('/tmp/prod.json'))
+          core = json.load(open('/tmp/core3.json'))
+          prod_rev = active_revision(prod)
+          core_rev = active_revision(core)
+          expected = os.environ['PROD_EXPECTED_REVISION']
+          if prod_rev != expected:
+              print(f'::error::Production revision changed: {prod_rev} != {expected}', file=sys.stderr)
+              sys.exit(31)
+          if str((prod.get('metadata') or {}).get('name') or '') == str((core.get('metadata') or {}).get('name') or ''):
+              print('::error::Core 3 service is not isolated from production.', file=sys.stderr)
+              sys.exit(32)
+          url = str((core.get('status') or {}).get('url') or '')
+          if not url:
+              print('::error::Core 3 service URL missing.', file=sys.stderr)
+              sys.exit(33)
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write('CORE3_URL='+url+'\n')
+              f.write('CORE3_ACTIVE_REVISION='+core_rev+'\n')
+          print('PRODUCTION_REALTIME_REVISION_UNCHANGED=OK')
+          print('CORE3_SERVICE_ISOLATED=OK')
+          print('CORE3_ACTIVE_REVISION='+core_rev)
+          PY
+
+      - name: Verify Core 3 health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          HTTP="$(curl -sS --retry 4 --retry-delay 2 -o /tmp/health.json -w '%{http_code}' "$CORE3_URL/health")"
+          echo "CORE3_HEALTH_HTTP=$HTTP"
+          test "$HTTP" = '200'
+          python3 - <<'PY'
+          import json, os, sys
+          body=json.load(open('/tmp/health.json'))
+          if body.get('ok') is not True or body.get('service') != 'nova-core3':
+              print('::error::Unexpected Core 3 health payload.', file=sys.stderr)
+              sys.exit(40)
+          health_rev=str(body.get('revision') or '')
+          if health_rev != os.environ['CORE3_ACTIVE_REVISION']:
+              print(f'::error::Health revision mismatch: {health_rev}', file=sys.stderr)
+              sys.exit(41)
+          print('CORE3_HEALTH=OK')
+          print('CORE3_REVISION='+health_rev)
+
+          PY
+
+      - name: Summary
+        run: |
+          echo 'Core 3 dev deployment verified.'
+          echo 'Production nova-realtime-api stayed on the frozen revision.'
+          echo 'Apps Script @271 was not deployed or modified.'

@@ -1,0 +1,318 @@
+name: NOVA Core 3.0 CI
+
+on:
+  push:
+    branches:
+      - 'nova-core3-*'
+    paths:
+      - 'core3/server/**'
+      - 'db/nova_core3_*'
+      - '.github/workflows/core3-ci.yml'
+  pull_request:
+    paths:
+      - 'core3/server/**'
+      - 'db/nova_core3_*'
+      - '.github/workflows/core3-ci.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: project-6a8144e9-31f3-4d5c-b9b
+  GCP_PROJECT_NUMBER: '479836905263'
+  GCP_REGION: asia-southeast1
+  CORE3_SOURCE_SERVICE: nova-realtime-api
+  CORE3_TARGET_SERVICE: nova-core3-api-dev
+
+jobs:
+  room-state-domain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check Core server JavaScript syntax
+        working-directory: core3/server
+        run: npm run check
+      - name: Run Core server tests
+        working-directory: core3/server
+        run: npm test
+      - name: Ensure live transaction code has no Sheet or Apps Script dependency
+        run: |
+          set -euo pipefail
+          if grep -R --line-number -E 'SpreadsheetApp|google\.script\.run|Google[[:space:]]*Sheet|Sheets API' core3/server/src; then
+            echo '::error::NOVA Core live transaction path must not depend on Google Sheet or Apps Script.'
+            exit 1
+          fi
+          echo 'Core live transaction isolation check passed.'
+      - name: Build Cloud Run container
+        run: docker build -t nova-core3-ci core3/server
+      - name: Ensure production backup branch is not referenced as a deploy target
+        run: |
+          set -euo pipefail
+          if grep -R --line-number --fixed-string 'backup/nova-room-prod-271-20260906' .github/workflows | grep -v 'core3-ci.yml'; then
+            echo '::error::Production backup branch must never be used as a deployment target.'
+            exit 1
+          fi
+          echo 'Backup branch isolation check passed.'
+
+  cloudrun-readonly-preflight:
+    needs: room-state-domain
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate Google Cloud using existing NOVA WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Diagnose effective source-deploy permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACCESS_TOKEN="$(gcloud auth print-access-token)"
+          PROJECT_PERMISSIONS='["run.services.create","run.services.get","run.services.update","cloudbuild.builds.create","artifactregistry.repositories.create","artifactregistry.repositories.get","artifactregistry.repositories.list","artifactregistry.repositories.uploadArtifacts","serviceusage.services.use"]'
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "https://cloudresourcemanager.googleapis.com/v1/projects/$GCP_PROJECT_ID:testIamPermissions" \
+            -d "{\"permissions\":$PROJECT_PERMISSIONS}" > /tmp/project-permissions.json
+          RUNTIME_SA="${GCP_PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "https://iam.googleapis.com/v1/projects/-/serviceAccounts/$RUNTIME_SA:testIamPermissions" \
+            -d '{"permissions":["iam.serviceAccounts.actAs"]}' > /tmp/service-account-permissions.json
+          python3 - <<'PY'
+          import json
+          requested_project = [
+              'run.services.create','run.services.get','run.services.update',
+              'cloudbuild.builds.create',
+              'artifactregistry.repositories.create','artifactregistry.repositories.get',
+              'artifactregistry.repositories.list','artifactregistry.repositories.uploadArtifacts',
+              'serviceusage.services.use'
+          ]
+          project = set((json.load(open('/tmp/project-permissions.json')) or {}).get('permissions') or [])
+          sa = set((json.load(open('/tmp/service-account-permissions.json')) or {}).get('permissions') or [])
+          for permission in requested_project:
+              print(permission + '=' + ('GRANTED' if permission in project else 'MISSING'))
+          print('iam.serviceAccounts.actAs=' + ('GRANTED' if 'iam.serviceAccounts.actAs' in sa else 'MISSING'))
+          missing = [p for p in requested_project if p not in project]
+          if 'iam.serviceAccounts.actAs' not in sa:
+              missing.append('iam.serviceAccounts.actAs')
+          print('CORE3_PERMISSION_MISSING=' + (','.join(missing) if missing else 'NONE'))
+          PY
+      - name: Inspect production source environment without printing values
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CORE3_SOURCE_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/source.json
+          python3 - <<'PY'
+          import json, sys
+          s=json.load(open('/tmp/source.json'))
+          template=((s.get('spec') or {}).get('template') or {}).get('spec') or {}
+          containers=template.get('containers') or []
+          envs=(containers[0].get('env') or []) if containers else []
+          by={str(e.get('name','')):e for e in envs}
+          for name in ('SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET'):
+              e=by.get(name)
+              if not e:
+                  print(f'::error::{name}=MISSING', file=sys.stderr)
+                  sys.exit(20)
+              if str(e.get('value','')).strip(): mode='VALUE'
+              elif e.get('valueFrom') or e.get('valueSource'): mode='SECRET_REF'
+              else:
+                  print(f'::error::{name}=EMPTY', file=sys.stderr)
+                  sys.exit(21)
+              print(f'{name}_MODE={mode}')
+          print('CORE3_SOURCE_ENV=OK')
+          PY
+      - name: Confirm Core 3 target is isolated from production service
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$CORE3_TARGET_SERVICE" != "$CORE3_SOURCE_SERVICE"
+          if gcloud run services describe "$CORE3_TARGET_SERVICE" \
+              --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format='value(metadata.name)' \
+              >/tmp/target.txt 2>/dev/null; then
+            echo 'CORE3_TARGET_STATE=EXISTS'
+          else
+            echo 'CORE3_TARGET_STATE=ABSENT'
+          fi
+          echo 'CORE3_GCP_PREFLIGHT=OK'
+
+  cloudrun-dev-deploy:
+    needs: [room-state-domain, cloudrun-readonly-preflight]
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'nova-core3-room-state-20260906'
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    concurrency:
+      group: nova-core3-api-dev-deploy
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate Google Cloud using existing NOVA WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/479836905263/locations/global/workloadIdentityPools/github-nova/providers/nova-appscript
+          service_account: nova-github-deployer@project-6a8144e9-31f3-4d5c-b9b.iam.gserviceaccount.com
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Capture and mask production revision and Core environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$CORE3_TARGET_SERVICE" != "$CORE3_SOURCE_SERVICE"
+          gcloud run services describe "$CORE3_SOURCE_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/source-before.json
+          python3 - <<'PY'
+          import json, os, sys
+          s=json.load(open('/tmp/source-before.json'))
+          status=s.get('status') or {}
+          active=[(str(t.get('revisionName') or ''), int(t.get('percent') or 0)) for t in status.get('traffic') or [] if int(t.get('percent') or 0)>0]
+          if len(active)!=1 or active[0][1]!=100 or not active[0][0]:
+              print('::error::Production Realtime service does not have one 100% active revision.', file=sys.stderr)
+              sys.exit(30)
+          template=((s.get('spec') or {}).get('template') or {}).get('spec') or {}
+          containers=template.get('containers') or []
+          envs=(containers[0].get('env') or []) if containers else []
+          by={str(e.get('name','')):e for e in envs}
+          values={}
+          for name in ('SUPABASE_URL','SUPABASE_PUBLISHABLE_KEY','SUPABASE_JWT_SECRET'):
+              e=by.get(name) or {}
+              value=str(e.get('value') or '').strip()
+              if not value:
+                  print(f'::error::{name} must be a direct value for isolated dev copy.', file=sys.stderr)
+                  sys.exit(31)
+              values[name]=value
+          for value in values.values():
+              print('::add-mask::'+value, flush=True)
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write('CORE3_SOURCE_REVISION='+active[0][0]+'\n')
+              f.write('CORE3_SUPABASE_URL='+values['SUPABASE_URL']+'\n')
+              f.write('CORE3_SUPABASE_PUBLISHABLE_KEY='+values['SUPABASE_PUBLISHABLE_KEY']+'\n')
+              f.write('CORE3_SUPABASE_JWT_SECRET='+values['SUPABASE_JWT_SECRET']+'\n')
+          print('SOURCE_REVISION_CAPTURED=OK')
+          PY
+
+      - name: Deploy isolated NOVA Core 3 dev service
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run deploy "$CORE3_TARGET_SERVICE" \
+            --source core3/server \
+            --project="$GCP_PROJECT_ID" \
+            --region="$GCP_REGION" \
+            --allow-unauthenticated \
+            --cpu=1 \
+            --memory=512Mi \
+            --concurrency=80 \
+            --min=0 \
+            --max=10 \
+            --timeout=15s \
+            --set-env-vars="SUPABASE_URL=$CORE3_SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY=$CORE3_SUPABASE_PUBLISHABLE_KEY,SUPABASE_JWT_SECRET=$CORE3_SUPABASE_JWT_SECRET,NOVA_CORE_RPC_TIMEOUT_MS=2500,NOVA_CORE_RPC_ATTEMPTS=3,NOVA_CORE_ACCESS_TOKEN_SECONDS=43200" \
+            --quiet
+
+      - name: Verify Core 3 dev health and production isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$CORE3_TARGET_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/core3-target.json
+          TARGET_URL="$(python3 - <<'PY'
+          import json
+          s=json.load(open('/tmp/core3-target.json'))
+          print((s.get('status') or {}).get('url') or '')
+          PY
+          )"
+          test -n "$TARGET_URL"
+          HTTP="$(curl -sS --retry 4 --retry-delay 2 -o /tmp/core3-health.json -w '%{http_code}' "$TARGET_URL/health")"
+          echo "CORE3_HEALTH_HTTP=$HTTP"
+          test "$HTTP" = '200'
+          python3 - <<'PY'
+          import json, sys
+          b=json.load(open('/tmp/core3-health.json'))
+          if b.get('ok') is not True or b.get('service') != 'nova-core3' or not str(b.get('revision') or ''):
+              print('::error::Unexpected Core 3 health payload.', file=sys.stderr)
+              sys.exit(40)
+          print('CORE3_HEALTH=OK')
+          print('CORE3_REVISION='+str(b.get('revision')))
+          PY
+
+          gcloud run services describe "$CORE3_SOURCE_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format=json > /tmp/source-after.json
+          python3 - <<'PY'
+          import json, os, sys
+          s=json.load(open('/tmp/source-after.json'))
+          active=[(str(t.get('revisionName') or ''), int(t.get('percent') or 0)) for t in (s.get('status') or {}).get('traffic') or [] if int(t.get('percent') or 0)>0]
+          expected=os.environ['CORE3_SOURCE_REVISION']
+          if len(active)!=1 or active[0][1]!=100 or active[0][0]!=expected:
+              print(f'::error::Production Realtime revision changed: {active} expected={expected}', file=sys.stderr)
+              sys.exit(41)
+          print('PRODUCTION_REALTIME_REVISION_UNCHANGED=OK')
+          PY
+
+      - name: Verify signed JWT against live Core 3 session and Realtime bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET_URL="$(gcloud run services describe "$CORE3_TARGET_SERVICE" \
+            --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format='value(status.url)')"
+          TOKEN="$(SUPABASE_JWT_SECRET="$CORE3_SUPABASE_JWT_SECRET" node --input-type=module - <<'NODE'
+          import { createSessionTokenSigner } from './core3/server/src/session-token.mjs';
+          const signer = createSessionTokenSigner({ secret: process.env.SUPABASE_JWT_SECRET, ttlSeconds: 600 });
+          const signed = signer.sign({ employeeNo: 'ot001', name: '', role: 'ORDER', sessionSite: '' });
+          process.stdout.write(signed.accessToken);
+          NODE
+          )"
+          echo "::add-mask::$TOKEN"
+          HTTP="$(curl -sS -o /tmp/core3-me.json -w '%{http_code}' "$TARGET_URL/v1/session/me" \
+            -H "Authorization: Bearer $TOKEN")"
+          echo "CORE3_SESSION_ME_HTTP=$HTTP"
+          test "$HTTP" = '200'
+          python3 - <<'PY'
+          import json
+          b=json.load(open('/tmp/core3-me.json'))
+          assert b.get('ok') is True
+          assert b.get('employeeNo') == 'ot001'
+          assert b.get('role') == 'ORDER'
+          print('CORE3_SIGNED_JWT_COMPATIBILITY=OK')
+          PY
+
+          CONFIG_HTTP="$(curl -sS -o /tmp/core3-realtime-config.json -w '%{http_code}' "$TARGET_URL/v1/realtime/config" \
+            -H "Authorization: Bearer $TOKEN")"
+          echo "CORE3_REALTIME_CONFIG_HTTP=$CONFIG_HTTP"
+          test "$CONFIG_HTTP" = '200'
+          python3 - <<'PY'
+          import json
+          b=json.load(open('/tmp/core3-realtime-config.json'))
+          assert b.get('ok') is True
+          assert isinstance(b.get('supabaseUrl'), str) and b['supabaseUrl'].strip()
+          assert isinstance(b.get('publishableKey'), str) and b['publishableKey'].strip()
+          assert b.get('privateChannel') is True
+          assert b.get('topicPattern') == 'nova:site:{site}:rooms'
+          assert 'jwtSecret' not in b
+          print('CORE3_REALTIME_BOOTSTRAP=OK')
+          PY
+
+          NOAUTH="$(curl -sS -o /tmp/noauth.json -w '%{http_code}' "$TARGET_URL/v1/session/me")"
+          test "$NOAUTH" = '401'
+          CONFIG_NOAUTH="$(curl -sS -o /tmp/noauth-realtime.json -w '%{http_code}' "$TARGET_URL/v1/realtime/config")"
+          test "$CONFIG_NOAUTH" = '401'
+          echo 'CORE3_SESSION_AND_REALTIME_GUARD=OK'
+
+      - name: Deployment summary
+        shell: bash
+        run: |
+          echo "Core 3 dev service deployed: $CORE3_TARGET_SERVICE"
+          echo 'Apps Script @271 was not deployed or modified by this workflow.'
