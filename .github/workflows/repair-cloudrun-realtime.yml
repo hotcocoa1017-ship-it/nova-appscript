@@ -194,3 +194,5 @@ jobs:
           echo "::error::Cloud Run /health did not return HTTP 200 after update"
           cat /tmp/health.json || true
           exit 30
+
+# retry trigger 2026-09-14 upload-500
