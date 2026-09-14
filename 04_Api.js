@@ -2,6 +2,14 @@
  * 웹앱 진입 및 공통 초기 API
  */
 function doGet(e) { // (웹앱 진입)
+  // TEMP 2026-09-14: Realtime API 500 비민감 진단. 결과 확인 즉시 제거합니다.
+  const rt500DiagnosticKey = 'NOVA-RT500-20260914-j4m8q2';
+  if (e && e.parameter && String(e.parameter.nova_rt500_diag || '') === rt500DiagnosticKey) {
+    return ContentService
+      .createTextOutput(JSON.stringify(novaRuntimeRealtime500Diagnostic_()))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   const template = HtmlService.createTemplateFromFile('Index');
   template.appName = NOVA.APP_NAME;
   template.version = NOVA.VERSION;
