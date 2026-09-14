@@ -44,4 +44,4 @@ jobs:
       - name: Read runtime API base via Execution API
         run: clasp run novaRuntimeApiBaseDiagnostic
 
-# one-shot trigger v2
+# one-shot trigger v3 - 2026-09-14 realtime api 500 diagnostic
